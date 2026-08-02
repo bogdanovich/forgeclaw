@@ -111,6 +111,67 @@ func TestShellExecBindsBrokerRequestToPreparedAuthority(t *testing.T) {
 	}
 }
 
+func TestShellExecAcceptsRootProfileWithoutOptionalEnvironment(t *testing.T) {
+	broker := successfulFakeShellBroker()
+	policy := nodes.LocalCommandPolicy{
+		Revision:          "vpn-root-v1",
+		AllowedCommands:   []string{"shell.exec.v1"},
+		MaximumRisk:       nodes.RiskPrivileged,
+		MaxTimeoutSeconds: 3600,
+		MaxOutputBytes:    128 * 1024,
+	}
+	runtime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+		WithShellBroker(ShellBrokerSnapshot{
+			Revision: "vpn-root-broker-v1",
+			Profiles: []ShellBrokerProfile{
+				{
+					Alias: "root", Revision: "vpn-root-profile-v1",
+					WorkingScopes:     []string{"root"},
+					TimeoutSecondsMax: 3600, OutputBytesMax: 128 * 1024,
+					ConcurrentCommands: 4,
+				},
+			},
+		}, broker),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := runtime.Catalog()
+	catalogHash, err := catalog.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := shellRuntimeDescriptor(t, runtime)
+	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
+		InvocationID:   "inv_root_shell",
+		IdempotencyKey: "idem_root_shell",
+		NodeID:         runtime.nodeID,
+		CatalogHash:    catalogHash,
+		Command:        "shell.exec.v1",
+		Input: json.RawMessage(
+			`{"profile":"root","script":"id && hostname","cwd":"root","env":{},"timeout_seconds":30}`,
+		),
+		AgentID:          "main",
+		SessionID:        "session_test",
+		ActorID:          "actor_test",
+		TimeoutSeconds:   35,
+		OutputLimitBytes: 4096,
+	}, descriptor, LocalExecutor, policy.Revision, time.Now(), 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ToLower(string(plan.Input)), `"timeout_seconds":3e1`) {
+		t.Fatalf("test input did not exercise canonical exponent form: %s", plan.Input)
+	}
+	if _, err := runtime.Invoke(t.Context(), plan); err != nil {
+		t.Fatalf("root shell invocation rejected: %v", err)
+	}
+}
+
 func TestShellExecRejectsAlteredAuthorityBeforeBroker(t *testing.T) {
 	tests := []struct {
 		name   string
