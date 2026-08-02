@@ -463,6 +463,9 @@ func (broker *Broker) actionSessionLocked(
 	if slot == nil {
 		return Session{}, nil, nil, ErrWorkerUnavailable
 	}
+	if slot.safeFailure != "" {
+		return Session{}, nil, nil, ErrWorkerUnavailable
+	}
 	worker, ok := slot.worker.(ActionWorker)
 	if !ok {
 		return Session{}, nil, nil, ErrDriverIncompatible
@@ -475,17 +478,36 @@ func (broker *Broker) invalidateSnapshotLocked(ctx context.Context, sessionID st
 	if err != nil || session.State != SessionReady {
 		return err
 	}
+	current := session
+	slot := broker.slots[sessionID]
+	if slot != nil {
+		// Live references become invalid at dispatch and must never depend on a
+		// later durable write succeeding.
+		slot.refs = nil
+		slot.inputs = nil
+	}
 	session.SnapshotID = ""
 	session.SnapshotOrigin = ""
 	session.Revision++
 	session.UpdatedAt = timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
 	session.LastActivityAt = session.UpdatedAt
 	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
-		return err
-	}
-	if slot := broker.slots[sessionID]; slot != nil {
-		slot.refs = nil
-		slot.inputs = nil
+		if slot != nil {
+			slot.safeFailure = "snapshot_invalidation_failed"
+		}
+		limits := broker.config.Limits.Effective()
+		quarantineCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			time.Duration(limits.ActionSeconds)*time.Second,
+		)
+		defer cancel()
+		_, quarantineErr := broker.finishSessionLocked(
+			quarantineCtx,
+			current,
+			SessionLost,
+			"snapshot_invalidation_failed",
+		)
+		return errors.Join(ErrSnapshotInvalidation, err, quarantineErr)
 	}
 	return nil
 }

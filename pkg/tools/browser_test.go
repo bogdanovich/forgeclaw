@@ -13,13 +13,14 @@ import (
 )
 
 type fakeBrowserToolSource struct {
-	available bool
-	open      browser.Session
-	status    browser.Session
-	observe   browser.Observation
-	prepare   browser.Preparation
-	execute   browser.Invocation
-	err       error
+	available  bool
+	open       browser.Session
+	status     browser.Session
+	observe    browser.Observation
+	prepare    browser.Preparation
+	execute    browser.Invocation
+	err        error
+	executeErr error
 
 	openRequest     browser.OpenRequest
 	statusOwner     browser.Owner
@@ -111,6 +112,9 @@ func (source *fakeBrowserToolSource) ExecuteAction(
 	if approval != nil {
 		copy := *approval
 		source.executeApproval = &copy
+	}
+	if source.executeErr != nil {
+		return source.execute, source.executeErr
 	}
 	return source.execute, source.err
 }
@@ -306,6 +310,36 @@ func TestBrowserActApprovalPreparationFailsWithSafeDenial(t *testing.T) {
 	result, safe := SafeApprovalDenialResult(err)
 	if !safe || result == nil || !result.IsError || strings.Contains(result.ContentForLLM(), "PRIVATE") {
 		t.Fatalf("safe denial = %#v, safe = %t, error = %v", result, safe, err)
+	}
+}
+
+func TestBrowserActSurfacesTerminalPostActionStateFailure(t *testing.T) {
+	source := &fakeBrowserToolSource{
+		available: true,
+		prepare: browser.Preparation{Action: browser.PreparedAction{
+			ID: "prepared_1", TabID: "tab_primary", CurrentOrigin: "https://example.com",
+			Action: browser.Action{Kind: browser.ActionScroll, Direction: "down", Amount: 1},
+			Effect: browser.EffectRead,
+		}},
+		execute: browser.Invocation{
+			ID: "invocation_1", SessionID: "browser_session_1",
+			Effect: browser.EffectRead, State: browser.InvocationSucceeded,
+		},
+		executeErr: browser.ErrSnapshotInvalidation,
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{
+			"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+			"snapshot_id": "snapshot_1", "snapshot_generation": 1,
+			"action": map[string]any{"kind": "scroll", "direction": "down", "amount": 1},
+		},
+	)
+	if result == nil || !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), `"code":"post_action_state_unavailable"`) ||
+		!strings.Contains(result.ContentForLLM(), `"state":"succeeded"`) ||
+		!strings.Contains(result.ContentForLLM(), `"action":"do_not_retry_reopen_session"`) {
+		t.Fatalf("post-action state result = %#v", result)
 	}
 }
 

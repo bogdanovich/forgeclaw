@@ -44,6 +44,7 @@ type fakeWorkerFactory struct {
 type failNextSessionUpdateStore struct {
 	*MemoryStore
 	failNext  bool
+	failAfter int
 	failState SessionState
 }
 
@@ -52,6 +53,12 @@ func (store *failNextSessionUpdateStore) UpdateSession(
 	expected uint64,
 	next Session,
 ) error {
+	if store.failAfter > 0 {
+		store.failAfter--
+		if store.failAfter == 0 {
+			return ErrStale
+		}
+	}
 	if store.failNext || (store.failState != "" && next.State == store.failState) {
 		store.failNext = false
 		store.failState = ""

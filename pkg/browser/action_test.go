@@ -208,6 +208,60 @@ func TestBrokerPreparesRuntimeEffectAndExecutesLocalEditOnce(t *testing.T) {
 	}
 }
 
+func TestBrokerQuarantinesSessionWhenPostActionSnapshotInvalidationFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore()}
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := onlyVisibleRef(t, observation.Snapshot)
+	worker.resolveElement = DriverElement{Target: "e1", Role: "textbox", Name: "Name"}
+	worker.resolveOrigin = "https://example.com"
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_invalidation_failure", SessionID: session.ID,
+		TabID: session.TabID, SnapshotID: observation.SnapshotID,
+		SnapshotGeneration: observation.SnapshotGeneration,
+		Action:             Action{Kind: ActionFill, Ref: ref, Value: "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first update records action activity; fail the following snapshot
+	// invalidation write.
+	store.failAfter = 2
+	invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+	if !errors.Is(err, ErrSnapshotInvalidation) || invocation.State != InvocationSucceeded ||
+		len(worker.actions) != 1 || worker.closed != 1 {
+		stored, storedErr := store.GetSession(context.Background(), session.ID)
+		t.Fatalf(
+			"ExecuteAction() = %+v, %v (snapshot failure = %t); actions = %+v; closes = %d; session = %+v, %v",
+			invocation,
+			err,
+			errors.Is(err, ErrSnapshotInvalidation),
+			worker.actions,
+			worker.closed,
+			stored,
+			storedErr,
+		)
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored.State != SessionLost || stored.SnapshotID != "" ||
+		stored.SafeFailure != "snapshot_invalidation_failed" {
+		t.Fatalf("quarantined session = %+v, %v", stored, getErr)
+	}
+	_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_reuse_old_snapshot", SessionID: session.ID,
+		TabID: session.TabID, SnapshotID: observation.SnapshotID,
+		SnapshotGeneration: observation.SnapshotGeneration,
+		Action:             Action{Kind: ActionFill, Ref: ref, Value: "Grace"},
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || len(worker.actions) != 1 {
+		t.Fatalf("old snapshot reuse error = %v; actions = %+v", err, worker.actions)
+	}
+}
+
 func TestBrokerRequiresExactApprovalAndDryRunStillDeniesCommit(t *testing.T) {
 	store := NewMemoryStore()
 	broker, worker, session := openActionTestBroker(t, store)
