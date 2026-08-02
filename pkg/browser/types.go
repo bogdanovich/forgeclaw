@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	MaxIdentifierBytes  = 128
-	MaxSafeFailureBytes = 256
-	MaxTerminalBytes    = 320 * 1024
-	MaxURLBytes         = 2048
-	MaxElementNameBytes = 512
-	MaxScrollAmount     = 5
+	MaxIdentifierBytes    = 128
+	MaxSafeFailureBytes   = 256
+	MaxTerminalBytes      = 320 * 1024
+	MaxURLBytes           = 2048
+	MaxElementNameBytes   = 512
+	MaxDialogMessageBytes = 2048
+	MaxScrollAmount       = 5
 )
 
 var (
@@ -138,11 +139,12 @@ const (
 	ActionSelect   ActionKind = "select"
 	ActionPress    ActionKind = "press"
 	ActionScroll   ActionKind = "scroll"
+	ActionDialog   ActionKind = "dialog"
 )
 
 func (kind ActionKind) Valid() bool {
 	switch kind {
-	case ActionNavigate, ActionClick, ActionFill, ActionSelect, ActionPress, ActionScroll:
+	case ActionNavigate, ActionClick, ActionFill, ActionSelect, ActionPress, ActionScroll, ActionDialog:
 		return true
 	default:
 		return false
@@ -150,13 +152,15 @@ func (kind ActionKind) Valid() bool {
 }
 
 type Action struct {
-	Kind      ActionKind `json:"kind"`
-	URL       string     `json:"url,omitempty"`
-	Ref       string     `json:"ref,omitempty"`
-	Value     string     `json:"value,omitempty"`
-	Key       string     `json:"key,omitempty"`
-	Direction string     `json:"direction,omitempty"`
-	Amount    int        `json:"amount,omitempty"`
+	Kind           ActionKind `json:"kind"`
+	URL            string     `json:"url,omitempty"`
+	Ref            string     `json:"ref,omitempty"`
+	Value          string     `json:"value,omitempty"`
+	Key            string     `json:"key,omitempty"`
+	Direction      string     `json:"direction,omitempty"`
+	Amount         int        `json:"amount,omitempty"`
+	Decision       string     `json:"decision,omitempty"`
+	PromptProvided bool       `json:"prompt_provided,omitempty"`
 }
 
 func (action Action) Validate(maxTextBytes int) error {
@@ -166,35 +170,55 @@ func (action Action) Validate(maxTextBytes int) error {
 	switch action.Kind {
 	case ActionNavigate:
 		if action.URL == "" || action.Ref != "" || action.Value != "" || action.Key != "" || action.Direction != "" ||
+			action.Decision != "" ||
+			action.PromptProvided ||
 			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed navigate action", ErrInvalid)
 		}
 	case ActionClick:
 		if !validIdentifier(action.Ref) || action.URL != "" || action.Value != "" || action.Key != "" ||
+			action.Decision != "" ||
+			action.PromptProvided ||
 			action.Direction != "" ||
 			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed click action", ErrInvalid)
 		}
 	case ActionFill:
 		if !validIdentifier(action.Ref) || action.URL != "" || action.Key != "" || action.Direction != "" ||
+			action.Decision != "" ||
+			action.PromptProvided ||
 			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed fill action", ErrInvalid)
 		}
 	case ActionSelect:
 		if !validIdentifier(action.Ref) || action.URL != "" || action.Key != "" || action.Direction != "" ||
+			action.Decision != "" ||
+			action.PromptProvided ||
 			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed select action", ErrInvalid)
 		}
 	case ActionPress:
 		if action.URL != "" || action.Ref != "" || action.Value != "" || !validBrowserKey(action.Key) ||
+			action.Decision != "" ||
+			action.PromptProvided ||
 			action.Direction != "" ||
 			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed press action", ErrInvalid)
 		}
 	case ActionScroll:
-		if action.URL != "" || action.Ref != "" || action.Value != "" || action.Key != "" ||
-			(action.Direction != "up" && action.Direction != "down") || action.Amount < 1 || action.Amount > MaxScrollAmount {
+		if action.URL != "" || action.Ref != "" || action.Value != "" || action.Key != "" || action.Decision != "" ||
+			action.PromptProvided ||
+			(action.Direction != "up" && action.Direction != "down") ||
+			action.Amount < 1 ||
+			action.Amount > MaxScrollAmount {
 			return fmt.Errorf("%w: malformed scroll action", ErrInvalid)
+		}
+	case ActionDialog:
+		if action.URL != "" || action.Ref != "" || action.Key != "" || action.Direction != "" || action.Amount != 0 ||
+			(action.Decision != "accept" && action.Decision != "dismiss") ||
+			(action.Decision == "dismiss" && (action.Value != "" || action.PromptProvided)) ||
+			(!action.PromptProvided && action.Value != "") {
+			return fmt.Errorf("%w: malformed dialog action", ErrInvalid)
 		}
 	}
 	return nil
@@ -310,6 +334,8 @@ type PreparedAction struct {
 	InputBytes           int    `json:"input_bytes,omitempty"`
 	ElementRole          string `json:"element_role,omitempty"`
 	ElementName          string `json:"element_name,omitempty"`
+	DialogType           string `json:"dialog_type,omitempty"`
+	DialogMessage        string `json:"dialog_message,omitempty"`
 	Effect               Effect `json:"effect"`
 	DryRun               bool   `json:"dry_run"`
 	PolicyRevision       string `json:"policy_revision"`
@@ -328,10 +354,14 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 		prepared.CurrentOrigin == "" || len(prepared.CurrentOrigin) > MaxURLBytes ||
 		len(prepared.DestinationOrigin) > MaxURLBytes || len(prepared.ElementRole) > 64 ||
 		len(prepared.ElementName) > MaxElementNameBytes || !prepared.Effect.Valid() ||
+		len(prepared.DialogMessage) > MaxDialogMessageBytes ||
 		!validIdentifier(prepared.PolicyRevision) || !validDigest(prepared.CatalogRevision) ||
 		!validDigest(prepared.ActionHash) || prepared.CreatedAt <= 0 || prepared.ExpiresAt <= prepared.CreatedAt ||
 		prepared.Action.Validate(maxTextBytes) != nil {
 		return fmt.Errorf("%w: malformed prepared action", ErrInvalid)
+	}
+	if prepared.Action.Kind != ActionDialog && (prepared.DialogType != "" || prepared.DialogMessage != "") {
+		return fmt.Errorf("%w: unexpected prepared dialog binding", ErrInvalid)
 	}
 	currentOrigin, err := config.NormalizeBrowserOrigin(prepared.CurrentOrigin)
 	if err != nil || currentOrigin != prepared.CurrentOrigin {
@@ -372,6 +402,20 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 		if prepared.DestinationOrigin != "" || prepared.ElementRole != "" || prepared.ElementName != "" ||
 			prepared.Effect != EffectRead || prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared scroll", ErrInvalid)
+		}
+	case ActionDialog:
+		if prepared.DestinationOrigin != "" || prepared.ElementRole != "" || prepared.ElementName != "" ||
+			!validDialogType(prepared.DialogType) ||
+			prepared.Action.Value != "" || prepared.Effect != classifyDialogEffect(prepared.Action.Decision) {
+			return fmt.Errorf("%w: malformed prepared dialog", ErrInvalid)
+		}
+		if !prepared.Action.PromptProvided {
+			if prepared.InputDigest != "" || prepared.InputBytes != 0 {
+				return fmt.Errorf("%w: malformed prepared dialog input", ErrInvalid)
+			}
+		} else if prepared.Action.Decision != "accept" || prepared.DialogType != "prompt" ||
+			!validDigest(prepared.InputDigest) || prepared.InputBytes < 0 || prepared.InputBytes > maxTextBytes {
+			return fmt.Errorf("%w: malformed prepared dialog input", ErrInvalid)
 		}
 	}
 	expectedID := derivedIdentifier("prepared", prepared.Owner, prepared.SessionID, prepared.RequestID)

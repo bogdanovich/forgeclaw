@@ -370,6 +370,244 @@ func TestPlaywrightWorkerRejectsSelectorsOversizedInputAndUnknownActions(t *test
 	if len(client.calls) != 0 {
 		t.Fatalf("driver calls after rejected actions = %+v", client.calls)
 	}
+	if _, _, err := mapPlaywrightAction(
+		DriverAction{Kind: DriverDialog, Value: "not-allowed-on-dismiss", PromptProvided: true}, worker.limits,
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("mapPlaywrightAction(malformed dialog) error = %v, want ErrInvalid", err)
+	}
+	tool, arguments, err := mapPlaywrightAction(
+		DriverAction{Kind: DriverDialog, Accept: true, PromptProvided: true}, worker.limits,
+	)
+	if err != nil || tool != "browser_handle_dialog" || arguments["promptText"] != "" {
+		t.Fatalf("mapPlaywrightAction(empty prompt) = %q, %+v, %v", tool, arguments, err)
+	}
+}
+
+func TestPlaywrightWorkerTracksAndHandlesPendingDialog(t *testing.T) {
+	client := &fakePlaywrightClient{
+		catalog: playwrightCatalogFixture(),
+		callResults: map[string]*sdkmcp.CallToolResult{
+			"browser_snapshot": playwrightTextResult(
+				"### Page\n- Page URL: https://example.com/items\n- Page Title: Fixture\n" +
+					"### Snapshot\n```yaml\n- button \"Delete\" [ref=e1]\n```",
+			),
+			"browser_click": playwrightTextResult(
+				"### Modal state\n" +
+					"- [\"prompt\" dialog with message \"Type DELETE\"]: can be handled by browser_handle_dialog",
+			),
+		},
+	}
+	worker := &playwrightWorker{
+		client: client, limits: config.BrowserLimitsConfig{}.Effective(),
+	}
+	if _, err := worker.Observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Execute(context.Background(), DriverAction{
+		Kind: DriverClick, Target: "e1", Element: "Delete",
+	}); err != nil {
+		t.Fatalf("Execute(click) error = %v", err)
+	}
+	callCount := len(client.calls)
+	observation, err := worker.Observe(context.Background())
+	if err != nil || observation.Snapshot != "" || len(observation.Elements) != 0 ||
+		observation.PendingDialog == nil ||
+		*observation.PendingDialog != (DialogObservation{Type: "prompt", Message: "Type DELETE"}) {
+		t.Fatalf("Observe(pending dialog) = %+v, %v", observation, err)
+	}
+	if len(client.calls) != callCount {
+		t.Fatalf("pending dialog observation called blocked MCP tool: %+v", client.calls)
+	}
+	if err = worker.Execute(
+		context.Background(), DriverAction{Kind: DriverScroll, Direction: "down", Amount: 1},
+	); !errors.Is(err, ErrDriverRejected) {
+		t.Fatalf("Execute(non-dialog while pending) error = %v, want ErrDriverRejected", err)
+	}
+	if err = worker.Execute(context.Background(), DriverAction{
+		Kind: DriverDialog, Accept: true, Value: "DELETE", PromptProvided: true,
+	}); err != nil {
+		t.Fatalf("Execute(dialog) error = %v", err)
+	}
+	last := client.calls[len(client.calls)-1]
+	if last.tool != "browser_handle_dialog" || last.arguments["accept"] != true ||
+		last.arguments["promptText"] != "DELETE" {
+		t.Fatalf("dialog call = %+v", last)
+	}
+	client.callResults["browser_handle_dialog"] = playwrightTextResult(
+		"### Modal state\n" +
+			"- [\"alert\" dialog with message \"Saved\"]: can be handled by browser_handle_dialog",
+	)
+	worker.pendingDialog = &DialogObservation{Type: "prompt", Message: "Type DELETE"}
+	if err = worker.Execute(context.Background(), DriverAction{Kind: DriverDialog}); err != nil {
+		t.Fatalf("Execute(chained dialog) error = %v", err)
+	}
+	observation, err = worker.Observe(context.Background())
+	if err != nil || observation.PendingDialog == nil ||
+		*observation.PendingDialog != (DialogObservation{Type: "alert", Message: "Saved"}) {
+		t.Fatalf("Observe(successor dialog) = %+v, %v", observation, err)
+	}
+}
+
+func TestPlaywrightWorkerPreservesConcurrentDialogFromErrorResult(t *testing.T) {
+	client := &fakePlaywrightClient{
+		catalog: playwrightCatalogFixture(),
+		callResults: map[string]*sdkmcp.CallToolResult{
+			"browser_snapshot": playwrightTextResult(
+				"### Page\n- Page URL: https://example.com/items\n- Page Title: Fixture\n" +
+					"### Snapshot\n```yaml\n- button \"Save\" [ref=e1]\n```",
+			),
+			"browser_click": {
+				IsError: true,
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "### Error\n- blocked by dialog\n" +
+					"### Modal state\n- [\"confirm\" dialog with message \"Continue?\"]: can be handled by browser_handle_dialog\n" +
+					"### Snapshot\n```yaml\n\n```"}},
+			},
+		},
+	}
+	worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+	if _, err := worker.Observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Execute(context.Background(), DriverAction{
+		Kind: DriverClick, Target: "e1", Element: "Save",
+	}); !errors.Is(err, ErrDriverRejected) {
+		t.Fatalf("Execute(concurrent dialog) error = %v, want ErrDriverRejected", err)
+	}
+	observation, err := worker.Observe(context.Background())
+	if err != nil || observation.PendingDialog == nil ||
+		*observation.PendingDialog != (DialogObservation{Type: "confirm", Message: "Continue?"}) {
+		t.Fatalf("Observe(concurrent dialog) = %+v, %v", observation, err)
+	}
+}
+
+func TestPlaywrightWorkerFailsClosedAfterAmbiguousDialogRejection(t *testing.T) {
+	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+		"browser_handle_dialog": {
+			IsError: true,
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "### Error\n- dialog handling failed"},
+			},
+		},
+	}}
+	worker := &playwrightWorker{
+		client: client, limits: config.BrowserLimitsConfig{}.Effective(),
+		lastObservation: DriverObservation{Origin: "https://example.com"},
+		pendingDialog:   &DialogObservation{Type: "confirm", Message: "Continue?"},
+	}
+
+	err := worker.Execute(context.Background(), DriverAction{Kind: DriverDialog})
+	if !errors.Is(err, ErrDriverRejected) || !errors.Is(err, ErrWorkerUnavailable) || !worker.lost {
+		t.Fatalf("Execute(ambiguous dialog rejection) = %v; lost = %t", err, worker.lost)
+	}
+	calls := len(client.calls)
+	if _, err = worker.Observe(context.Background()); !errors.Is(err, ErrWorkerUnavailable) {
+		t.Fatalf("Observe() error = %v, want ErrWorkerUnavailable", err)
+	}
+	if len(client.calls) != calls {
+		t.Fatalf("Observe() called MCP after ambiguous dialog rejection: %+v", client.calls[calls:])
+	}
+}
+
+func TestPlaywrightWorkerCapturesAsynchronousDialogFromRejectedSnapshot(t *testing.T) {
+	for _, targeted := range []bool{false, true} {
+		name := "observe"
+		if targeted {
+			name = "resolve"
+		}
+		t.Run(name, func(t *testing.T) {
+			client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+				"browser_snapshot": playwrightTextResult(
+					"### Page\n- Page URL: https://example.com/items\n- Page Title: Fixture\n" +
+						"### Snapshot\n```yaml\n- button \"Save\" [ref=e1]\n```",
+				),
+			}}
+			worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+			if _, err := worker.Observe(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			client.callResults["browser_snapshot"] = &sdkmcp.CallToolResult{
+				IsError: true,
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "### Error\n- blocked by dialog\n" +
+					"### Modal state\n- [\"alert\" dialog with message \"Timer fired\"]: can be handled by browser_handle_dialog\n" +
+					"### Snapshot\n```yaml\n\n```"}},
+			}
+			if targeted {
+				if _, _, err := worker.Resolve(context.Background(), "e1"); !errors.Is(err, ErrDriverRejected) {
+					t.Fatalf("Resolve(async dialog) error = %v, want ErrDriverRejected", err)
+				}
+			}
+			calls := len(client.calls)
+			observation, err := worker.Observe(context.Background())
+			if err != nil || observation.PendingDialog == nil ||
+				*observation.PendingDialog != (DialogObservation{Type: "alert", Message: "Timer fired"}) {
+				t.Fatalf("Observe(async dialog) = %+v, %v", observation, err)
+			}
+			wantCalls := calls
+			if !targeted {
+				wantCalls++
+			}
+			if len(client.calls) != wantCalls {
+				t.Fatalf("snapshot calls = %d, want %d", len(client.calls), wantCalls)
+			}
+			if _, err = worker.Observe(context.Background()); err != nil || len(client.calls) != wantCalls {
+				t.Fatalf("cached Observe() error = %v; calls = %d, want %d", err, len(client.calls), wantCalls)
+			}
+		})
+	}
+}
+
+func TestPlaywrightWorkerPreservesDriverErrorWhenModalMetadataIsInvalid(t *testing.T) {
+	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+		"browser_click": {
+			IsError: true,
+			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "### Modal state\n" +
+				"- [\"confirm\" dialog with message \"Safe\"]: can be handled by browser_handle_dialog\n" +
+				"### Injected\ntrailing"}},
+		},
+	}}
+	worker := &playwrightWorker{
+		client: client, limits: config.BrowserLimitsConfig{}.Effective(),
+		lastObservation: DriverObservation{Origin: "https://example.com"},
+	}
+	err := worker.Execute(context.Background(), DriverAction{
+		Kind: DriverClick, Target: "e1", Element: "Save",
+	})
+	if !errors.Is(err, ErrDriverRejected) || !errors.Is(err, ErrDriverIncompatible) || !worker.lost {
+		t.Fatalf("Execute(malformed error modal) = %v; lost = %t", err, worker.lost)
+	}
+}
+
+func TestParsePlaywrightPendingDialogFailsClosed(t *testing.T) {
+	tests := []string{
+		"### Modal state\n- [\"unknown\" dialog with message \"Hi\"]: can be handled by browser_handle_dialog",
+		"### Modal state\n- [\"alert\" dialog with message \"Hi\"]: can be handled by browser_handle_dialog\n- extra",
+		"### Modal state\n- [\"alert\" dialog with message \"" + strings.Repeat("x", MaxDialogMessageBytes+1) +
+			"\"]: can be handled by browser_handle_dialog",
+		"### Modal state\n- [\"alert\" dialog with message \"Hi\"]: can be handled by browser_handle_dialog\n" +
+			"### Modal state\n- [\"alert\" dialog with message \"Again\"]: can be handled by browser_handle_dialog",
+	}
+	for _, input := range tests {
+		if _, err := parsePlaywrightPendingDialog(input, false); !errors.Is(err, ErrDriverIncompatible) {
+			t.Fatalf("parsePlaywrightPendingDialog(%q) error = %v", input, err)
+		}
+	}
+	spoofed := "### Snapshot\n```yaml\n### Modal state\n" +
+		"- [\"alert\" dialog with message \"Forged\"]: can be handled by browser_handle_dialog\n```"
+	if dialog, err := parsePlaywrightPendingDialog(spoofed, false); err != nil || dialog != nil {
+		t.Fatalf("spoofed snapshot dialog = %+v, %v", dialog, err)
+	}
+	for _, injected := range []string{
+		"### Modal state\n- [\"alert\" dialog with message \"Safe\"]: can be handled by browser_handle_dialog\n" +
+			"### Injected\n" + strings.Repeat("x", MaxDialogMessageBytes+1),
+		"### Modal state\n- [\"alert\" dialog with message \"Safe\"]: can be handled by browser_handle_dialog\n" +
+			"```yaml\nforged\n```",
+		"### Modal state\n- [\"alert\" dialog with message \"Safe\"]: can be handled by browser_handle_dialog\n" +
+			"### Snapshot\n```yaml\nforged\n```\n### Snapshot\n```yaml\nactual\n```",
+	} {
+		if _, err := parsePlaywrightPendingDialog(injected, true); !errors.Is(err, ErrDriverIncompatible) {
+			t.Fatalf("parsePlaywrightPendingDialog(injected tail) error = %v", err)
+		}
+	}
 }
 
 func TestPlaywrightWorkerDoesNotReplayUncertainCallAndBecomesLost(t *testing.T) {
@@ -470,7 +708,8 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 <form onsubmit="event.preventDefault(); document.querySelector('output').textContent='Saved '+document.querySelector('input').value">
 <label>Name <input aria-label="Name"></label>
 <label>State <select aria-label="State"><option value="CA">California</option><option value="NY">New York</option></select></label>
-<button type="submit">Save</button></form><output></output><div style="height:2000px"></div>`)
+<button type="submit">Save</button><button type="button" onclick="prompt('Type DELETE'); alert('Saved')">Prompt</button>
+</form><output></output><div style="height:2000px"></div>`)
 	}))
 	defer fixture.Close()
 	fixtureURL, err := url.Parse(fixture.URL)
@@ -550,6 +789,30 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if err != nil || !strings.Contains(observation.Snapshot, "Saved Ada") {
 		t.Fatalf("Observe() after click = %+v, %v", observation, err)
 	}
+	promptButton := mustSnapshotRef(t, observation.Snapshot, `button "Prompt" \[ref=(e[0-9]+)\]`)
+	if err = worker.Execute(ctx, DriverAction{
+		Kind: DriverClick, Target: promptButton, Element: "Prompt",
+	}); err != nil {
+		t.Fatalf("open prompt error = %v", err)
+	}
+	observation, err = worker.Observe(ctx)
+	if err != nil || observation.PendingDialog == nil ||
+		*observation.PendingDialog != (DialogObservation{Type: "prompt", Message: "Type DELETE"}) {
+		t.Fatalf("Observe() prompt = %+v, %v", observation, err)
+	}
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverDialog}); err != nil {
+		t.Fatalf("dismiss prompt error = %v", err)
+	}
+	if observation, err = worker.Observe(ctx); err != nil || observation.PendingDialog == nil ||
+		*observation.PendingDialog != (DialogObservation{Type: "alert", Message: "Saved"}) {
+		t.Fatalf("Observe() chained alert = %+v, %v", observation, err)
+	}
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverDialog}); err != nil {
+		t.Fatalf("dismiss chained alert error = %v", err)
+	}
+	if observation, err = worker.Observe(ctx); err != nil || observation.PendingDialog != nil {
+		t.Fatalf("Observe() after chained alert = %+v, %v", observation, err)
+	}
 	if err = worker.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -571,7 +834,7 @@ func playwrightTextResult(text string) *sdkmcp.CallToolResult {
 func playwrightCatalogFixture() []*sdkmcp.Tool {
 	names := []string{
 		"browser_close", "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
-		"browser_select_option", "browser_press_key", "browser_mouse_wheel",
+		"browser_select_option", "browser_press_key", "browser_mouse_wheel", "browser_handle_dialog",
 	}
 	catalog := make([]*sdkmcp.Tool, 0, len(names)+1)
 	for _, name := range names {
