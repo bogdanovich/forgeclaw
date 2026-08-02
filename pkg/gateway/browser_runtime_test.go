@@ -37,8 +37,12 @@ func TestBrowserRuntimeOwnsAndReleasesDurableStore(t *testing.T) {
 	if _, secondErr := newBrowserRuntime(context.Background(), cfg); !errors.Is(secondErr, browser.ErrStoreOwned) {
 		t.Fatalf("second newBrowserRuntime() error = %v, want ErrStoreOwned", secondErr)
 	}
-	if err = runtime.Close(context.Background()); err != nil {
-		t.Fatalf("Close() error = %v", err)
+	services := &services{Browser: runtime}
+	if err = closeBrowserRuntime(context.Background(), services); err != nil {
+		t.Fatalf("closeBrowserRuntime() error = %v", err)
+	}
+	if services.Browser != nil {
+		t.Fatal("closeBrowserRuntime() retained closed runtime")
 	}
 	if err = runtime.Close(context.Background()); err != nil {
 		t.Fatalf("second Close() error = %v", err)
@@ -46,6 +50,71 @@ func TestBrowserRuntimeOwnsAndReleasesDurableStore(t *testing.T) {
 	reopened, err := newBrowserRuntime(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("newBrowserRuntime() after Close error = %v", err)
+	}
+	if err = reopened.Close(context.Background()); err != nil {
+		t.Fatalf("reopened Close() error = %v", err)
+	}
+}
+
+func TestBrowserRuntimeRetainsOwnershipUntilWorkerShutdownSucceeds(t *testing.T) {
+	root := t.TempDir()
+	cfg := gatewayBrowserConfig(root)
+	storePath := filepath.Join(root, "state", "browser", browserStateFile)
+	store, err := browser.NewFileStore(storePath, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &gatewayTestBrowserWorker{closeErr: errors.New("still running")}
+	broker, err := browser.NewBroker(cfg, store, &gatewayTestBrowserFactory{worker: worker})
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	owner := browser.Owner{
+		ActorID: "actor_1", AgentID: "browser", SessionKey: "session_1", ExecutionID: "execution_1",
+	}
+	if _, err = broker.Open(context.Background(), browser.OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	}); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	runtime := &browserRuntime{broker: broker, store: store}
+	services := &services{Browser: runtime}
+	if err = closeBrowserRuntime(context.Background(), services); err == nil || services.Browser != runtime {
+		t.Fatalf("first closeBrowserRuntime() error = %v, runtime = %+v", err, services.Browser)
+	}
+	if _, openErr := browser.NewFileStore(storePath, 0, 0); !errors.Is(openErr, browser.ErrStoreOwned) {
+		t.Fatalf("store after failed shutdown error = %v, want ErrStoreOwned", openErr)
+	}
+	worker.closeErr = nil
+	if err = closeBrowserRuntime(context.Background(), services); err != nil || services.Browser != nil {
+		t.Fatalf("retry closeBrowserRuntime() error = %v, runtime = %+v", err, services.Browser)
+	}
+	if worker.closeCalls != 2 {
+		t.Fatalf("worker close calls = %d, want 2", worker.closeCalls)
+	}
+	reopened, err := browser.NewFileStore(storePath, 0, 0)
+	if err != nil {
+		t.Fatalf("reopen store after successful retry error = %v", err)
+	}
+	reopened.Close()
+}
+
+func TestChannelStartupRollbackReleasesBrowserStore(t *testing.T) {
+	root := t.TempDir()
+	cfg := gatewayBrowserConfig(root)
+	runtime, err := newBrowserRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := &services{Browser: runtime}
+	if err = rollbackBrowserRuntime(services); err != nil || services.Browser != nil {
+		t.Fatalf("rollbackBrowserRuntime() error = %v, runtime = %+v", err, services.Browser)
+	}
+	reopened, err := newBrowserRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newBrowserRuntime() after startup rollback error = %v", err)
 	}
 	if err = reopened.Close(context.Background()); err != nil {
 		t.Fatalf("reopened Close() error = %v", err)
@@ -95,4 +164,29 @@ func gatewayBrowserConfig(workspace string) *config.Config {
 		},
 	}
 	return cfg
+}
+
+type gatewayTestBrowserWorker struct {
+	closeErr   error
+	closeCalls int
+}
+
+func (*gatewayTestBrowserWorker) Status(context.Context) (browser.WorkerStatus, error) {
+	return browser.WorkerReady, nil
+}
+
+func (worker *gatewayTestBrowserWorker) Close(context.Context) error {
+	worker.closeCalls++
+	return worker.closeErr
+}
+
+type gatewayTestBrowserFactory struct {
+	worker browser.Worker
+}
+
+func (factory *gatewayTestBrowserFactory) Open(
+	context.Context,
+	browser.WorkerOpenRequest,
+) (browser.WorkerOpenResult, error) {
+	return browser.WorkerOpenResult{Owner: factory.worker}, nil
 }

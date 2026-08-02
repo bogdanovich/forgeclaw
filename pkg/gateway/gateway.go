@@ -883,6 +883,12 @@ func setupAndStartServices(
 	inboundReplaySnapshot := snapshotGatewayInboundSpool(ctx, msgBus)
 
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
+		if rollbackBrowserRuntime(runningServices) != nil {
+			return nil, errors.Join(
+				fmt.Errorf("error starting channels: %w", err),
+				errors.New("browser runtime rollback failed"),
+			)
+		}
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
 	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
@@ -921,13 +927,10 @@ func setupAndStartServices(
 func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Duration, isReload bool) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
-	if runningServices.Browser != nil {
-		if err := runningServices.Browser.Close(shutdownCtx); err != nil {
-			logger.WarnCF("browser", "Browser sessions did not close cleanly", map[string]any{
-				"reason": "worker_unavailable",
-			})
-		}
-		runningServices.Browser = nil
+	if err := closeBrowserRuntime(shutdownCtx, runningServices); err != nil {
+		logger.WarnCF("browser", "Browser sessions did not close cleanly", map[string]any{
+			"reason": "worker_unavailable",
+		})
 	}
 
 	// Reload should not stop channels or node admission. Full shutdown drains
@@ -971,6 +974,23 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 			fms.Stop()
 		}
 	}
+}
+
+func closeBrowserRuntime(ctx context.Context, runningServices *services) error {
+	if runningServices == nil || runningServices.Browser == nil {
+		return nil
+	}
+	if err := runningServices.Browser.Close(ctx); err != nil {
+		return err
+	}
+	runningServices.Browser = nil
+	return nil
+}
+
+func rollbackBrowserRuntime(runningServices *services) error {
+	ctx, cancel := context.WithTimeout(context.Background(), serviceShutdownTimeout)
+	defer cancel()
+	return closeBrowserRuntime(ctx, runningServices)
 }
 
 func shutdownGateway(

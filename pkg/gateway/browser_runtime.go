@@ -24,8 +24,9 @@ type browserRuntime struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	closeOnce sync.Once
-	closeErr  error
+	stopOnce sync.Once
+	closeMu  sync.Mutex
+	closed   bool
 }
 
 func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime, error) {
@@ -109,21 +110,29 @@ func (runtime *browserRuntime) Close(ctx context.Context) error {
 	if runtime == nil {
 		return nil
 	}
-	runtime.closeOnce.Do(func() {
+	runtime.closeMu.Lock()
+	defer runtime.closeMu.Unlock()
+	if runtime.closed {
+		return nil
+	}
+	runtime.stopOnce.Do(func() {
 		if runtime.cancel != nil {
 			runtime.cancel()
 		}
 		if runtime.done != nil {
 			<-runtime.done
 		}
-		if runtime.broker != nil {
-			runtime.closeErr = runtime.broker.Shutdown(ctx)
-		}
-		if runtime.store != nil {
-			runtime.store.Close()
-		}
 	})
-	return runtime.closeErr
+	if runtime.broker != nil {
+		if err := runtime.broker.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	if runtime.store != nil {
+		runtime.store.Close()
+	}
+	runtime.closed = true
+	return nil
 }
 
 func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningServices *services) error {
