@@ -3050,6 +3050,60 @@ func TestHandleMessage_ApprovalButtonReplyPreservesQuoteAndProjectsChoice(t *tes
 		inbound.Context.Raw[bus.InboundMetadataKeyInteractionChoice])
 }
 
+func TestHandleMessage_ApprovalButtonReplyPassesGroupAndTopicMentionOnly(t *testing.T) {
+	tests := []struct {
+		name     string
+		isForum  bool
+		topicID  int
+		wantChat string
+	}{
+		{name: "group", wantChat: "-100123"},
+		{name: "forum topic", isForum: true, topicID: 1771, wantChat: "-100123/1771"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messageBus := bus.NewMessageBus()
+			ch := &TelegramChannel{
+				BaseChannel: channels.NewBaseChannel(
+					"telegram",
+					nil,
+					messageBus,
+					nil,
+					channels.WithGroupTrigger(config.GroupTriggerConfig{
+						MentionOnly: true,
+						Topics: map[string]config.GroupTriggerConfig{
+							"1771": {MentionOnly: true},
+						},
+					}),
+				),
+				bot: newTestTelegramBot(t, "mintclaw_bot"), ctx: context.Background(),
+				chatIDs: make(map[string]int64),
+			}
+			msg := &telego.Message{
+				Text: "Allow once", MessageID: 23, MessageThreadID: test.topicID,
+				Chat: telego.Chat{ID: -100123, Type: "supergroup", IsForum: test.isForum},
+				From: &telego.User{ID: 15, FirstName: "Eve"},
+				ReplyToMessage: &telego.Message{
+					MessageID: 101, Text: "Approve this operation?",
+					From: &telego.User{ID: 1, IsBot: true, Username: "mintclaw_bot"},
+				},
+			}
+
+			require.NoError(t, ch.handleMessage(context.Background(), msg))
+			var inbound bus.InboundMessage
+			select {
+			case inbound = <-messageBus.InboundChan():
+			case <-time.After(time.Second):
+				t.Fatal("approval button reply was filtered")
+			}
+			assert.Equal(t, test.wantChat, inbound.ChatID)
+			assert.False(t, inbound.Context.Mentioned)
+			assert.Equal(t, bus.InboundInteractionChoiceAllowOnce,
+				inbound.Context.Raw[bus.InboundMetadataKeyInteractionChoice])
+		})
+	}
+}
+
 func TestTelegramInteractionChoiceRejectsUntrustedOrArbitraryReplies(t *testing.T) {
 	ch := &TelegramChannel{selfID: 42, selfName: "mintclaw_bot"}
 	assert.Equal(t, bus.InboundInteractionChoiceDeny, ch.telegramInteractionChoice(&telego.Message{
@@ -3070,6 +3124,18 @@ func TestTelegramInteractionChoiceRejectsUntrustedOrArbitraryReplies(t *testing.
 		{
 			name: "arbitrary reply to bot",
 			message: &telego.Message{Text: "Always", ReplyToMessage: &telego.Message{
+				From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
+			}},
+		},
+		{
+			name: "leading whitespace",
+			message: &telego.Message{Text: " Allow once", ReplyToMessage: &telego.Message{
+				From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
+			}},
+		},
+		{
+			name: "trailing whitespace",
+			message: &telego.Message{Text: "Deny\n", ReplyToMessage: &telego.Message{
 				From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
 			}},
 		},

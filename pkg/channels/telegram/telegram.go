@@ -1505,6 +1505,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		content = "[media only]"
 	}
 	mediaGroupMetadata := telegramMediaGroupMetadata(messages)
+	interactionChoice := c.telegramInteractionChoice(message)
 
 	// In group chats, apply unified group trigger filtering
 	isMentioned := false
@@ -1570,7 +1571,8 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		if isMentioned {
 			content = c.stripBotMention(message, content)
 		}
-		respond, cleaned := c.ShouldRespondInGroupForTopic(isMentioned, content, topicID)
+		directedToBot := isMentioned || interactionChoice != ""
+		respond, cleaned := c.ShouldRespondInGroupForTopic(directedToBot, content, topicID)
 		if !respond {
 			return nil
 		}
@@ -1622,8 +1624,8 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		"first_name": user.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
-	if choice := c.telegramInteractionChoice(message); choice != "" {
-		metadata[bus.InboundMetadataKeyInteractionChoice] = choice
+	if interactionChoice != "" {
+		metadata[bus.InboundMetadataKeyInteractionChoice] = interactionChoice
 	}
 	mergeTelegramRawMetadata(metadata, mediaGroupMetadata)
 
@@ -1876,7 +1878,7 @@ func (c *TelegramChannel) telegramInteractionChoice(message *telego.Message) str
 		return ""
 	}
 
-	switch strings.TrimSpace(message.Text) {
+	switch message.Text {
 	case "Allow once":
 		return bus.InboundInteractionChoiceAllowOnce
 	case "Deny":
