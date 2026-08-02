@@ -3,6 +3,7 @@ package browser
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -205,6 +206,117 @@ func TestBrokerPreparesRuntimeEffectAndExecutesLocalEditOnce(t *testing.T) {
 	storedSession, err := store.GetSession(context.Background(), session.ID)
 	if err != nil || storedSession.SnapshotID != "" || storedSession.SnapshotGeneration == 0 {
 		t.Fatalf("session after action = %+v, %v", storedSession, err)
+	}
+}
+
+func TestBrokerQuarantinesSessionWhenPostActionSnapshotInvalidationFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore()}
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := onlyVisibleRef(t, observation.Snapshot)
+	worker.resolveElement = DriverElement{Target: "e1", Role: "textbox", Name: "Name"}
+	worker.resolveOrigin = "https://example.com"
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_invalidation_failure", SessionID: session.ID,
+		TabID: session.TabID, SnapshotID: observation.SnapshotID,
+		SnapshotGeneration: observation.SnapshotGeneration,
+		Action:             Action{Kind: ActionFill, Ref: ref, Value: "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first update records action activity; fail the following snapshot
+	// invalidation write.
+	store.failAfter = 2
+	invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+	if !errors.Is(err, ErrSnapshotInvalidation) || invocation.State != InvocationSucceeded ||
+		len(worker.actions) != 1 || worker.closed != 1 {
+		stored, storedErr := store.GetSession(context.Background(), session.ID)
+		t.Fatalf(
+			"ExecuteAction() = %+v, %v (snapshot failure = %t); actions = %+v; closes = %d; session = %+v, %v",
+			invocation,
+			err,
+			errors.Is(err, ErrSnapshotInvalidation),
+			worker.actions,
+			worker.closed,
+			stored,
+			storedErr,
+		)
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored.State != SessionLost || stored.SnapshotID != "" ||
+		stored.SafeFailure != "snapshot_invalidation_failed" {
+		t.Fatalf("quarantined session = %+v, %v", stored, getErr)
+	}
+	_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_reuse_old_snapshot", SessionID: session.ID,
+		TabID: session.TabID, SnapshotID: observation.SnapshotID,
+		SnapshotGeneration: observation.SnapshotGeneration,
+		Action:             Action{Kind: ActionFill, Ref: ref, Value: "Grace"},
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || len(worker.actions) != 1 {
+		t.Fatalf("old snapshot reuse error = %v; actions = %+v", err, worker.actions)
+	}
+}
+
+func TestFileStoreQuarantinesCommittedSnapshotInvalidationWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "browser.json")
+	store, err := NewFileStore(path, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := onlyVisibleRef(t, observation.Snapshot)
+	worker.resolveElement = DriverElement{Target: "e1", Role: "textbox", Name: "Name"}
+	worker.resolveOrigin = "https://example.com"
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_committed_invalidation", SessionID: session.ID,
+		TabID: session.TabID, SnapshotID: observation.SnapshotID,
+		SnapshotGeneration: observation.SnapshotGeneration,
+		Action:             Action{Kind: ActionFill, Ref: ref, Value: "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalWrite := store.writeFile
+	committedWarning := false
+	store.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if writeErr := originalWrite(path, data, mode); writeErr != nil {
+			return writeErr
+		}
+		var document fileStoreDocument
+		if jsonErr := json.Unmarshal(data, &document); jsonErr != nil {
+			return jsonErr
+		}
+		persisted := document.Sessions[session.ID]
+		if !committedWarning && persisted.State == SessionReady && persisted.SnapshotID == "" {
+			committedWarning = true
+			return &fileutil.CommittedWriteError{Err: errors.New("directory sync warning")}
+		}
+		return nil
+	}
+	invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+	if !committedWarning || !errors.Is(err, ErrSnapshotInvalidation) ||
+		invocation.State != InvocationSucceeded || len(worker.actions) != 1 || worker.closed != 1 {
+		t.Fatalf(
+			"ExecuteAction() = %+v, %v; warning = %t; actions = %+v; closes = %d",
+			invocation, err, committedWarning, worker.actions, worker.closed,
+		)
+	}
+	persisted, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || persisted.State != SessionLost ||
+		persisted.SafeFailure != "snapshot_invalidation_failed" || persisted.SnapshotID != "" {
+		t.Fatalf("quarantined session = %+v, %v", persisted, getErr)
 	}
 }
 

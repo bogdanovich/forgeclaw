@@ -72,7 +72,8 @@ func TestBrowserRuntimeRetainsOwnershipUntilWorkerShutdownSucceeds(t *testing.T)
 		t.Fatal(err)
 	}
 	owner := browser.Owner{
-		ActorID: "actor_1", AgentID: "browser", SessionKey: "session_1", ExecutionID: "execution_1",
+		ActorID: "actor_1", AgentID: browser.OpaqueAgentID("browser"),
+		SessionKey: "session_1", ExecutionID: "execution_1",
 	}
 	if _, err = broker.Open(context.Background(), browser.OpenRequest{
 		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
@@ -128,7 +129,8 @@ func TestBrowserRuntimeCloseHonorsCallerDeadlineAndRetainsOwnership(t *testing.T
 		t.Fatal(err)
 	}
 	owner := browser.Owner{
-		ActorID: "actor_1", AgentID: "browser", SessionKey: "session_1", ExecutionID: "execution_1",
+		ActorID: "actor_1", AgentID: browser.OpaqueAgentID("browser"),
+		SessionKey: "session_1", ExecutionID: "execution_1",
 	}
 	if _, err = broker.Open(context.Background(), browser.OpenRequest{
 		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
@@ -155,6 +157,22 @@ func TestBrowserRuntimeCloseHonorsCallerDeadlineAndRetainsOwnership(t *testing.T
 		t.Fatalf("reopen store after retry error = %v", err)
 	}
 	reopened.Close()
+}
+
+func TestBrowserRuntimeCloseDeadlineBoundsActiveToolLeaseWait(t *testing.T) {
+	services := &services{Browser: &browserRuntime{}}
+	services.browserMu.RLock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	started := time.Now()
+	err := closeBrowserRuntime(ctx, services)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("close while tool is active error = %v, elapsed = %v", err, time.Since(started))
+	}
+	if services.Browser == nil {
+		t.Fatal("close while tool is active discarded runtime ownership")
+	}
+	services.browserMu.RUnlock()
 }
 
 func TestBrowserRuntimeCloseDeadlineBoundsSweepWait(t *testing.T) {

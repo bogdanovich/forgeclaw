@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,13 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 )
+
+// OpaqueAgentID maps a validated configuration alias onto the non-reversible
+// identity used in broker ownership records and authorization checks.
+func OpaqueAgentID(agentID string) string {
+	digest := sha256.Sum256([]byte("agent\x00" + strings.TrimSpace(agentID)))
+	return "agent_" + hex.EncodeToString(digest[:16])
+}
 
 const (
 	MaxIdentifierBytes    = 128
@@ -21,19 +30,20 @@ const (
 )
 
 var (
-	ErrBusy               = errors.New("browser profile is busy")
-	ErrConflict           = errors.New("browser state conflicts with durable state")
-	ErrDenied             = errors.New("browser authority denied")
-	ErrDriverIncompatible = errors.New("browser driver is incompatible")
-	ErrDriverRejected     = errors.New("browser driver rejected the operation")
-	ErrInvalid            = errors.New("invalid browser state")
-	ErrNotFound           = errors.New("browser state not found")
-	ErrApprovalRequired   = errors.New("browser action requires approval")
-	ErrStale              = errors.New("browser state revision is stale")
-	ErrWorkerUnavailable  = errors.New("browser worker is unavailable")
-	identifierRegexp      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
-	safeFailureRegexp     = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-	elementRoleRegexp     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	ErrBusy                 = errors.New("browser profile is busy")
+	ErrConflict             = errors.New("browser state conflicts with durable state")
+	ErrDenied               = errors.New("browser authority denied")
+	ErrDriverIncompatible   = errors.New("browser driver is incompatible")
+	ErrDriverRejected       = errors.New("browser driver rejected the operation")
+	ErrInvalid              = errors.New("invalid browser state")
+	ErrNotFound             = errors.New("browser state not found")
+	ErrApprovalRequired     = errors.New("browser action requires approval")
+	ErrSnapshotInvalidation = errors.New("browser snapshot invalidation failed")
+	ErrStale                = errors.New("browser state revision is stale")
+	ErrWorkerUnavailable    = errors.New("browser worker is unavailable")
+	identifierRegexp        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	safeFailureRegexp       = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	elementRoleRegexp       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 )
 
 type SessionState string

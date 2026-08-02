@@ -60,6 +60,11 @@ type OpenRequest struct {
 	Profile string
 }
 
+type ProfileAvailability struct {
+	Status string
+	Reason string
+}
+
 // InvocationExecutor crosses the driver acceptance boundary exactly once. It
 // must stop driver work and return when its context is done; a caller must not
 // add retries below this callback.
@@ -107,6 +112,9 @@ func NewBroker(rootConfig *config.Config, store Store, factory WorkerFactory) (*
 	policyRevision, err := browserConfig.PolicyRevision()
 	if err != nil {
 		return nil, err
+	}
+	for index, agentID := range browserConfig.Agents {
+		browserConfig.Agents[index] = OpaqueAgentID(agentID)
 	}
 	bindingKey := make([]byte, 32)
 	if _, err = rand.Read(bindingKey); err != nil {
@@ -206,6 +214,40 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 		return session, errors.Join(persistReadyErr, ErrWorkerUnavailable)
 	}
 	return ready, nil
+}
+
+// ProfileAvailability reports whether a configured profile can accept a new
+// session without starting a worker, reconciling state, or renewing activity.
+func (broker *Broker) ProfileAvailability(
+	ctx context.Context,
+	targetName string,
+	profileName string,
+) (ProfileAvailability, error) {
+	target, ok := broker.config.Targets[targetName]
+	if !ok || !target.Enabled {
+		return ProfileAvailability{}, ErrDenied
+	}
+	profile, ok := target.Profiles[profileName]
+	if !ok || !profile.Enabled {
+		return ProfileAvailability{}, ErrDenied
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	sessions, err := broker.store.ListSessions(ctx)
+	if err != nil {
+		return ProfileAvailability{}, err
+	}
+	for _, session := range sessions {
+		if session.Target != targetName || session.Profile != profileName || session.State.Terminal() {
+			continue
+		}
+		slot := broker.slots[session.ID]
+		if session.State == SessionReady && slot != nil && slot.safeFailure == "" {
+			return ProfileAvailability{Status: "busy", Reason: "profile_busy"}, nil
+		}
+		return ProfileAvailability{Status: "degraded", Reason: "recovery_required"}, nil
+	}
+	return ProfileAvailability{Status: "ready"}, nil
 }
 
 func (broker *Broker) finishFailedOpen(
