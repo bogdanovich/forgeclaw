@@ -199,6 +199,21 @@ type errorProvider struct {
 	mu        sync.Mutex
 }
 
+type recordingRetrySleeper struct {
+	delays []time.Duration
+}
+
+func (s *recordingRetrySleeper) Sleep(ctx context.Context, delay time.Duration) error {
+	s.delays = append(s.delays, delay)
+	return ctx.Err()
+}
+
+func useRecordingRetrySleeper(pipeline *Pipeline) *recordingRetrySleeper {
+	sleeper := &recordingRetrySleeper{}
+	pipeline.Config.RetrySleeper = sleeper
+	return sleeper
+}
+
 func (p *errorProvider) Chat(
 	ctx context.Context,
 	messages []providers.Message,
@@ -1121,6 +1136,14 @@ func TestPipeline_CallLLM_TimeoutRetry(t *testing.T) {
 	defer cleanup()
 
 	pipeline := NewPipeline(al)
+	sleeper := useRecordingRetrySleeper(pipeline)
+	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
+		t,
+		al,
+		4,
+		runtimeevents.KindAgentLLMRetry,
+	)
+	defer closeRuntimeEvents()
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
@@ -1135,6 +1158,31 @@ func TestPipeline_CallLLM_TimeoutRetry(t *testing.T) {
 	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
 	if err == nil {
 		t.Error("expected error after retries")
+	}
+	if errorPrv.callCount != 3 {
+		t.Fatalf("provider calls = %d, want 3", errorPrv.callCount)
+	}
+	if !reflect.DeepEqual(sleeper.delays, []time.Duration{2 * time.Second, 4 * time.Second}) {
+		t.Fatalf("retry delays = %v, want [2s 4s]", sleeper.delays)
+	}
+	events := filterRuntimeEvents(collectRuntimeEventStream(runtimeCh), runtimeevents.KindAgentLLMRetry)
+	if len(events) != 2 {
+		t.Fatalf("retry events = %d, want 2", len(events))
+	}
+	for i, event := range events {
+		payload, ok := event.Payload.(LLMRetryPayload)
+		if !ok {
+			t.Fatalf("retry event %d payload = %T, want LLMRetryPayload", i, event.Payload)
+		}
+		if payload.Reason != "timeout" || payload.Backoff != sleeper.delays[i] {
+			t.Fatalf(
+				"retry event %d = reason %q backoff %s, want timeout %s",
+				i,
+				payload.Reason,
+				payload.Backoff,
+				sleeper.delays[i],
+			)
+		}
 	}
 }
 
@@ -1166,6 +1214,7 @@ func TestPipeline_CallLLM_HTTP5xxRetry(t *testing.T) {
 	}
 
 	pipeline := NewPipeline(al)
+	sleeper := useRecordingRetrySleeper(pipeline)
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
@@ -1189,14 +1238,18 @@ func TestPipeline_CallLLM_HTTP5xxRetry(t *testing.T) {
 	if provider.callCount != 2 {
 		t.Fatalf("callCount = %d, want 2", provider.callCount)
 	}
+	if !reflect.DeepEqual(sleeper.delays, []time.Duration{time.Second}) {
+		t.Fatalf("retry delays = %v, want [1s]", sleeper.delays)
+	}
 }
 
-func TestPipeline_CallLLM_ContextLengthError(t *testing.T) {
-	errorPrv := &errorProvider{errType: "context_length"}
+func TestPipeline_CallLLM_NetworkErrorRetry(t *testing.T) {
+	errorPrv := &errorProvider{errType: "connection_reset"}
 	al, agent, cleanup := newTurnCoordTestLoop(t, errorPrv)
 	defer cleanup()
 
 	pipeline := NewPipeline(al)
+	sleeper := useRecordingRetrySleeper(pipeline)
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
@@ -1207,44 +1260,35 @@ func TestPipeline_CallLLM_ContextLengthError(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	// Should trigger context compression and retry
 	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
-	// May succeed after compression or fail - either is acceptable
-	t.Logf("CallLLM result after context error: err=%v", err)
+	if err == nil {
+		t.Fatal("expected error after network error retries")
+	}
+	if errorPrv.callCount != 3 {
+		t.Fatalf("provider calls = %d, want 3", errorPrv.callCount)
+	}
+	if !reflect.DeepEqual(sleeper.delays, []time.Duration{2 * time.Second, 4 * time.Second}) {
+		t.Fatalf("retry delays = %v, want [2s 4s]", sleeper.delays)
+	}
 }
 
-func TestPipeline_CallLLM_NetworkErrorRetry(t *testing.T) {
-	testCases := []struct {
-		name    string
-		errType string
-	}{
-		{"connection_reset", "connection_reset"},
-		{"broken_pipe", "broken_pipe"},
-		{"read_tcp", "read_tcp"},
-		{"eof", "eof"},
-		{"connection_refused", "connection_refused"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			errorPrv := &errorProvider{errType: tc.errType}
-			al, agent, cleanup := newTurnCoordTestLoop(t, errorPrv)
-			defer cleanup()
-
-			pipeline := NewPipeline(al)
-			ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
-				turnID:  "turn-1",
-				context: newTurnContext(nil, nil, nil),
-			})
-
-			exec, err := pipeline.SetupTurn(context.Background(), ts)
-			if err != nil {
-				t.Fatalf("SetupTurn failed: %v", err)
-			}
-
-			_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
-			if err == nil {
-				t.Error("expected error after network error retries")
+func TestTransientLLMRetryReason_NetworkErrors(t *testing.T) {
+	for _, message := range []string{
+		"connection reset by peer",
+		"broken pipe",
+		"read tcp 127.0.0.1:8080: connection reset",
+		"EOF",
+		"connection refused",
+	} {
+		t.Run(message, func(t *testing.T) {
+			reason, retry := transientLLMRetryReason(errors.New(message))
+			if !retry || reason != "network" {
+				t.Fatalf(
+					"transientLLMRetryReason(%q) = (%q, %t), want (network, true)",
+					message,
+					reason,
+					retry,
+				)
 			}
 		})
 	}
@@ -1276,6 +1320,7 @@ func TestPipeline_CallLLM_RetryConfigRespected(t *testing.T) {
 	}
 
 	pipeline := NewPipeline(al)
+	sleeper := useRecordingRetrySleeper(pipeline)
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
@@ -1286,17 +1331,50 @@ func TestPipeline_CallLLM_RetryConfigRespected(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	start := time.Now()
 	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Error("expected error after retries")
 	}
 
-	expectedMinTime := 3 * time.Second
-	if elapsed < expectedMinTime {
-		t.Errorf("expected at least %v of backoff, got %v", expectedMinTime, elapsed)
+	if provider.callCount != 4 {
+		t.Fatalf("provider calls = %d, want 4", provider.callCount)
+	}
+	if !reflect.DeepEqual(sleeper.delays, []time.Duration{time.Second, 2 * time.Second, 3 * time.Second}) {
+		t.Fatalf("retry delays = %v, want [1s 2s 3s]", sleeper.delays)
+	}
+}
+
+func TestPipeline_CallLLM_RetrySleepCancellation(t *testing.T) {
+	errorPrv := &errorProvider{errType: "connection_reset"}
+	al, agent, cleanup := newTurnCoordTestLoop(t, errorPrv)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	sleeper := &recordingRetrySleeper{}
+	pipeline.Config.RetrySleeper = sleeper
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	turnCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = pipeline.CallLLM(context.Background(), turnCtx, ts, exec, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallLLM error = %v, want context canceled", err)
+	}
+	if errorPrv.callCount != 1 {
+		t.Fatalf("provider calls = %d, want 1", errorPrv.callCount)
+	}
+	if !reflect.DeepEqual(sleeper.delays, []time.Duration{2 * time.Second}) {
+		t.Fatalf("retry delays = %v, want [2s]", sleeper.delays)
 	}
 }
 
@@ -1526,6 +1604,7 @@ func TestPipeline_CallLLM_RetryCountLimit(t *testing.T) {
 	}
 
 	pipeline := NewPipeline(al)
+	sleeper := useRecordingRetrySleeper(pipeline)
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
@@ -1543,6 +1622,9 @@ func TestPipeline_CallLLM_RetryCountLimit(t *testing.T) {
 
 	if counterPrv.callCount != 3 {
 		t.Errorf("expected exactly 3 calls (1 initial + 2 retries), got %d", counterPrv.callCount)
+	}
+	if !reflect.DeepEqual(sleeper.delays, []time.Duration{2 * time.Second, 4 * time.Second}) {
+		t.Fatalf("retry delays = %v, want [2s 4s]", sleeper.delays)
 	}
 }
 

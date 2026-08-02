@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
@@ -1265,7 +1266,7 @@ func TestAgentLoop_HookRespond_MediaError(t *testing.T) {
 
 	al.channelManager = newStartedTestChannelManager(t,
 		al.bus.(*bus.MessageBus), al.mediaStore, "discord", &errorMediaChannel{
-			sendErr: errors.New("channel unavailable"),
+			sendErr: errors.Join(errors.New("channel unavailable"), channels.ErrSendFailed),
 		})
 
 	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(

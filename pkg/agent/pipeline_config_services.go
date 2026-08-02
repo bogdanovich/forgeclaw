@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
@@ -77,6 +79,12 @@ type configLLMRetryPolicy struct {
 	cfg *config.Config
 }
 
+type contextRetrySleeper struct{}
+
+func (contextRetrySleeper) Sleep(ctx context.Context, delay time.Duration) error {
+	return sleepWithContext(ctx, delay)
+}
+
 func newConfigLLMRetryPolicy(cfg *config.Config) llmRetryPolicy {
 	return configLLMRetryPolicy{cfg: cfg}
 }
@@ -103,6 +111,13 @@ func (p *Pipeline) llmRetrySettings() (int, int) {
 		return newConfigLLMRetryPolicy(p.Cfg).llmRetrySettings()
 	}
 	return p.Config.LLMRetry.llmRetrySettings()
+}
+
+func (p *Pipeline) sleepBeforeLLMRetry(ctx context.Context, delay time.Duration) error {
+	if p == nil || p.Config.RetrySleeper == nil {
+		return sleepWithContext(ctx, delay)
+	}
+	return p.Config.RetrySleeper.Sleep(ctx, delay)
 }
 
 type configMediaLimitsProvider struct {
