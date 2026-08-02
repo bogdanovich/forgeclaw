@@ -116,6 +116,23 @@ func TestBrokerOpenAndCloseSession(t *testing.T) {
 	}
 }
 
+func TestRandomIDAlwaysUsesValidUniqueSessionIdentifiers(t *testing.T) {
+	seen := make(map[string]struct{}, 10_000)
+	for range 10_000 {
+		id, err := randomID()
+		if err != nil {
+			t.Fatalf("randomID() error = %v", err)
+		}
+		if !strings.HasPrefix(id, "session_") || !validIdentifier(id) {
+			t.Fatalf("randomID() = %q, want a valid session identifier", id)
+		}
+		if _, exists := seen[id]; exists {
+			t.Fatalf("randomID() produced duplicate %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+}
+
 func TestBrokerCloseRetainsWorkerAndLeaseUntilCleanupSucceeds(t *testing.T) {
 	store := NewMemoryStore()
 	factory := &fakeWorkerFactory{}
