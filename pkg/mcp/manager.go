@@ -746,11 +746,10 @@ func (m *Manager) reconnectServer(
 
 // Close closes all server connections
 func (m *Manager) Close() error {
-	// Use Swap to atomically set closed=true and get the previous value
-	// This prevents TOCTOU race with CallTool's closed check
-	if m.closed.Swap(true) {
-		return nil // already closed
-	}
+	// Closing prevents new calls immediately, but failed server cleanup remains
+	// retryable and retains its exclusive lease. A second Close is therefore a
+	// real cleanup retry rather than an unconditional no-op.
+	m.closed.Store(true)
 
 	// Wait for all in-flight CallTool calls to finish before closing sessions
 	// After closed=true is set, no new CallTool can start (they check closed first)
@@ -765,6 +764,7 @@ func (m *Manager) Close() error {
 		})
 
 	var errs []error
+	remaining := make(map[string]*ServerConnection)
 	for name, conn := range m.servers {
 		if err := conn.Session.Close(); err != nil {
 			logger.ErrorCF("mcp", "Failed to close server connection",
@@ -773,11 +773,13 @@ func (m *Manager) Close() error {
 					"error":  err.Error(),
 				})
 			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
+			remaining[name] = conn
+			continue
 		}
 		conn.releaseExclusiveLease()
 	}
 
-	m.servers = make(map[string]*ServerConnection)
+	m.servers = remaining
 
 	if len(errs) > 0 {
 		return fmt.Errorf("failed to close %d server(s): %w", len(errs), errors.Join(errs...))

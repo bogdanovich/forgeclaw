@@ -973,6 +973,39 @@ func TestClose_IdempotentOnEmptyManager(t *testing.T) {
 	}
 }
 
+func TestCloseRetainsExclusiveLeaseWhenSessionCleanupFails(t *testing.T) {
+	connection, transport, err := newScriptedServerConnection("", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection() error = %v", err)
+	}
+	transport.closeErr = errors.New("process tree still alive")
+	lockPath := filepath.Join(t.TempDir(), "playwright.lock")
+	lease, err := acquireExclusiveServerLease("playwright", lockPath)
+	if err != nil {
+		t.Fatalf("acquireExclusiveServerLease() error = %v", err)
+	}
+	connection.exclusiveLease = lease
+	t.Cleanup(connection.releaseExclusiveLease)
+	mgr := NewManager()
+	mgr.servers["playwright"] = connection
+
+	if err = mgr.Close(); err == nil {
+		t.Fatal("Close() cleanup error = nil")
+	}
+	if _, ok := mgr.GetServer("playwright"); !ok {
+		t.Fatal("Close() discarded server with unconfirmed cleanup")
+	}
+	contender, contenderErr := acquireExclusiveServerLease("contender", lockPath)
+	if contender != nil {
+		contender.release()
+		t.Fatal("exclusive lease was released after failed cleanup")
+	}
+	var busyErr *ExclusiveLeaseBusyError
+	if !errors.As(contenderErr, &busyErr) {
+		t.Fatalf("lease contender error = %v, want busy", contenderErr)
+	}
+}
+
 func newScriptedServerConnection(
 	sessionID string,
 	toolCallResult *sdkmcp.CallToolResult,
@@ -1012,6 +1045,7 @@ type scriptedTransport struct {
 	sessionID      string
 	toolCallResult *sdkmcp.CallToolResult
 	toolCallErr    error
+	closeErr       error
 
 	mu            sync.Mutex
 	toolCallCalls int
@@ -1097,11 +1131,11 @@ func (t *scriptedTransport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return nil
+		return t.closeErr
 	}
 	t.closed = true
 	close(t.incoming)
-	return nil
+	return t.closeErr
 }
 
 func (t *scriptedTransport) SessionID() string {

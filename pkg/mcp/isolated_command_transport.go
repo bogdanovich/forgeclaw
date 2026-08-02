@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -43,6 +42,7 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if err != nil {
 		return nil, err
 	}
+	prepareIsolatedCommandProcessTree(t.Command)
 	if err := isolation.Start(t.Command); err != nil {
 		return nil, err
 	}
@@ -95,32 +95,22 @@ func (s *isolatedPipeRWC) Write(p []byte) (n int, err error) {
 }
 
 func (s *isolatedPipeRWC) Close() error {
-	if err := s.stdin.Close(); err != nil {
-		return fmt.Errorf("closing stdin: %w", err)
-	}
-	wait := func() (error, bool) {
-		select {
-		case err := <-s.waitCh:
-			return err, true
-		case <-time.After(s.terminateDuration):
-		}
-		return nil, false
-	}
-	if err, ok := wait(); ok {
+	// Closing stdin gives a cooperative MCP server its first opportunity to
+	// stop. Process-tree termination then proves that wrappers and browser
+	// descendants sharing the owned process group are gone before Close
+	// succeeds and an exclusive profile lease may be released.
+	_ = s.stdin.Close()
+	if err := stopIsolatedCommandProcessTree(s.cmd, s.terminateDuration); err != nil {
 		return err
 	}
-	if err := s.cmd.Process.Signal(syscall.SIGTERM); err == nil {
-		if err, ok := wait(); ok {
-			return err
-		}
+	timer := time.NewTimer(s.terminateDuration)
+	defer timer.Stop()
+	select {
+	case <-s.waitCh:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("browser driver process was not reaped after tree termination")
 	}
-	if err := s.cmd.Process.Kill(); err != nil {
-		return err
-	}
-	if err, ok := wait(); ok {
-		return err
-	}
-	return fmt.Errorf("unresponsive subprocess")
 }
 
 func logStdioProcessStderr(ctx context.Context, serverName, command string, stderr io.Reader) {
