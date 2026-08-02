@@ -255,7 +255,7 @@ func TestPlaywrightWorkerDoesNotReplayUncertainCallAndBecomesLost(t *testing.T) 
 	}
 }
 
-func TestPlaywrightWorkerCloseFailureRemainsFailClosed(t *testing.T) {
+func TestPlaywrightWorkerCloseFailureRetriesManagerCleanup(t *testing.T) {
 	client := &fakePlaywrightClient{closeErr: errors.New("secret process failure")}
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
 	worker := &playwrightWorker{
@@ -266,9 +266,15 @@ func TestPlaywrightWorkerCloseFailureRemainsFailClosed(t *testing.T) {
 		strings.Contains(err.Error(), "secret") {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if err := worker.Close(context.Background()); !errors.Is(err, ErrWorkerUnavailable) ||
-		client.closeCalls != 1 {
+	client.closeErr = nil
+	if err := worker.Close(context.Background()); err != nil || client.closeCalls != 2 {
 		t.Fatalf("second Close() error = %v, client closes = %d", err, client.closeCalls)
+	}
+	if err := worker.Close(context.Background()); err != nil || client.closeCalls != 2 {
+		t.Fatalf("third Close() error = %v, client closes = %d", err, client.closeCalls)
+	}
+	if len(client.calls) != 1 || client.calls[0].tool != "browser_close" {
+		t.Fatalf("browser close calls = %+v, want exactly one", client.calls)
 	}
 	select {
 	case <-lifetimeCtx.Done():

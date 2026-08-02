@@ -193,16 +193,16 @@ type playwrightWorker struct {
 	catalogRevision string
 	cancelLifetime  context.CancelFunc
 
-	mu          sync.Mutex
-	lost        bool
-	closed      bool
-	closeFailed bool
+	mu      sync.Mutex
+	lost    bool
+	closing bool
+	closed  bool
 }
 
 func (worker *playwrightWorker) Status(ctx context.Context) (WorkerStatus, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closed || worker.lost {
+	if worker.closing || worker.closed || worker.lost {
 		return WorkerLost, nil
 	}
 	if err := worker.client.Ping(ctx); err != nil {
@@ -218,7 +218,7 @@ func (worker *playwrightWorker) Status(ctx context.Context) (WorkerStatus, error
 func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closed || worker.lost {
+	if worker.closing || worker.closed || worker.lost {
 		return DriverObservation{}, ErrWorkerUnavailable
 	}
 	result, err := worker.call(ctx, "browser_snapshot", map[string]any{"boxes": false})
@@ -239,7 +239,7 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction) error {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closed || worker.lost {
+	if worker.closing || worker.closed || worker.lost {
 		return ErrWorkerUnavailable
 	}
 	tool, arguments, err := mapPlaywrightAction(action, worker.limits)
@@ -258,26 +258,23 @@ func (worker *playwrightWorker) Close(ctx context.Context) error {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
 	if worker.closed {
-		if worker.closeFailed {
-			return ErrWorkerUnavailable
-		}
 		return nil
 	}
-	// browser_close is best effort. Closing the private manager is the actual
-	// process and exclusive-lease boundary, and it must happen even if the page
-	// or MCP session has already disappeared.
-	if !worker.lost {
-		_, _ = worker.client.CallTool(ctx, "browser_close", map[string]any{})
+	if !worker.closing {
+		worker.closing = true
+		// browser_close is best effort and must not be replayed. Closing the
+		// private manager is the retryable process and exclusive-lease boundary.
+		if !worker.lost {
+			_, _ = worker.client.CallTool(ctx, "browser_close", map[string]any{})
+		}
+		if worker.cancelLifetime != nil {
+			worker.cancelLifetime()
+		}
 	}
-	err := worker.client.Close()
-	if worker.cancelLifetime != nil {
-		worker.cancelLifetime()
-	}
-	worker.closed = true
-	if err != nil {
-		worker.closeFailed = true
+	if err := worker.client.Close(); err != nil {
 		return ErrWorkerUnavailable
 	}
+	worker.closed = true
 	return nil
 }
 
