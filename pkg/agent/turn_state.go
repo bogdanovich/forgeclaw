@@ -328,6 +328,7 @@ type turnState struct {
 	gracefulInterruptHint string
 	gracefulTerminalUsed  bool
 	hardAbort             bool
+	toolExecutionStarted  atomic.Bool
 	providerCancel        context.CancelFunc
 	turnCancel            context.CancelFunc
 
@@ -625,6 +626,16 @@ func (ts *turnState) recordToolExecution(
 		ErrorSummary: strings.TrimSpace(errorSummary),
 		SkillNames:   append([]string(nil), skillNames...),
 	})
+}
+
+func (ts *turnState) markToolExecutionStarted() {
+	if ts != nil {
+		ts.toolExecutionStarted.Store(true)
+	}
+}
+
+func (ts *turnState) canRollbackCanonicalHistory() bool {
+	return ts == nil || !ts.toolExecutionStarted.Load()
 }
 
 func (ts *turnState) toolExecutionsSnapshot() []ToolExecutionRecord {

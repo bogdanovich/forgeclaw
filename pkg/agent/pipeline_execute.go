@@ -334,6 +334,7 @@ toolLoop:
 				}
 			case HookActionRespond:
 				if toolReq != nil && toolReq.HookResult != nil {
+					ts.markToolExecutionStarted()
 					hookResult := toolReq.HookResult
 					runner.recordCommittedHookResponseDecision(tc, toolName)
 
@@ -791,6 +792,7 @@ toolLoop:
 		}
 
 		toolStart := time.Now()
+		ts.markToolExecutionStarted()
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,

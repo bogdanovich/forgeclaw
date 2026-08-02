@@ -29,6 +29,40 @@ import (
 // simpleConvProvider returns a simple text response without tools
 type simpleConvProvider struct{}
 
+type afterToolHardAbortHook struct{}
+
+func (afterToolHardAbortHook) BeforeLLM(
+	_ context.Context,
+	req *LLMHookRequest,
+) (*LLMHookRequest, HookDecision) {
+	return req, HookDecision{Action: HookActionContinue}
+}
+
+func (afterToolHardAbortHook) AfterLLM(
+	_ context.Context,
+	resp *LLMHookResponse,
+) (*LLMHookResponse, HookDecision) {
+	return resp, HookDecision{Action: HookActionContinue}
+}
+
+func (afterToolHardAbortHook) BeforeTool(
+	_ context.Context,
+	req *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision) {
+	return req, HookDecision{Action: HookActionContinue}
+}
+
+func (afterToolHardAbortHook) AfterTool(
+	_ context.Context,
+	resp *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision) {
+	return resp, HookDecision{Action: HookActionHardAbort}
+}
+
+func (afterToolHardAbortHook) ApproveTool(context.Context, *ToolApprovalRequest) ApprovalDecision {
+	return ApprovalDecision{Approved: true}
+}
+
 func (p *simpleConvProvider) Chat(
 	ctx context.Context,
 	messages []providers.Message,
@@ -1553,6 +1587,34 @@ func TestRunTurn_SimpleConversation(t *testing.T) {
 	}
 	if result.finalContent == "" {
 		t.Error("expected non-empty finalContent")
+	}
+}
+
+func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
+	tool := &steeringSafetyTestTool{name: "side-effect", safety: tools.SteeringSafetyNonCancellable}
+	provider := &toolCallRespProvider{toolName: tool.Name(), response: "must not continue"}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	agent.Tools.Register(tool)
+	pipeline := NewPipeline(al)
+	pipeline.Interaction.Hooks = afterToolHardAbortHook{}
+	opts := makeTestProcessOpts("post-tool-hard-abort")
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-post-tool-hard-abort",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	result, err := al.runTurn(t.Context(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn() error = %v", err)
+	}
+	if result.status != TurnEndStatusAborted || tool.executions != 1 {
+		t.Fatalf("result = %#v, tool executions = %d", result, tool.executions)
+	}
+	history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey)
+	if len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" ||
+		len(history[1].ToolCalls) != 1 {
+		t.Fatalf("history = %+v, want root plus unresolved durable tool intent", history)
 	}
 }
 
