@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
@@ -111,6 +112,56 @@ func TestBrokerObservationDeniesPrivateDNSResolutionAndClosesSession(t *testing.
 	if err != nil || stored.State != SessionLost || stored.SafeFailure != "network_denied" || worker.closed != 1 {
 		t.Fatalf("session after private DNS = %+v, %v; worker = %+v", stored, err, worker)
 	}
+}
+
+func TestBrokerPreparationQuarantinesDeniedDNSResolution(t *testing.T) {
+	t.Run("current origin", func(t *testing.T) {
+		store := NewMemoryStore()
+		broker, worker, session := openActionTestBroker(t, store)
+		owner := testOwner()
+		observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		broker.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("100.64.0.1")}, nil
+		}
+		_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+			Owner: owner, RequestID: "request_prepare_rebind", SessionID: session.ID, TabID: session.TabID,
+			SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+			Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observation.Snapshot), Value: "Ada"},
+		})
+		assertNetworkQuarantine(t, store, worker, session, err)
+	})
+
+	t.Run("navigation destination", func(t *testing.T) {
+		root := admittedBrowserConfig()
+		target := root.Tools.Browser.Targets["gateway"]
+		profile := target.Profiles["managed"]
+		profile.AllowedOrigins = append(profile.AllowedOrigins, "https://private.example")
+		target.Profiles["managed"] = profile
+		root.Tools.Browser.Targets["gateway"] = target
+		store := NewMemoryStore()
+		broker, worker, session := openActionTestBrokerWithConfig(t, root, store)
+		broker.lookupIP = func(_ context.Context, _ string, host string) ([]net.IP, error) {
+			if host == "private.example" {
+				return []net.IP{net.ParseIP("198.18.0.1")}, nil
+			}
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		}
+		owner := testOwner()
+		observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+			Owner: owner, RequestID: "request_private_destination", SessionID: session.ID,
+			TabID: session.TabID, SnapshotID: observation.SnapshotID,
+			SnapshotGeneration: observation.SnapshotGeneration,
+			Action:             Action{Kind: ActionNavigate, URL: "https://private.example/listing"},
+		})
+		assertNetworkQuarantine(t, store, worker, session, err)
+	})
 }
 
 func TestBrokerPreparesRuntimeEffectAndExecutesLocalEditOnce(t *testing.T) {
@@ -409,12 +460,21 @@ func TestPreparedRetentionWaitsForInvocationRetention(t *testing.T) {
 
 func openActionTestBroker(t *testing.T, store Store) (*Broker, *actionTestWorker, Session) {
 	t.Helper()
+	return openActionTestBrokerWithConfig(t, admittedBrowserConfig(), store)
+}
+
+func openActionTestBrokerWithConfig(
+	t *testing.T,
+	root *config.Config,
+	store Store,
+) (*Broker, *actionTestWorker, Session) {
+	t.Helper()
 	worker := &actionTestWorker{observation: driverObservationFixture(
 		DriverElement{Target: "e1", Role: "textbox", Name: "Name"},
 	)}
 	worker.resolveElement = worker.observation.Elements[0]
 	worker.resolveOrigin = worker.observation.Origin
-	broker := newTestBroker(t, admittedBrowserConfig(), store, &actionTestFactory{worker: worker})
+	broker := newTestBroker(t, root, store, &actionTestFactory{worker: worker})
 	broker.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("93.184.216.34")}, nil
 	}
@@ -430,6 +490,24 @@ func openActionTestBroker(t *testing.T, store Store) (*Broker, *actionTestWorker
 		t.Fatal(err)
 	}
 	return broker, worker, session
+}
+
+func assertNetworkQuarantine(
+	t *testing.T,
+	store *MemoryStore,
+	worker *actionTestWorker,
+	session Session,
+	err error,
+) {
+	t.Helper()
+	if !errors.Is(err, ErrDenied) {
+		t.Fatalf("network policy error = %v, want ErrDenied", err)
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored.State != SessionLost || stored.SafeFailure != "network_denied" ||
+		worker.closed != 1 {
+		t.Fatalf("network quarantine = %+v, %v; worker = %+v", stored, getErr, worker)
+	}
 }
 
 func driverObservationFixture(elements ...DriverElement) DriverObservation {

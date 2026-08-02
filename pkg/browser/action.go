@@ -59,10 +59,11 @@ func (broker *Broker) Observe(ctx context.Context, owner Owner, sessionID, tabID
 	if err != nil {
 		return Observation{}, err
 	}
-	if !broker.originAllowed(session, driverObservation.Origin) ||
-		!broker.originNetworkAllowed(ctx, driverObservation.Origin) {
-		_, finishErr := broker.finishSessionLocked(ctx, session, SessionLost, "network_denied")
-		return Observation{}, errors.Join(ErrDenied, finishErr)
+	if !broker.originAllowed(session, driverObservation.Origin) {
+		return Observation{}, ErrDenied
+	}
+	if !broker.originNetworkAllowed(ctx, driverObservation.Origin) {
+		return Observation{}, broker.quarantineNetworkDeniedLocked(ctx, session)
 	}
 	snapshotID, err := randomOpaqueID("snapshot")
 	if err != nil {
@@ -261,6 +262,9 @@ func (broker *Broker) resolvePreparedActionLocked(
 	if !validDigest(prepared.CatalogRevision) {
 		return PreparedAction{}, ErrDriverIncompatible
 	}
+	if !broker.originNetworkAllowed(ctx, prepared.CurrentOrigin) {
+		return PreparedAction{}, broker.quarantineNetworkDeniedLocked(ctx, session)
+	}
 	switch request.Action.Kind {
 	case ActionNavigate:
 		observation, observeErr := worker.Observe(ctx)
@@ -275,9 +279,11 @@ func (broker *Broker) resolvePreparedActionLocked(
 			return PreparedAction{}, err
 		}
 		destination, err := originFromURL(normalized)
-		if err != nil || !broker.originAllowed(session, destination) ||
-			!broker.originNetworkAllowed(ctx, destination) {
+		if err != nil || !broker.originAllowed(session, destination) {
 			return PreparedAction{}, ErrDenied
+		}
+		if !broker.originNetworkAllowed(ctx, destination) {
+			return PreparedAction{}, broker.quarantineNetworkDeniedLocked(ctx, session)
 		}
 		prepared.Action.URL = normalized
 		prepared.DestinationOrigin = destination
@@ -328,8 +334,7 @@ func (broker *Broker) revalidatePreparedLocked(
 	if !broker.originNetworkAllowed(ctx, prepared.CurrentOrigin) ||
 		(prepared.DestinationOrigin != "" &&
 			!broker.originNetworkAllowed(ctx, prepared.DestinationOrigin)) {
-		_, finishErr := broker.finishSessionLocked(ctx, session, SessionLost, "network_denied")
-		return errors.Join(ErrDenied, finishErr)
+		return broker.quarantineNetworkDeniedLocked(ctx, session)
 	}
 	if prepared.Action.Kind == ActionNavigate {
 		observation, err := worker.Observe(ctx)
@@ -493,23 +498,23 @@ func (broker *Broker) originNetworkAllowed(ctx context.Context, origin string) b
 	}
 	host := parsed.Hostname()
 	if ip := net.ParseIP(host); ip != nil {
-		return publicBrowserIP(ip)
+		return config.IsPublicBrowserIP(ip)
 	}
 	addresses, err := broker.lookupIP(ctx, "ip", host)
 	if err != nil || len(addresses) == 0 || len(addresses) > 32 {
 		return false
 	}
 	for _, address := range addresses {
-		if !publicBrowserIP(address) {
+		if !config.IsPublicBrowserIP(address) {
 			return false
 		}
 	}
 	return true
 }
 
-func publicBrowserIP(ip net.IP) bool {
-	return ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
+func (broker *Broker) quarantineNetworkDeniedLocked(ctx context.Context, session Session) error {
+	_, finishErr := broker.finishSessionLocked(ctx, session, SessionLost, "network_denied")
+	return errors.Join(ErrDenied, finishErr)
 }
 
 func originFromURL(raw string) (string, error) {

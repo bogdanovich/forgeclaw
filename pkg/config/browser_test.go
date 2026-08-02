@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -305,6 +306,28 @@ func TestNormalizeBrowserOriginCanonicalizesPublicNumericIPv4(t *testing.T) {
 	}
 	if origin != "http://8.8.8.8" {
 		t.Fatalf("NormalizeBrowserOrigin() = %q", origin)
+	}
+}
+
+func TestIsPublicBrowserIPRejectsIANASpecialPurposeRanges(t *testing.T) {
+	denied := []string{
+		"0.0.0.1", "10.0.0.1", "100.64.0.1", "127.0.0.1", "169.254.1.1",
+		"172.16.0.1", "192.0.0.1", "192.0.2.1", "192.31.196.1", "192.52.193.1",
+		"192.88.99.1", "192.168.0.1", "192.175.48.1", "198.18.0.1", "198.51.100.1",
+		"203.0.113.1", "240.0.0.1", "255.255.255.255", "::", "::1", "::ffff:100.64.0.1",
+		"64:ff9b::1", "64:ff9b:1::1", "100::1", "100:0:0:1::1", "2001::1",
+		"2001:db8::1", "2002::1", "2620:4f:8000::1", "3fff::1", "5f00::1",
+		"fc00::1", "fe80::1", "ff00::1",
+	}
+	for _, raw := range denied {
+		if IsPublicBrowserIP(net.ParseIP(raw)) {
+			t.Errorf("IsPublicBrowserIP(%q) = true, want false", raw)
+		}
+	}
+	for _, raw := range []string{"8.8.8.8", "1.1.1.1", "2001:4860:4860::8888", "2606:4700:4700::1111"} {
+		if !IsPublicBrowserIP(net.ParseIP(raw)) {
+			t.Errorf("IsPublicBrowserIP(%q) = false, want true", raw)
+		}
 	}
 }
 
