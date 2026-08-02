@@ -351,7 +351,11 @@ func (m *Manager) ConnectServer(
 	}
 	conn, err := connectServerFunc(ctx, name, cfg)
 	if conn != nil {
-		conn.attachExclusiveLease(lease)
+		if conn.cleanup != nil || lease != nil {
+			conn.attachExclusiveLease(lease)
+		} else {
+			lease.release()
+		}
 	} else {
 		lease.release()
 	}
@@ -922,7 +926,7 @@ func (c *ServerConnection) releaseExclusiveLease() {
 }
 
 func (c *ServerConnection) attachExclusiveLease(lease *exclusiveServerLease) {
-	if c == nil || lease == nil {
+	if c == nil {
 		return
 	}
 	c.attachExclusiveLeaseGroup(&exclusiveLeaseGroup{

@@ -1139,6 +1139,63 @@ func TestReconnectRetainsPartialFreshTreeInSharedLeaseGroup(t *testing.T) {
 	contender.release()
 }
 
+func TestReconnectRetainsPartialFreshTreeWithoutExclusiveLease(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	staleConn, _, err := newScriptedServerConnection(
+		"",
+		nil,
+		fmt.Errorf("connection closed: unexpected EOF"),
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	staleConn.cleanup = &retryableTestCleanup{}
+	freshCleanup := &retryableTestCleanup{err: errors.New("fresh process tree still alive")}
+	connectCalls := 0
+	connectServerFunc = func(_ context.Context, name string, cfg config.MCPServerConfig) (*ServerConnection, error) {
+		connectCalls++
+		if connectCalls == 1 {
+			staleConn.Name = name
+			staleConn.Config = cfg
+			return staleConn, nil
+		}
+		return &ServerConnection{
+			Name: name, Config: cfg, cleanup: freshCleanup, cleanupFailed: true,
+		}, errors.New("fresh initialization failed")
+	}
+
+	mgr := NewManager()
+	if err = mgr.ConnectServer(context.Background(), "playwright", config.MCPServerConfig{
+		Enabled: true, Command: "example",
+	}); err != nil {
+		t.Fatalf("ConnectServer() error = %v", err)
+	}
+	if staleConn.leaseGroup == nil {
+		t.Fatal("stdio connection has no reconnect generation without an exclusive lease")
+	}
+
+	if _, err = mgr.CallTool(context.Background(), "playwright", "browser_snapshot", nil); err == nil {
+		t.Fatal("CallTool() error = nil, want reconnect failure")
+	}
+	if len(mgr.pendingCleanup) != 1 {
+		t.Fatalf("pending cleanup count = %d, want 1", len(mgr.pendingCleanup))
+	}
+	if _, err = mgr.CallTool(context.Background(), "playwright", "browser_snapshot", nil); err == nil ||
+		!strings.Contains(err.Error(), "prior reconnect cleanup is still pending") {
+		t.Fatalf("second CallTool() error = %v, want pending-cleanup rejection", err)
+	}
+	if connectCalls != 2 {
+		t.Fatalf("connect calls = %d, want initial connection plus one replacement", connectCalls)
+	}
+
+	freshCleanup.err = nil
+	if err = mgr.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestCallTool_ReconnectsWhenStdioTransportIsClosed(t *testing.T) {
 	originalConnectServerFunc := connectServerFunc
 	t.Cleanup(func() {
