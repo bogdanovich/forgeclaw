@@ -12,11 +12,12 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 const (
-	fileStoreVersion        = 1
+	fileStoreVersion        = 2
 	DefaultFileStoreRecords = 512
 	DefaultFileStoreBytes   = 8 * 1024 * 1024
 )
@@ -28,9 +29,10 @@ var (
 )
 
 type fileStoreDocument struct {
-	Version     int                   `json:"version"`
-	Sessions    map[string]Session    `json:"sessions"`
-	Invocations map[string]Invocation `json:"invocations"`
+	Version         int                       `json:"version"`
+	Sessions        map[string]Session        `json:"sessions"`
+	PreparedActions map[string]PreparedAction `json:"prepared_actions"`
+	Invocations     map[string]Invocation     `json:"invocations"`
 }
 
 // FileStore is the gateway's bounded durable browser state boundary. One
@@ -46,6 +48,7 @@ type FileStore struct {
 	mu          sync.Mutex
 	closed      bool
 	sessions    map[string]Session
+	prepared    map[string]PreparedAction
 	invocations map[string]Invocation
 }
 
@@ -70,7 +73,8 @@ func NewFileStore(path string, maxRecords, maxBytes int) (*FileStore, error) {
 	store := &FileStore{
 		path: path, maxRecords: maxRecords, maxBytes: maxBytes,
 		writeFile: writeSecureStoreFile, releaseLock: release,
-		sessions: make(map[string]Session), invocations: make(map[string]Invocation),
+		sessions: make(map[string]Session), prepared: make(map[string]PreparedAction),
+		invocations: make(map[string]Invocation),
 	}
 	if err := store.load(); err != nil {
 		store.Close()
@@ -126,9 +130,18 @@ func (store *FileStore) load() error {
 	if err = ensureJSONEOF(decoder); err != nil {
 		return fmt.Errorf("decode browser state store: %w", err)
 	}
-	if document.Version != fileStoreVersion || document.Sessions == nil || document.Invocations == nil ||
-		len(document.Sessions)+len(document.Invocations) > store.maxRecords {
+	if document.Version != fileStoreVersion || document.Sessions == nil || document.PreparedActions == nil ||
+		document.Invocations == nil ||
+		len(document.Sessions)+len(document.PreparedActions)+len(document.Invocations) > store.maxRecords {
 		return fmt.Errorf("%w: invalid browser state document", ErrInvalid)
+	}
+	for id, prepared := range document.PreparedActions {
+		if id != prepared.ID || prepared.Validate(config.BrowserMaxTextInputBytes) != nil {
+			return fmt.Errorf("%w: invalid persisted prepared browser action", ErrInvalid)
+		}
+		if _, ok := document.Sessions[prepared.SessionID]; !ok {
+			return fmt.Errorf("%w: prepared action references a missing session", ErrInvalid)
+		}
 	}
 	for id, session := range document.Sessions {
 		if id != session.ID || session.Validate() != nil {
@@ -142,10 +155,16 @@ func (store *FileStore) load() error {
 		if _, ok := document.Sessions[invocation.SessionID]; !ok {
 			return fmt.Errorf("%w: invocation references a missing session", ErrInvalid)
 		}
+		if invocation.PreparedActionID != "" {
+			if _, ok := document.PreparedActions[invocation.PreparedActionID]; !ok {
+				return fmt.Errorf("%w: invocation references a missing prepared action", ErrInvalid)
+			}
+		}
 		invocation.TerminalResult = cloneBytes(invocation.TerminalResult)
 		document.Invocations[id] = invocation
 	}
 	store.sessions = document.Sessions
+	store.prepared = document.PreparedActions
 	store.invocations = document.Invocations
 	return nil
 }
@@ -213,23 +232,30 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 
 func (store *FileStore) persistLocked(
 	previousSessions map[string]Session,
+	previousPrepared map[string]PreparedAction,
 	previousInvocations map[string]Invocation,
 ) error {
-	document := fileStoreDocument{Version: fileStoreVersion, Sessions: store.sessions, Invocations: store.invocations}
+	document := fileStoreDocument{
+		Version: fileStoreVersion, Sessions: store.sessions,
+		PreparedActions: store.prepared, Invocations: store.invocations,
+	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		store.sessions = previousSessions
+		store.prepared = previousPrepared
 		store.invocations = previousInvocations
 		return err
 	}
 	if len(raw) > store.maxBytes {
 		store.sessions = previousSessions
+		store.prepared = previousPrepared
 		store.invocations = previousInvocations
 		return ErrStoreFull
 	}
 	if err = store.writeFile(store.path, raw, 0o600); err != nil {
 		if !fileutil.IsCommittedWriteError(err) {
 			store.sessions = previousSessions
+			store.prepared = previousPrepared
 			store.invocations = previousInvocations
 		}
 		return err
@@ -264,12 +290,12 @@ func (store *FileStore) CreateSession(_ context.Context, session Session) error 
 			return ErrBusy
 		}
 	}
-	if len(store.sessions)+len(store.invocations) >= store.maxRecords {
+	if len(store.sessions)+len(store.prepared)+len(store.invocations) >= store.maxRecords {
 		return ErrStoreFull
 	}
-	previousSessions, previousInvocations := store.cloneLocked()
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
 	store.sessions[session.ID] = session
-	return store.persistLocked(previousSessions, previousInvocations)
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
 }
 
 func (store *FileStore) GetSession(_ context.Context, id string) (Session, error) {
@@ -318,12 +344,64 @@ func (store *FileStore) UpdateSession(_ context.Context, expected uint64, next S
 	if current.Owner != next.Owner || current.Target != next.Target || current.Profile != next.Profile ||
 		current.CreatedAt != next.CreatedAt || current.DryRun != next.DryRun ||
 		current.PolicyRevision != next.PolicyRevision || current.ControllerGeneration != next.ControllerGeneration ||
-		current.ExpiresAt != next.ExpiresAt || !validSessionTransition(current.State, next.State) {
+		current.TabID != next.TabID || current.ExpiresAt != next.ExpiresAt ||
+		!validSnapshotTransition(current, next) ||
+		!validSessionTransition(current.State, next.State) {
 		return ErrConflict
 	}
-	previousSessions, previousInvocations := store.cloneLocked()
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
 	store.sessions[next.ID] = next
-	return store.persistLocked(previousSessions, previousInvocations)
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
+}
+
+func (store *FileStore) GetPreparedAction(_ context.Context, id string) (PreparedAction, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return PreparedAction{}, err
+	}
+	prepared, ok := store.prepared[id]
+	if !ok {
+		return PreparedAction{}, ErrNotFound
+	}
+	return prepared, nil
+}
+
+func (store *FileStore) CreatePreparation(
+	_ context.Context,
+	prepared PreparedAction,
+	invocation Invocation,
+) error {
+	if err := validatePreparationPair(prepared, invocation); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
+	if existingPrepared, exists := store.prepared[prepared.ID]; exists {
+		existingInvocation, invocationExists := store.invocations[invocation.ID]
+		if invocationExists && existingPrepared == prepared && invocationsEqual(existingInvocation, invocation) {
+			return nil
+		}
+		return ErrConflict
+	}
+	if _, exists := store.invocations[invocation.ID]; exists {
+		return ErrConflict
+	}
+	session, ok := store.sessions[prepared.SessionID]
+	if !ok || !session.Owner.Equal(prepared.Owner) || session.State != SessionReady {
+		return ErrDenied
+	}
+	if len(store.sessions)+len(store.prepared)+len(store.invocations)+2 > store.maxRecords {
+		return ErrStoreFull
+	}
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
+	store.prepared[prepared.ID] = prepared
+	invocation.TerminalResult = cloneBytes(invocation.TerminalResult)
+	store.invocations[invocation.ID] = invocation
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
 }
 
 func (store *FileStore) CreateInvocation(_ context.Context, invocation Invocation) error {
@@ -341,17 +419,22 @@ func (store *FileStore) CreateInvocation(_ context.Context, invocation Invocatio
 	if _, exists := store.invocations[invocation.ID]; exists {
 		return ErrConflict
 	}
+	if invocation.PreparedActionID != "" {
+		if _, exists := store.prepared[invocation.PreparedActionID]; !exists {
+			return ErrDenied
+		}
+	}
 	session, ok := store.sessions[invocation.SessionID]
 	if !ok || !session.Owner.Equal(invocation.Owner) || session.State != SessionReady {
 		return ErrDenied
 	}
-	if len(store.sessions)+len(store.invocations) >= store.maxRecords {
+	if len(store.sessions)+len(store.prepared)+len(store.invocations) >= store.maxRecords {
 		return ErrStoreFull
 	}
-	previousSessions, previousInvocations := store.cloneLocked()
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
 	invocation.TerminalResult = cloneBytes(invocation.TerminalResult)
 	store.invocations[invocation.ID] = invocation
-	return store.persistLocked(previousSessions, previousInvocations)
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
 }
 
 func (store *FileStore) GetInvocation(_ context.Context, id string) (Invocation, error) {
@@ -404,16 +487,17 @@ func (store *FileStore) UpdateInvocation(_ context.Context, expected uint64, nex
 	if current.Revision != expected || next.Revision != expected+1 {
 		return ErrStale
 	}
-	if current.Owner != next.Owner || current.SessionID != next.SessionID ||
+	if current.Owner != next.Owner || current.PreparedActionID != next.PreparedActionID ||
+		current.SessionID != next.SessionID ||
 		current.ActionHash != next.ActionHash || current.Effect != next.Effect ||
 		current.CreatedAt != next.CreatedAt || current.ExpiresAt != next.ExpiresAt ||
 		!validInvocationTransition(current.State, next.State) {
 		return ErrConflict
 	}
-	previousSessions, previousInvocations := store.cloneLocked()
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
 	next.TerminalResult = cloneBytes(next.TerminalResult)
 	store.invocations[next.ID] = next
-	return store.persistLocked(previousSessions, previousInvocations)
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
 }
 
 func (store *FileStore) PruneInvocations(_ context.Context, completedBefore int64) error {
@@ -422,7 +506,7 @@ func (store *FileStore) PruneInvocations(_ context.Context, completedBefore int6
 	if err := store.ensureOpenLocked(); err != nil {
 		return err
 	}
-	previousSessions, previousInvocations := store.cloneLocked()
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
 	changed := false
 	for id, invocation := range store.invocations {
 		if invocation.State.Terminal() && invocation.CompletedAt > 0 && invocation.CompletedAt < completedBefore {
@@ -433,18 +517,46 @@ func (store *FileStore) PruneInvocations(_ context.Context, completedBefore int6
 	if !changed {
 		return nil
 	}
-	return store.persistLocked(previousSessions, previousInvocations)
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
 }
 
-func (store *FileStore) cloneLocked() (map[string]Session, map[string]Invocation) {
+func (store *FileStore) PrunePreparedActions(_ context.Context, expiredBefore int64) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
+	previousSessions, previousPrepared, previousInvocations := store.cloneLocked()
+	changed := false
+	for id, prepared := range store.prepared {
+		if prepared.ExpiresAt < expiredBefore && !preparedReferenced(store.invocations, id) {
+			delete(store.prepared, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return store.persistLocked(previousSessions, previousPrepared, previousInvocations)
+}
+
+func (store *FileStore) cloneLocked() (
+	map[string]Session,
+	map[string]PreparedAction,
+	map[string]Invocation,
+) {
 	sessions := make(map[string]Session, len(store.sessions))
 	for id, session := range store.sessions {
 		sessions[id] = session
+	}
+	prepared := make(map[string]PreparedAction, len(store.prepared))
+	for id, action := range store.prepared {
+		prepared[id] = action
 	}
 	invocations := make(map[string]Invocation, len(store.invocations))
 	for id, invocation := range store.invocations {
 		invocation.TerminalResult = cloneBytes(invocation.TerminalResult)
 		invocations[id] = invocation
 	}
-	return sessions, invocations
+	return sessions, prepared, invocations
 }

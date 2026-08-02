@@ -836,7 +836,7 @@ func testOpeningSession(owner Owner) Session {
 	return Session{
 		ID: "browser_session_1", Owner: owner, Target: "gateway", Profile: "managed",
 		State: SessionOpening, DryRun: true, PolicyRevision: "b1_v1",
-		ControllerGeneration: 1, Revision: 1, CreatedAt: 1,
+		ControllerGeneration: 1, TabID: "tab_primary", Revision: 1, CreatedAt: 1,
 		UpdatedAt: 1, LastActivityAt: 1, ExpiresAt: 1000,
 	}
 }

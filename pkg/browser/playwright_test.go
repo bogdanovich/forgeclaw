@@ -132,7 +132,9 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		t.Fatalf("Observe() error = %v", err)
 	}
 	if observation.URL != "https://example.com/items" || observation.Origin != "https://example.com" ||
-		observation.Title != "Fixture" || !strings.Contains(observation.Snapshot, "[ref=e3]") {
+		observation.Title != "Fixture" || !strings.Contains(observation.Snapshot, "[ref=e3]") ||
+		len(observation.Elements) != 1 ||
+		observation.Elements[0] != (DriverElement{Target: "e3", Role: "textbox", Name: "Name"}) {
 		t.Fatalf("Observe() = %+v", observation)
 	}
 	if err = worker.Execute(context.Background(), DriverAction{
@@ -376,6 +378,10 @@ func TestPlaywrightObservationEnforcesReferenceLimit(t *testing.T) {
 	}
 	if _, err := parsePlaywrightObservation(observation, 1024, 1); !errors.Is(err, ErrDriverIncompatible) {
 		t.Fatalf("parsePlaywrightObservation() over-limit error = %v", err)
+	}
+	malformed := strings.Replace(observation, "[ref=e1]", "[ref=selector]", 1)
+	if _, err := parsePlaywrightObservation(malformed, 1024, 2); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("parsePlaywrightObservation() malformed ref error = %v", err)
 	}
 }
 
