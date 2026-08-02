@@ -5,6 +5,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/commands"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 // TypingCapable — channels that can show a typing/thinking indicator.
@@ -58,6 +59,17 @@ type PlaceholderCapable interface {
 // and Finalize still delivers the final message.
 type StreamingCapable interface {
 	BeginStream(ctx context.Context, chatID string) (Streamer, error)
+}
+
+// ScopedStreamingCapable lets a channel preserve the exact turn identity on
+// streaming responses. Managers prefer this optional extension when present.
+type ScopedStreamingCapable interface {
+	BeginStreamForScope(
+		ctx context.Context,
+		chatID string,
+		sessionKey string,
+		traceScope runtimeevents.TraceScope,
+	) (Streamer, error)
 }
 
 // Streamer is defined in pkg/bus to avoid circular imports.

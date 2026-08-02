@@ -55,6 +55,9 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		})
 		return nil, false, nil
 	}
+	if setter, ok := streamer.(interface{ SetAgentID(agentID string) }); ok {
+		setter.SetAgentID(ts.agent.ID)
+	}
 
 	publisher := &streamingChunkPublisher{
 		streamer:         streamer,

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/bogdanovich/mintclaw/cmd/mintclaw/internal"
 )
 
 func NewAgentCommand() *cobra.Command {
@@ -27,6 +29,7 @@ func NewAgentCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&sessionKey, "session", "s", "cli:default", "Session key")
 	cmd.Flags().StringVarP(&model, "model", "", "", "Model to use")
 	cmd.Flags().BoolVar(&stateless, "stateless", false, "Do not load or save conversation history")
+	cmd.AddCommand(newLiveCommand(internal.GetConfigPath))
 
 	return cmd
 }

@@ -329,9 +329,9 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 		},
 	}
 	replyToMessageID := ""
-	if record.Kind == interactions.KindApproval &&
-		strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") {
-		if record.Origin.ExecutionContext != nil {
+	if record.Kind == interactions.KindApproval {
+		if strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") &&
+			record.Origin.ExecutionContext != nil {
 			replyToMessageID = strings.TrimSpace(record.Origin.ExecutionContext.MessageID)
 		}
 		bus.OutboundMetadata{

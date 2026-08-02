@@ -5,8 +5,8 @@ Date: 2026-08-02
 Status: local CLI slice complete
 
 This record closes the local interactive CLI portion of the Future P1 terminal
-follow-up. It does not claim completion of browser terminal UI or agent-driven
-PTY control.
+follow-up. It does not claim completion of browser terminal UI. Agent-operated
+PTY control is no longer planned; agents use structured shell execution.
 
 ## Merged revision
 
@@ -81,7 +81,6 @@ affected MintClaw user units returns the gateway to the previous deployment.
 The following roadmap items remain open:
 
 - browser terminal UI;
-- a bounded agent-operated PTY loop; and
 - authenticated live-agent invocation smoke that does not depend on Telegram.
 
 These are not required to call the local CLI slice complete.

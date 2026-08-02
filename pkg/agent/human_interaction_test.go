@@ -405,7 +405,7 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 	}
 }
 
-func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
+func TestNonTelegramApprovalPromptCarriesGenericControlsWithoutReplyThread(t *testing.T) {
 	manager := newInteractionChannelManager()
 	al := &AgentLoop{cfg: config.DefaultConfig(), channelManager: manager}
 	record := interactions.Record{
@@ -423,7 +423,7 @@ func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := <-manager.sent
-	if prompt.ReplyToMessageID != "" || bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
+	if prompt.ReplyToMessageID != "" || !bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
 		t.Fatalf("non-Telegram approval prompt = %#v", prompt)
 	}
 }

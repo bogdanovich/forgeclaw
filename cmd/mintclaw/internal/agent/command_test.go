@@ -16,7 +16,8 @@ func TestNewAgentCommand(t *testing.T) {
 	assert.Equal(t, "Interact with the agent directly", cmd.Short)
 
 	assert.Len(t, cmd.Aliases, 0)
-	assert.False(t, cmd.HasSubCommands())
+	assert.True(t, cmd.HasSubCommands())
+	assert.NotNil(t, cmd.Commands()[0])
 
 	assert.Nil(t, cmd.Run)
 	assert.NotNil(t, cmd.RunE)

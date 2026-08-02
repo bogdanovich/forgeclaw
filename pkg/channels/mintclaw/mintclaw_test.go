@@ -20,6 +20,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/channels"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
@@ -126,6 +127,78 @@ func TestSend_ThoughtMessageIncludesMetadata(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected thought message to be delivered")
+	}
+}
+
+func TestSend_FinalMessageIncludesCorrelationMetadata(t *testing.T) {
+	ch := newTestMintClawChannel(t)
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Stop(context.Background())
+	clientConn, received, cleanup := newTestMintClawWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&mintclawConn{id: "conn-final", conn: clientConn, sessionID: "sess-final"})
+
+	ctx := bus.InboundContext{Channel: "mintclaw", ChatID: "mintclaw:sess-final", Raw: map[string]string{}}
+	ctx.Raw[PayloadKeyInteractionID] = "interaction-final"
+	ctx.Raw[PayloadKeyInteractionShortID] = "short-final"
+	bus.OutboundMetadata{
+		MessageKind:  bus.OutboundMessageKindFinalReply,
+		OutboundKind: bus.OutboundKindFinal,
+	}.ApplyToContext(&ctx)
+	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:           "mintclaw:sess-final",
+		Content:          "done",
+		Context:          ctx,
+		AgentID:          "main",
+		SessionKey:       "sk_v1_final",
+		ReplyToMessageID: "request-final",
+		TraceScopes: []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope("/workspace", "turn-final"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	msg := <-received
+	if msg.Payload[PayloadKeyFinal] != true || msg.Payload[PayloadKeyKind] != MessageKindFinalReply ||
+		msg.Payload[PayloadKeyAgentID] != "main" || msg.Payload[PayloadKeySessionKey] != "sk_v1_final" ||
+		msg.Payload["request_id"] != "request-final" ||
+		msg.Payload[PayloadKeyInteractionID] != "interaction-final" ||
+		msg.Payload[PayloadKeyInteractionShortID] != "short-final" {
+		t.Fatalf("payload = %#v", msg.Payload)
+	}
+}
+
+func TestScopedStreamFinalizeIncludesCorrelationMetadata(t *testing.T) {
+	ch := newTestMintClawChannel(t)
+	ch.config.Streaming.Enabled = true
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Stop(context.Background())
+	var got MintClawMessage
+	ch.broadcastFn = func(_ context.Context, _ string, msg MintClawMessage) error {
+		got = msg
+		return nil
+	}
+	streamer, err := ch.BeginStreamForScope(
+		context.Background(),
+		"mintclaw:stream-final",
+		"sk_v1_stream",
+		runtimeevents.NewTraceScope("/workspace", "turn-stream"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamer.(interface{ SetAgentID(string) }).SetAgentID("main")
+	if err := streamer.Finalize(context.Background(), "stream done"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Payload[PayloadKeyFinal] != true || got.Payload[PayloadKeyKind] != MessageKindFinalReply ||
+		got.Payload[PayloadKeySessionKey] != "sk_v1_stream" || got.Payload[PayloadKeyAgentID] != "main" {
+		t.Fatalf("payload = %#v", got.Payload)
 	}
 }
 

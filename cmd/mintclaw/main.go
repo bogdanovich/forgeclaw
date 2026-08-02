@@ -107,7 +107,7 @@ func machineJSONRequested(args []string) bool {
 	hasJSON := false
 	for _, arg := range args {
 		switch arg {
-		case "doctor", "nodes":
+		case "doctor", "nodes", "agent":
 			hasJSONCommand = true
 		case "--json", "--json=true", "--json=1":
 			hasJSON = true

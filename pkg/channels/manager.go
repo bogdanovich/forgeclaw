@@ -960,7 +960,13 @@ func (m *Manager) GetStreamer(
 		return nil, false
 	}
 
-	streamer, err := sc.BeginStream(ctx, chatID)
+	beginStream := func(beginCtx context.Context) (Streamer, error) {
+		if scoped, ok := ch.(ScopedStreamingCapable); ok {
+			return scoped.BeginStreamForScope(beginCtx, chatID, sessionKey, traceScope)
+		}
+		return sc.BeginStream(beginCtx, chatID)
+	}
+	streamer, err := beginStream(ctx)
 	if err != nil {
 		logger.DebugCF("channels", "Streaming unavailable, falling back to placeholder", map[string]any{
 			"channel": channelName,
@@ -1000,11 +1006,9 @@ func (m *Manager) GetStreamer(
 
 	if m.config != nil && m.config.Agents.Defaults.SplitOnMarker {
 		return &splitMarkerStreamer{
-			current:   streamer,
-			reasoning: reasoningStreamerFrom(streamer),
-			begin: func(beginCtx context.Context) (bus.Streamer, error) {
-				return sc.BeginStream(beginCtx, chatID)
-			},
+			current:     streamer,
+			reasoning:   reasoningStreamerFrom(streamer),
+			begin:       beginStream,
 			onFinalize:  onFinalize,
 			clearMarker: clearMarker,
 			footer: responseFooterStreamState{
@@ -1040,6 +1044,10 @@ type defaultModelNameStreamer interface {
 	SetDefaultModelName(defaultModelName string)
 }
 
+type agentIdentityStreamer interface {
+	SetAgentID(agentID string)
+}
+
 func setStreamerModelName(streamer any, modelName string) {
 	setter, ok := streamer.(modelNameStreamer)
 	if !ok {
@@ -1054,6 +1062,14 @@ func setStreamerDefaultModelName(streamer any, defaultModelName string) {
 		return
 	}
 	setter.SetDefaultModelName(defaultModelName)
+}
+
+func setStreamerAgentID(streamer any, agentID string) {
+	setter, ok := streamer.(agentIdentityStreamer)
+	if !ok {
+		return
+	}
+	setter.SetAgentID(agentID)
 }
 
 type turnUsageStreamer interface {
@@ -1175,6 +1191,13 @@ func (s *splitMarkerStreamer) SetDefaultModelName(defaultModelName string) {
 	s.footer.defaultModelName = s.defaultModelName
 	setStreamerDefaultModelName(s.current, s.defaultModelName)
 	setStreamerDefaultModelName(s.reasoning, s.defaultModelName)
+}
+
+func (s *splitMarkerStreamer) SetAgentID(agentID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	setStreamerAgentID(s.current, agentID)
+	setStreamerAgentID(s.reasoning, agentID)
 }
 
 func (s *splitMarkerStreamer) SetTurnUsage(inputTokens, outputTokens int) {
@@ -1348,6 +1371,10 @@ func (s *finalizeHookStreamer) SetModelName(modelName string) {
 func (s *finalizeHookStreamer) SetDefaultModelName(defaultModelName string) {
 	s.footer.defaultModelName = strings.TrimSpace(defaultModelName)
 	setStreamerDefaultModelName(s.Streamer, s.footer.defaultModelName)
+}
+
+func (s *finalizeHookStreamer) SetAgentID(agentID string) {
+	setStreamerAgentID(s.Streamer, agentID)
 }
 
 func (s *finalizeHookStreamer) SetTurnUsage(inputTokens, outputTokens int) {

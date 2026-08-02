@@ -17,3 +17,6 @@ Operational docs for debugging, diagnosis, and production troubleshooting.
 - [Node terminal client and lifecycle smoke test](node-terminal-smoke.md):
   interactive use and automated verification of authenticated PTY open,
   attach, resize, input/output, and confirmed close.
+- [Live gateway agent smoke test](live-agent-smoke.md): authenticated,
+  bounded testing of the running gateway agent and its live node sessions
+  without Telegram or a second agent runtime.
