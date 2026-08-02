@@ -294,6 +294,15 @@ func (t *SearchFilesTool) searchFileNames(
 		return ErrorResult(err.Error())
 	}
 	sort.Strings(matches)
+	return formatFileNameSearchResult(matches, opts, stats, truncation)
+}
+
+func formatFileNameSearchResult(
+	matches []string,
+	opts searchFilesOptions,
+	stats *searchWalkStats,
+	truncation *searchTruncationInfo,
+) *ToolResult {
 	truncation.addWalkStats(stats, opts.includeIgnored)
 
 	if len(matches) == 0 {
