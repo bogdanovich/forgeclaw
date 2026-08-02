@@ -886,7 +886,7 @@ func admittedBrowserConfig() *config.Config {
 
 func testOwner() Owner {
 	return Owner{
-		ActorID: "actor_1", AgentID: "browser",
+		ActorID: "actor_1", AgentID: OpaqueAgentID("browser"),
 		SessionKey: "telegram_chat_1", ExecutionID: "execution_1",
 	}
 }

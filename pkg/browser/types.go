@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,13 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 )
+
+// OpaqueAgentID maps a validated configuration alias onto the non-reversible
+// identity used in broker ownership records and authorization checks.
+func OpaqueAgentID(agentID string) string {
+	digest := sha256.Sum256([]byte("agent\x00" + strings.TrimSpace(agentID)))
+	return "agent_" + hex.EncodeToString(digest[:16])
+}
 
 const (
 	MaxIdentifierBytes    = 128

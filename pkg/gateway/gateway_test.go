@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/agent"
+	"github.com/bogdanovich/mintclaw/pkg/browser"
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
@@ -327,6 +329,100 @@ func TestConfigReloadRetainsOldRegistryWhenBrowserLeaseCannotDrain(t *testing.T)
 			t.Fatalf("registered tools after failed reload = %#v, want %s", toolNames, name)
 		}
 	}
+}
+
+func TestBrowserToolLeaseRejectsRevokedGrantAfterSuccessfulReload(t *testing.T) {
+	cfg := gatewayBrowserConfig(t.TempDir())
+	cfg.Agents.Defaults.ContextManager = "none"
+	cfg.Agents.List = []config.AgentConfig{
+		{ID: "main", Default: true},
+		{ID: "browser"},
+	}
+	cfg.Tools.Browser.Agents = []string{"main"}
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	defer al.Close()
+	runningServices := &services{}
+	if err := setupBrowserTools(cfg, al, runningServices); err != nil {
+		t.Fatalf("setupBrowserTools() error = %v", err)
+	}
+	oldMain, ok := al.GetRegistry().GetAgent("main")
+	if !ok {
+		t.Fatal("old main agent is unavailable")
+	}
+	oldTool, ok := oldMain.Tools.Get("browser_session")
+	if !ok {
+		t.Fatal("old main browser_session tool is unavailable")
+	}
+
+	reloadCfg := *cfg
+	reloadCfg.Tools.Browser = cfg.Tools.Browser
+	reloadCfg.Tools.Browser.Agents = []string{"browser"}
+	if err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		&reloadCfg,
+	); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+	policyRevision, err := reloadCfg.Tools.Browser.PolicyRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, err := browser.NewBroker(
+		&reloadCfg,
+		browser.NewMemoryStore(),
+		&gatewayTestBrowserFactory{worker: &gatewayTestBrowserWorker{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningServices.Browser = &browserRuntime{
+		broker: broker, policyRevision: policyRevision,
+	}
+	defer func() { _ = closeBrowserRuntime(context.Background(), runningServices) }()
+
+	oldResult := oldTool.Execute(
+		gatewayBrowserToolContext("main"),
+		map[string]any{
+			"operation": "open", "target": config.BrowserDefaultTarget,
+			"profile": config.BrowserDefaultProfile,
+		},
+	)
+	if oldResult == nil || !oldResult.IsError ||
+		!strings.Contains(oldResult.ContentForLLM(), `"code":"policy_denied"`) {
+		t.Fatalf("stale old-registry tool result = %#v", oldResult)
+	}
+	newBrowser, ok := al.GetRegistry().GetAgent("browser")
+	if !ok {
+		t.Fatal("new browser agent is unavailable")
+	}
+	newTool, ok := newBrowser.Tools.Get("browser_session")
+	if !ok {
+		t.Fatal("new browser_session tool is unavailable")
+	}
+	newResult := newTool.Execute(
+		gatewayBrowserToolContext("browser"),
+		map[string]any{
+			"operation": "open", "target": config.BrowserDefaultTarget,
+			"profile": config.BrowserDefaultProfile,
+		},
+	)
+	if newResult == nil || newResult.IsError ||
+		!strings.Contains(newResult.ContentForLLM(), `"state":"ready"`) {
+		t.Fatalf("new-registry tool result = %#v", newResult)
+	}
+}
+
+func gatewayBrowserToolContext(agentID string) context.Context {
+	ctx := tools.WithToolInboundMetadata(context.Background(), bus.InboundContext{
+		SenderID: "browser-test-user", ActorID: "browser-test-actor",
+	})
+	ctx = tools.WithToolSessionContext(ctx, agentID, "browser-test-history", nil)
+	ctx = tools.WithToolRouteSessionKey(ctx, "telegram:browser-test")
+	ctx = tools.WithToolCallID(ctx, "browser-test-call")
+	return tools.WithToolExecutionIdentity(ctx, "/browser-test", "browser-test-execution")
 }
 
 func TestNodeFileToolsRequireConfiguredTargetGrant(t *testing.T) {

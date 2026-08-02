@@ -21,10 +21,11 @@ const browserStateFile = "browser.json"
 // and their durable ledger. The broker is never shared across reloads because
 // its policy revision and private worker ownership are immutable snapshots.
 type browserRuntime struct {
-	broker *browser.Broker
-	store  *browser.FileStore
-	cancel context.CancelFunc
-	done   chan struct{}
+	broker         *browser.Broker
+	store          *browser.FileStore
+	policyRevision string
+	cancel         context.CancelFunc
+	done           chan struct{}
 
 	stopOnce sync.Once
 	closeMu  sync.Mutex
@@ -35,6 +36,10 @@ type browserRuntime struct {
 func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime, error) {
 	if cfg == nil || !cfg.Tools.Browser.Enabled {
 		return nil, nil
+	}
+	policyRevision, err := cfg.Tools.Browser.PolicyRevision()
+	if err != nil {
+		return nil, errors.New("browser policy unavailable")
 	}
 	store, err := browser.NewFileStore(
 		filepath.Join(cfg.WorkspacePath(), "state", "browser", browserStateFile),
@@ -57,7 +62,7 @@ func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime
 		store.Close()
 		return nil, errors.New("browser policy unavailable")
 	}
-	runtime := &browserRuntime{broker: broker, store: store}
+	runtime := &browserRuntime{broker: broker, store: store, policyRevision: policyRevision}
 	if err = broker.Recover(ctx); err != nil {
 		store.Close()
 		return nil, errors.New("browser recovery unavailable")
@@ -176,7 +181,10 @@ func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningService
 	return nil
 }
 
-type gatewayBrowserToolSource struct{ services *services }
+type gatewayBrowserToolSource struct {
+	services       *services
+	policyRevision string
+}
 
 func (source *gatewayBrowserToolSource) Available() bool {
 	if source == nil || source.services == nil {
@@ -184,7 +192,8 @@ func (source *gatewayBrowserToolSource) Available() bool {
 	}
 	source.services.browserMu.RLock()
 	defer source.services.browserMu.RUnlock()
-	return source.services.Browser != nil && source.services.Browser.Broker() != nil
+	runtime := source.services.Browser
+	return runtime != nil && runtime.policyRevision == source.policyRevision && runtime.Broker() != nil
 }
 
 func (source *gatewayBrowserToolSource) ProfileAvailability(
@@ -215,6 +224,9 @@ func withGatewayBrowserBroker[T any](
 	runtime := source.services.Browser
 	if runtime == nil || runtime.Broker() == nil {
 		return zero, browser.ErrWorkerUnavailable
+	}
+	if runtime.policyRevision != source.policyRevision {
+		return zero, browser.ErrDenied
 	}
 	return operation(ctx, runtime.Broker())
 }
@@ -307,18 +319,45 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 	if cfg == nil || agentLoop == nil || runningServices == nil {
 		return nil
 	}
-	source := &gatewayBrowserToolSource{services: runningServices}
+	sourceFor := func(reloadCfg *config.Config) (*gatewayBrowserToolSource, error) {
+		if reloadCfg == nil {
+			return nil, errors.New("browser tool policy is unavailable")
+		}
+		policyRevision, err := reloadCfg.Tools.Browser.PolicyRevision()
+		if err != nil {
+			return nil, errors.New("browser tool policy is unavailable")
+		}
+		return &gatewayBrowserToolSource{
+			services: runningServices, policyRevision: policyRevision,
+		}, nil
+	}
 	factories := map[string]agent.RuntimeToolFactory{
 		"browser_targets": func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := sourceFor(reloadCfg)
+			if err != nil {
+				return nil, err
+			}
 			return tools.NewBrowserTargetsTool(reloadCfg, source), nil
 		},
 		"browser_session": func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := sourceFor(reloadCfg)
+			if err != nil {
+				return nil, err
+			}
 			return tools.NewBrowserSessionTool(reloadCfg, source), nil
 		},
 		"browser_observe": func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := sourceFor(reloadCfg)
+			if err != nil {
+				return nil, err
+			}
 			return tools.NewBrowserObserveTool(reloadCfg, source), nil
 		},
 		"browser_act": func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := sourceFor(reloadCfg)
+			if err != nil {
+				return nil, err
+			}
 			return tools.NewBrowserActTool(reloadCfg, source), nil
 		},
 	}

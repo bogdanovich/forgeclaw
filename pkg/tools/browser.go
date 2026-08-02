@@ -644,7 +644,7 @@ func browserOwnerFromContext(ctx context.Context) (browser.Owner, error) {
 	}
 	return browser.Owner{
 		ActorID:     browserContextID("actor", actorID),
-		AgentID:     browserContextID("agent", routing.NormalizeAgentID(agentID)),
+		AgentID:     browser.OpaqueAgentID(routing.NormalizeAgentID(agentID)),
 		SessionKey:  browserContextID("session", sessionKey),
 		ExecutionID: browserContextID("execution", executionID),
 	}, nil

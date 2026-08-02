@@ -72,7 +72,8 @@ func TestBrowserRuntimeRetainsOwnershipUntilWorkerShutdownSucceeds(t *testing.T)
 		t.Fatal(err)
 	}
 	owner := browser.Owner{
-		ActorID: "actor_1", AgentID: "browser", SessionKey: "session_1", ExecutionID: "execution_1",
+		ActorID: "actor_1", AgentID: browser.OpaqueAgentID("browser"),
+		SessionKey: "session_1", ExecutionID: "execution_1",
 	}
 	if _, err = broker.Open(context.Background(), browser.OpenRequest{
 		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
@@ -128,7 +129,8 @@ func TestBrowserRuntimeCloseHonorsCallerDeadlineAndRetainsOwnership(t *testing.T
 		t.Fatal(err)
 	}
 	owner := browser.Owner{
-		ActorID: "actor_1", AgentID: "browser", SessionKey: "session_1", ExecutionID: "execution_1",
+		ActorID: "actor_1", AgentID: browser.OpaqueAgentID("browser"),
+		SessionKey: "session_1", ExecutionID: "execution_1",
 	}
 	if _, err = broker.Open(context.Background(), browser.OpenRequest{
 		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,

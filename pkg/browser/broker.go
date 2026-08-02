@@ -113,6 +113,9 @@ func NewBroker(rootConfig *config.Config, store Store, factory WorkerFactory) (*
 	if err != nil {
 		return nil, err
 	}
+	for index, agentID := range browserConfig.Agents {
+		browserConfig.Agents[index] = OpaqueAgentID(agentID)
+	}
 	bindingKey := make([]byte, 32)
 	if _, err = rand.Read(bindingKey); err != nil {
 		return nil, fmt.Errorf("generate browser action binding key: %w", err)
