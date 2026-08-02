@@ -159,5 +159,6 @@ root-run companion, or privileged macOS/Windows file access.
 
 All ten P2 gates now have authoritative evidence. Under the admission
 contract's mandatory stop condition, P2 is complete and implementation stops
-here. P3 typed service administration remains unadmitted and requires a new
-operator scope decision.
+here. P3 typed service administration was subsequently admitted under
+[`node-companion-p3-admission.md`](../architecture/node-companion-p3-admission.md);
+its implementation and completion evidence remain separate from P2.
