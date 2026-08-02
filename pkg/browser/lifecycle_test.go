@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestFileStorePersistsAndExclusivelyOwnsState(t *testing.T) {
 	}
 	store.Close()
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("state file = %v, %v; want mode 0600", info, err)
 	}
 
