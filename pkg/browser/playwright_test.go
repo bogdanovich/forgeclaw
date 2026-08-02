@@ -253,10 +253,7 @@ func TestBrokerRetriesPlaywrightCleanupAfterCatalogFailure(t *testing.T) {
 		catalog: playwrightCatalogFixture()[:4], closeErr: errors.New("process tree still alive"),
 	}
 	factory.clientFactory = func() playwrightMCPClient { return client }
-	broker, err := NewBroker(root, NewMemoryStore(), factory)
-	if err != nil {
-		t.Fatalf("NewBroker() error = %v", err)
-	}
+	broker := newTestBroker(t, root, NewMemoryStore(), factory)
 	owner := testOwner()
 
 	session, err := broker.Open(context.Background(), OpenRequest{
