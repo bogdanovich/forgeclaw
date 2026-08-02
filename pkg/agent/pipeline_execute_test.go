@@ -1024,6 +1024,56 @@ func TestTurnExecutionsHaveIsolatedLoopGuardState(t *testing.T) {
 	}
 }
 
+func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &unknownSteeringSafetyTestTool{}
+	registry.Register(tool)
+	config := loopguard.DefaultConfig()
+	config.IdenticalCallHalt = 3
+	agent := &AgentInstance{
+		ID: "main", Tools: registry, Sessions: session.NewSessionManager(""),
+		ToolLoopDetection: config,
+	}
+	ts := &turnState{
+		agent: agent, agentID: "main", turnID: "turn-emergency-loop-guard",
+		sessionKey: "session-emergency-loop-guard", opts: processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	emitter := &captureRuntimeEmitter{}
+	pipeline := &Pipeline{Runtime: PipelineRuntimeServices{Events: emitter}}
+
+	for i := 1; i <= config.IdenticalCallHalt; i++ {
+		exec.normalizedToolCalls = []providers.ToolCall{{
+			ID: fmt.Sprintf("call-%d", i), Name: tool.Name(), Arguments: map[string]any{},
+		}}
+		exec.allResponsesHandled = false
+		outcome := pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, i)
+		if i < config.IdenticalCallHalt {
+			if outcome.Control != ToolControlContinue {
+				t.Fatalf("iteration %d outcome = %#v", i, outcome)
+			}
+			continue
+		}
+		if outcome.Control != ToolControlBreak ||
+			!strings.Contains(outcome.FinalContent, "Stopped the turn") {
+			t.Fatalf("terminal outcome = %#v", outcome)
+		}
+	}
+	if tool.executions != config.IdenticalCallHalt {
+		t.Fatalf("tool executions = %d, want %d", tool.executions, config.IdenticalCallHalt)
+	}
+	var decisions []ToolLoopDecisionPayload
+	for _, event := range emitter.events {
+		if event.kind == runtimeevents.KindAgentToolLoopDecision {
+			decisions = append(decisions, event.payload.(ToolLoopDecisionPayload))
+		}
+	}
+	if len(decisions) != 1 || decisions[0].Action != "halt" ||
+		decisions[0].Code != "identical_call_emergency_halt" {
+		t.Fatalf("loop decisions = %#v", decisions)
+	}
+}
+
 func TestPipelineLoopGuardUsesHookModifiedArgumentsAndResults(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	tool := &pipelineLoopGuardReadTool{}

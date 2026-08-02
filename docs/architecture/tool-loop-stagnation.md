@@ -245,6 +245,8 @@ Required controls:
 - exact-failure warning and block thresholds;
 - same-tool warning and halt thresholds;
 - read-only no-progress warning and block thresholds;
+- an emergency consecutive identical-successful-call halt threshold that
+  applies to every tool classification;
 - bounded history/state size if it is not derived from thresholds.
 
 Initial defaults:
@@ -260,6 +262,7 @@ Initial defaults:
 | same-tool failure halt | 8 |
 | read-only no-progress warn | 2 |
 | read-only no-progress block | 5 |
+| consecutive identical-successful-call emergency halt | 4 |
 
 These follow Hermes' conservative warning-first controller. Change them only
 with a MintClaw-specific rationale and tests.
@@ -289,7 +292,8 @@ Required focused coverage:
 - warning and optional hard-stop thresholds;
 - exact-failure, same-tool, success-reset, intervening-tool, and changed-result
   behavior;
-- mutating and unknown successful repeats remain allowed;
+- mutating and unknown successful repeats remain allowed below the emergency
+  consecutive identical-successful-call ceiling;
 - blocked calls preserve provider history and all tool-call IDs;
 - hook-modified names, arguments, and results;
 - policy/approval denials do not count as execution failures;
@@ -331,7 +335,9 @@ adapts the same pure `pkg/tools/loopguard` controller to each one:
 - each `turnExecution` and each legacy loop invocation owns a fresh controller,
   so state is never shared across turns, SubTurns, sessions, or restarts;
 - tool classification is optional registry metadata. Missing, invalid, MCP,
-  and dynamic classifications resolve to `unknown`.
+  and dynamic classifications resolve to `unknown`; the emergency consecutive
+  identical-successful-call ceiling deliberately does not depend on
+  classification.
 
 The existing fatal-MCP transport breaker is retained unchanged as a faster
 specialized fail-fast policy. Generic loop detection uses only structured
@@ -346,15 +352,17 @@ The audited read-only/idempotent set is intentionally small:
 
 All other built-in tools currently remain `unknown` unless they explicitly
 declare mutating semantics. This fail-closed classification prevents repeated
-successful output from an unclassified tool from triggering no-progress
-blocking.
+successful output from an unclassified tool from triggering semantic
+no-progress blocking, while the classification-independent emergency ceiling
+still bounds an exact consecutive loop.
 
 Configuration lives under JSON `tools.loop_detection` and environment
 variables. It is excluded from the legacy flattened YAML tools view because
-that format has no nested tools block. Defaults enable detection and warnings
-but leave hard stops opt-in. Invalid non-positive thresholds are normalized to
-safe defaults, and block thresholds are never normalized below warning
-thresholds.
+that format has no nested tools block. Defaults enable detection and warnings,
+leave semantic hard stops opt-in, and enforce the identical-call emergency
+ceiling whenever detection is enabled. Invalid non-positive thresholds are
+normalized to safe defaults, and block thresholds are never normalized below
+warning thresholds.
 
 The controller retains only SHA-256 argument and result identities in bounded
 per-turn memory. Runtime decision events and logs expose the tool name,

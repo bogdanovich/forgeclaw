@@ -469,10 +469,13 @@ toolLoop:
 					if loopDecision.Action == loopguard.ActionHalt {
 						runner.appendSkippedToolMessages(
 							i+1,
-							"tool loop hard stop",
-							"Skipped because tool-loop protection stopped the current batch.",
+							"tool loop emergency halt",
+							"Skipped because tool-loop protection stopped the current turn.",
 						)
-						break toolLoop
+						exec.messages = runner.messages
+						return ToolLoopOutcome{
+							Control: ToolControlBreak, FinalContent: loopDecision.Message,
+						}
 					}
 
 					runner.captureAfterToolSteering(true)
@@ -533,6 +536,17 @@ toolLoop:
 			}, toolMessagePersistAndIngest)
 			exec.allResponsesHandled = false
 			runner.captureAfterToolSteering(false)
+			if loopDecision.Action == loopguard.ActionHalt {
+				runner.appendSkippedToolMessages(
+					i+1,
+					"tool loop emergency halt",
+					"Skipped because tool-loop protection stopped the current turn.",
+				)
+				exec.messages = runner.messages
+				return ToolLoopOutcome{
+					Control: ToolControlBreak, FinalContent: loopDecision.Message,
+				}
+			}
 			continue
 		}
 
@@ -1057,10 +1071,13 @@ toolLoop:
 		if loopDecision.Action == loopguard.ActionHalt {
 			runner.appendSkippedToolMessages(
 				i+1,
-				"tool loop hard stop",
-				"Skipped because tool-loop protection stopped the current batch.",
+				"tool loop emergency halt",
+				"Skipped because tool-loop protection stopped the current turn.",
 			)
-			break toolLoop
+			exec.messages = runner.messages
+			return ToolLoopOutcome{
+				Control: ToolControlBreak, FinalContent: loopDecision.Message,
+			}
 		}
 
 		runner.captureAfterToolSteering(false)

@@ -105,11 +105,11 @@ files.
 
 ### Tool-Loop Detection
 
-`tools.loop_detection` detects repeated tool failures and repeated read-only
-calls that return no new information. Warnings are enabled by default. Hard
-stops are opt-in: when enabled, a blocked call is returned to the model as a
-synthetic tool error so it can choose another strategy without breaking tool
-call/result history.
+`tools.loop_detection` detects repeated tool failures, repeated read-only calls
+that return no new information, and consecutive identical successful calls
+regardless of tool classification. Warnings are enabled by default. Semantic
+hard stops are opt-in; the identical-call emergency halt remains active
+whenever loop detection itself is enabled.
 
 ```json
 {
@@ -124,6 +124,7 @@ call/result history.
       "same_tool_failure_halt": 8,
       "no_progress_warn": 2,
       "no_progress_block": 5,
+      "identical_call_halt": 4,
       "max_signatures": 64
     }
   }
@@ -138,12 +139,14 @@ call/result history.
 | `exact_failure_warn` / `exact_failure_block` | `2` / `5` | Thresholds for the same tool and canonical argument hash failing repeatedly. |
 | `same_tool_failure_warn` / `same_tool_failure_halt` | `3` / `8` | Thresholds for consecutive failures from one tool even when arguments change. |
 | `no_progress_warn` / `no_progress_block` | `2` / `5` | Thresholds for explicitly read-only tools returning the same result for the same arguments. |
+| `identical_call_halt` | `4` | Emergency turn halt after this many consecutive identical successful calls, including unknown, dynamic, MCP, and mutating tools. |
 | `max_signatures` | `64` | Maximum call signatures retained within one turn. |
 
 Arguments and results are represented internally by SHA-256 identities; raw
 values are not retained in detector state or loop-decision events. Successful
-repeated output from unclassified, MCP, dynamic, or mutating tools is never
-treated as read-only no progress. Current audited read-only tools are
+repeated output from unclassified, MCP, dynamic, or mutating tools is not
+treated as semantic read-only no progress, but the consecutive identical-call
+emergency ceiling still applies. Current audited read-only tools are
 `read_file`, `list_dir`, `search_files`, and `short_grep`.
 
 ### Diagnostic Trace Capture

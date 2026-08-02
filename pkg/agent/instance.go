@@ -187,6 +187,7 @@ func loopGuardConfigFromConfig(cfg config.ToolLoopDetectionConfig) loopguard.Con
 		SameToolFailureHalt: cfg.SameToolFailureHalt,
 		NoProgressWarn:      cfg.NoProgressWarn,
 		NoProgressBlock:     cfg.NoProgressBlock,
+		IdenticalCallHalt:   cfg.IdenticalCallHalt,
 		MaxSignatures:       cfg.MaxSignatures,
 	}.Normalized()
 }
