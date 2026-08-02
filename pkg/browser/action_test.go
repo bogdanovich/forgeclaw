@@ -269,6 +269,28 @@ func TestBrokerObservationDeniesPrivateDNSResolutionAndClosesSession(t *testing.
 	}
 }
 
+func TestBrokerPublicWebOriginPolicyAllowsPublicSyntaxButRejectsPrivateLiterals(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkPublicWeb
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+	broker := &Broker{config: root.Tools.Browser}
+	session := Session{Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile}
+	if !broker.originAllowed(session, "https://public.example") {
+		t.Fatal("public_web rejected a normalized public origin")
+	}
+	for _, denied := range []string{
+		"http://127.0.0.1", "http://169.254.169.254", "https://public.example:443",
+	} {
+		if broker.originAllowed(session, denied) {
+			t.Fatalf("public_web allowed non-public or non-canonical origin %q", denied)
+		}
+	}
+}
+
 func TestBrokerPreparationQuarantinesDeniedDNSResolution(t *testing.T) {
 	t.Run("current origin", func(t *testing.T) {
 		store := NewMemoryStore()

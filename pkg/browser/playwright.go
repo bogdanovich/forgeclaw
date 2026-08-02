@@ -149,9 +149,12 @@ func (client *managerPlaywrightClient) Close() error {
 
 type PlaywrightWorkerFactory struct {
 	target        string
-	profile       string
+	profileName   string
+	profileConfig config.BrowserProfileConfig
 	serverConfig  config.MCPServerConfig
 	clientFactory func() playwrightMCPClient
+	proxyLookupIP browserProxyLookup
+	proxyDial     browserProxyDial
 }
 
 func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFactory, error) {
@@ -176,27 +179,28 @@ func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFac
 	if !ok {
 		return nil, ErrDenied
 	}
-	server, err := playwrightServerWithOriginPolicy(server, profile.AllowedOrigins)
-	if err != nil {
+	if err := validatePlaywrightManagedPolicy(server); err != nil {
 		return nil, err
 	}
 	return &PlaywrightWorkerFactory{
-		target: config.BrowserDefaultTarget, profile: config.BrowserDefaultProfile,
-		serverConfig: server, clientFactory: newManagerPlaywrightClient,
+		target: config.BrowserDefaultTarget, profileName: config.BrowserDefaultProfile,
+		profileConfig: profile, serverConfig: cloneMCPServerConfig(server),
+		clientFactory: newManagerPlaywrightClient,
 	}, nil
 }
 
-func playwrightServerWithOriginPolicy(
-	server config.MCPServerConfig,
-	rawOrigins []string,
-) (config.MCPServerConfig, error) {
-	server = cloneMCPServerConfig(server)
+func validatePlaywrightManagedPolicy(server config.MCPServerConfig) error {
 	for _, argument := range server.Args {
 		if argument == "--allowed-origins" || strings.HasPrefix(argument, "--allowed-origins=") ||
 			argument == "--blocked-origins" || strings.HasPrefix(argument, "--blocked-origins=") ||
 			argument == "--config" || strings.HasPrefix(argument, "--config=") ||
-			argument == "--caps" || strings.HasPrefix(argument, "--caps=") {
-			return config.MCPServerConfig{}, fmt.Errorf(
+			argument == "--caps" || strings.HasPrefix(argument, "--caps=") ||
+			argument == "--proxy-server" || strings.HasPrefix(argument, "--proxy-server=") ||
+			argument == "--proxy-bypass" || strings.HasPrefix(argument, "--proxy-bypass=") ||
+			argument == "--cdp-endpoint" || strings.HasPrefix(argument, "--cdp-endpoint=") ||
+			argument == "--endpoint" || strings.HasPrefix(argument, "--endpoint=") ||
+			argument == "--extension" || strings.HasPrefix(argument, "--extension=") {
+			return fmt.Errorf(
 				"browser driver policy and capabilities must be managed, not %q",
 				argument,
 			)
@@ -205,25 +209,49 @@ func playwrightServerWithOriginPolicy(
 	for _, variable := range []string{
 		"PLAYWRIGHT_MCP_ALLOWED_ORIGINS",
 		"PLAYWRIGHT_MCP_BLOCKED_ORIGINS",
+		"PLAYWRIGHT_MCP_CAPS",
 		"PLAYWRIGHT_MCP_CONFIG",
+		"PLAYWRIGHT_MCP_PROXY_SERVER",
+		"PLAYWRIGHT_MCP_PROXY_BYPASS",
+		"PLAYWRIGHT_MCP_CDP_ENDPOINT",
+		"PLAYWRIGHT_MCP_ENDPOINT",
+		"PLAYWRIGHT_MCP_EXTENSION",
 	} {
 		if _, exists := server.Env[variable]; exists {
-			return config.MCPServerConfig{}, fmt.Errorf(
+			return fmt.Errorf(
 				"browser driver policy and capabilities must be managed, not %s",
 				variable,
 			)
 		}
 	}
-	origins := make([]string, 0, len(rawOrigins))
-	for _, rawOrigin := range rawOrigins {
+	return nil
+}
+
+func playwrightServerWithNetworkPolicy(
+	server config.MCPServerConfig,
+	profile config.BrowserProfileConfig,
+	proxyURL string,
+) (config.MCPServerConfig, error) {
+	server = cloneMCPServerConfig(server)
+	if err := validatePlaywrightManagedPolicy(server); err != nil {
+		return config.MCPServerConfig{}, err
+	}
+	if proxyURL == "" {
+		return config.MCPServerConfig{}, errors.New("browser driver requires a network-policy proxy")
+	}
+	origins := make([]string, 0, len(profile.AllowedOrigins))
+	for _, rawOrigin := range profile.AllowedOrigins {
 		origin, err := config.NormalizeBrowserOrigin(rawOrigin)
 		if err != nil {
 			return config.MCPServerConfig{}, fmt.Errorf("normalize browser driver origin: %w", err)
 		}
 		origins = append(origins, origin)
 	}
-	if len(origins) == 0 {
+	if profile.EffectiveNetworkMode() == config.BrowserNetworkExactOrigins && len(origins) == 0 {
 		return config.MCPServerConfig{}, errors.New("browser driver requires allowed origins")
+	}
+	if profile.EffectiveNetworkMode() == config.BrowserNetworkPublicWeb && len(origins) != 0 {
+		return config.MCPServerConfig{}, errors.New("public-web browser driver cannot use allowed origins")
 	}
 	sort.Strings(origins)
 	allowedOrigins := strings.Join(origins, ";")
@@ -235,8 +263,22 @@ func playwrightServerWithOriginPolicy(
 	// file can independently merge a blocklist or config-file policy.
 	server.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] = allowedOrigins
 	server.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] = ""
+	server.Env["PLAYWRIGHT_MCP_CAPS"] = "vision"
 	server.Env["PLAYWRIGHT_MCP_CONFIG"] = ""
-	server.Args = append(server.Args, "--caps", "vision", "--allowed-origins", allowedOrigins)
+	server.Env["PLAYWRIGHT_MCP_PROXY_SERVER"] = proxyURL
+	server.Env["PLAYWRIGHT_MCP_PROXY_BYPASS"] = "<-loopback>"
+	server.Env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = ""
+	server.Env["PLAYWRIGHT_MCP_ENDPOINT"] = ""
+	server.Env["PLAYWRIGHT_MCP_EXTENSION"] = ""
+	server.Args = append(
+		server.Args,
+		"--caps", "vision",
+		"--proxy-server", proxyURL,
+		"--proxy-bypass", "<-loopback>",
+	)
+	if profile.EffectiveNetworkMode() == config.BrowserNetworkExactOrigins {
+		server.Args = append(server.Args, "--allowed-origins", allowedOrigins)
+	}
 	return server, nil
 }
 
@@ -245,22 +287,40 @@ func (factory *PlaywrightWorkerFactory) Open(
 	request WorkerOpenRequest,
 ) (WorkerOpenResult, error) {
 	if factory == nil || factory.clientFactory == nil || request.Target != factory.target ||
-		request.Profile != factory.profile || !request.DryRun || !validIdentifier(request.SessionID) {
+		request.Profile != factory.profileName || !request.DryRun || !validIdentifier(request.SessionID) {
 		return WorkerOpenResult{}, ErrDenied
 	}
 	client := factory.clientFactory()
 	if client == nil {
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
+	networkProxy, err := startBrowserNetworkProxy(
+		factory.profileConfig,
+		factory.proxyLookupIP,
+		factory.proxyDial,
+	)
+	if err != nil {
+		return WorkerOpenResult{}, ErrWorkerUnavailable
+	}
+	server, err := playwrightServerWithNetworkPolicy(
+		factory.serverConfig,
+		factory.profileConfig,
+		networkProxy.URL(),
+	)
+	if err != nil {
+		_ = networkProxy.Close()
+		return WorkerOpenResult{}, ErrWorkerUnavailable
+	}
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.WithoutCancel(ctx))
 	worker := &playwrightWorker{
-		client: client, limits: request.Limits.Effective(), cancelLifetime: cancelLifetime,
+		client: client, networkProxy: networkProxy,
+		limits: request.Limits.Effective(), cancelLifetime: cancelLifetime,
 	}
 	stopStartupCancellation := context.AfterFunc(ctx, cancelLifetime)
 	catalog, err := client.Connect(
 		lifetimeCtx,
 		playwrightPrivateServerName,
-		cloneMCPServerConfig(factory.serverConfig),
+		server,
 	)
 	startupActive := stopStartupCancellation()
 	if err != nil {
@@ -290,6 +350,7 @@ func failedPlaywrightOpen(worker *playwrightWorker, err error) (WorkerOpenResult
 
 type playwrightWorker struct {
 	client          playwrightMCPClient
+	networkProxy    *browserNetworkProxy
 	limits          config.BrowserLimitsConfig
 	catalogRevision string
 	cancelLifetime  context.CancelFunc
@@ -306,6 +367,10 @@ func (worker *playwrightWorker) Status(ctx context.Context) (WorkerStatus, error
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
 	if worker.closing || worker.closed || worker.lost {
+		return WorkerLost, nil
+	}
+	if worker.networkProxy != nil && !worker.networkProxy.Available() {
+		worker.lost = true
 		return WorkerLost, nil
 	}
 	if err := worker.client.Ping(ctx); err != nil {
@@ -443,7 +508,9 @@ func (worker *playwrightWorker) Close(ctx context.Context) error {
 			worker.cancelLifetime()
 		}
 	}
-	if err := worker.client.Close(); err != nil {
+	clientErr := worker.client.Close()
+	proxyErr := worker.networkProxy.Close()
+	if clientErr != nil || proxyErr != nil {
 		return ErrWorkerUnavailable
 	}
 	worker.closed = true
@@ -456,7 +523,12 @@ func (worker *playwrightWorker) callAndConsume(
 	arguments map[string]any,
 	allowSnapshotTail bool,
 ) (string, error) {
+	denialsBefore := worker.networkProxy.Denials()
 	result, err := worker.client.CallTool(ctx, tool, arguments)
+	policyDenied := worker.networkProxy.Denials() > denialsBefore
+	if policyDenied && (err != nil || result == nil || result.IsError) {
+		return "", ErrDenied
+	}
 	if err != nil || result == nil {
 		worker.lost = true
 		return "", ErrWorkerUnavailable

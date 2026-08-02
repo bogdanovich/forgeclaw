@@ -17,6 +17,8 @@ import (
 const (
 	BrowserDriverPlaywrightMCP = "playwright_mcp"
 	BrowserProfileManaged      = "managed"
+	BrowserNetworkExactOrigins = "exact_origins"
+	BrowserNetworkPublicWeb    = "public_web"
 
 	BrowserMaxSessions          = 1
 	BrowserMaxTabs              = 4
@@ -93,8 +95,16 @@ type BrowserTargetConfig struct {
 type BrowserProfileConfig struct {
 	Enabled        bool     `json:"enabled"                   yaml:"-"`
 	Mode           string   `json:"mode,omitempty"            yaml:"-"`
+	NetworkMode    string   `json:"network_mode,omitempty"    yaml:"-"`
 	DryRun         bool     `json:"dry_run"                   yaml:"-"`
 	AllowedOrigins []string `json:"allowed_origins,omitempty" yaml:"-"`
+}
+
+func (profile BrowserProfileConfig) EffectiveNetworkMode() string {
+	if profile.NetworkMode == "" {
+		return BrowserNetworkExactOrigins
+	}
+	return profile.NetworkMode
 }
 
 type BrowserLimitsConfig struct {
@@ -128,7 +138,18 @@ func (limits BrowserLimitsConfig) Effective() BrowserLimitsConfig {
 }
 
 func (cfg BrowserToolsConfig) PolicyRevision() (string, error) {
-	encoded, err := json.Marshal(cfg)
+	canonical := cfg
+	canonical.Targets = make(map[string]BrowserTargetConfig, len(cfg.Targets))
+	for targetName, target := range cfg.Targets {
+		profiles := make(map[string]BrowserProfileConfig, len(target.Profiles))
+		for profileName, profile := range target.Profiles {
+			profile.NetworkMode = profile.EffectiveNetworkMode()
+			profiles[profileName] = profile
+		}
+		target.Profiles = profiles
+		canonical.Targets[targetName] = target
+	}
+	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return "", fmt.Errorf("encode browser policy revision: %w", err)
 	}
@@ -243,6 +264,10 @@ func validateBrowserProfile(targetName, name string, profile BrowserProfileConfi
 	if profile.Mode != "" && profile.Mode != BrowserProfileManaged {
 		return fmt.Errorf("browser profile %q supports only mode %q", name, BrowserProfileManaged)
 	}
+	networkMode := profile.EffectiveNetworkMode()
+	if networkMode != BrowserNetworkExactOrigins && networkMode != BrowserNetworkPublicWeb {
+		return fmt.Errorf("browser profile %q has unsupported network_mode %q", name, profile.NetworkMode)
+	}
 	if len(profile.AllowedOrigins) > BrowserMaxConfiguredOrigins {
 		return fmt.Errorf("browser profile %q exceeds %d allowed origins", name, BrowserMaxConfiguredOrigins)
 	}
@@ -267,8 +292,11 @@ func validateBrowserProfile(targetName, name string, profile BrowserProfileConfi
 		if !profile.DryRun {
 			return fmt.Errorf("enabled browser profile %q requires dry_run=true in B1", name)
 		}
-		if len(profile.AllowedOrigins) == 0 {
+		if networkMode == BrowserNetworkExactOrigins && len(profile.AllowedOrigins) == 0 {
 			return fmt.Errorf("enabled browser profile %q requires allowed_origins", name)
+		}
+		if networkMode == BrowserNetworkPublicWeb && len(profile.AllowedOrigins) != 0 {
+			return fmt.Errorf("enabled public_web browser profile %q must not set allowed_origins", name)
 		}
 	}
 	return nil
@@ -325,6 +353,15 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 		}
 	}
 	port := parsed.Port()
+	if strings.HasSuffix(parsed.Host, ":") && port == "" {
+		return "", errors.New("origin port must be between 1 and 65535")
+	}
+	if port != "" {
+		portNumber, portErr := strconv.Atoi(port)
+		if portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return "", errors.New("origin port must be between 1 and 65535")
+		}
+	}
 	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
 		port = ""
 	}

@@ -723,6 +723,10 @@ func (broker *Broker) originAllowed(session Session, origin string) bool {
 	if !ok {
 		return false
 	}
+	if profile.EffectiveNetworkMode() == config.BrowserNetworkPublicWeb {
+		normalized, err := config.NormalizeBrowserOrigin(origin)
+		return err == nil && normalized == origin
+	}
 	for _, allowed := range profile.AllowedOrigins {
 		normalized, err := config.NormalizeBrowserOrigin(allowed)
 		if err == nil && normalized == origin {

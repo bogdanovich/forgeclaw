@@ -34,6 +34,43 @@ func TestBrowserConfigAcceptsAdmittedB1Shape(t *testing.T) {
 	}
 }
 
+func TestBrowserConfigAcceptsPublicWebWithoutExactOrigins(t *testing.T) {
+	cfg := browserConfigFixture(t)
+	target := cfg.Tools.Browser.Targets[BrowserDefaultTarget]
+	profile := target.Profiles[BrowserDefaultProfile]
+	profile.NetworkMode = BrowserNetworkPublicWeb
+	profile.AllowedOrigins = nil
+	target.Profiles[BrowserDefaultProfile] = profile
+	cfg.Tools.Browser.Targets[BrowserDefaultTarget] = target
+	if err := cfg.ValidateBrowserConfig(); err != nil {
+		t.Fatalf("ValidateBrowserConfig() public_web error = %v", err)
+	}
+}
+
+func TestBrowserPolicyRevisionCanonicalizesDefaultNetworkMode(t *testing.T) {
+	cfg := browserConfigFixture(t)
+	omitted, err := cfg.Tools.Browser.PolicyRevision()
+	if err != nil {
+		t.Fatalf("PolicyRevision() omitted error = %v", err)
+	}
+	target := cfg.Tools.Browser.Targets[BrowserDefaultTarget]
+	profile := target.Profiles[BrowserDefaultProfile]
+	profile.NetworkMode = BrowserNetworkExactOrigins
+	target.Profiles[BrowserDefaultProfile] = profile
+	cfg.Tools.Browser.Targets[BrowserDefaultTarget] = target
+	explicit, err := cfg.Tools.Browser.PolicyRevision()
+	if err != nil || omitted != explicit {
+		t.Fatalf("PolicyRevision() omitted = %q, explicit = %q, error = %v", omitted, explicit, err)
+	}
+	original := browserConfigFixture(t).Tools.Browser
+	if _, err = original.PolicyRevision(); err != nil {
+		t.Fatal(err)
+	}
+	if got := original.Targets[BrowserDefaultTarget].Profiles[BrowserDefaultProfile].NetworkMode; got != "" {
+		t.Fatalf("PolicyRevision() mutated network mode to %q", got)
+	}
+}
+
 func TestBrowserConfigRequiresToolResultEnvelopeHeadroom(t *testing.T) {
 	cfg := browserConfigFixture(t)
 	cfg.Tools.Browser.Limits.ToolResultBytes = BrowserToolResultEnvelopeBytes - 1
@@ -144,6 +181,28 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 				cfg.Tools.Browser.Targets["gateway"] = target
 			},
 			wantErr: "requires dry_run=true in B1",
+		},
+		{
+			name: "unsupported network mode",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.NetworkMode = "any_http"
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "unsupported network_mode",
+		},
+		{
+			name: "public web with exact origins",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.NetworkMode = BrowserNetworkPublicWeb
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "must not set allowed_origins",
 		},
 		{
 			name: "second profile",
@@ -276,6 +335,28 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 				cfg.Tools.Browser.Targets["gateway"] = target
 			},
 			wantErr: "exact public DNS name",
+		},
+		{
+			name: "empty origin port",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"https://example.com:"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "port must be between 1 and 65535",
+		},
+		{
+			name: "out-of-range origin port",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"https://example.com:65536"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "port must be between 1 and 65535",
 		},
 		{
 			name: "expanded session limit",

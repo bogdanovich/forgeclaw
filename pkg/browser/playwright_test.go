@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,14 +129,24 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		t.Fatal("worker lifetime remained attached to the completed open call")
 	default:
 	}
+	args := client.connectCfg.Args
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
-		client.connectCfg.Enabled || !reflect.DeepEqual(
-		client.connectCfg.Args,
-		[]string{"--caps", "vision", "--allowed-origins", "http://b.example;https://example.com"},
-	) || client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
+		client.connectCfg.Enabled || len(args) != 8 ||
+		!reflect.DeepEqual(args[:4], []string{"--caps", "vision", "--proxy-server", args[3]}) ||
+		!strings.HasPrefix(args[3], "http://127.0.0.1:") ||
+		!reflect.DeepEqual(
+			args[4:],
+			[]string{"--proxy-bypass", "<-loopback>", "--allowed-origins", "http://b.example;https://example.com"},
+		) || client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
 		"http://b.example;https://example.com" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
-		client.connectCfg.Env["PLAYWRIGHT_MCP_CONFIG"] != "" {
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CAPS"] != "vision" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CONFIG"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_PROXY_SERVER"] != args[3] ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_PROXY_BYPASS"] != "<-loopback>" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_ENDPOINT"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_EXTENSION"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
 	if status, statusErr := worker.Status(context.Background()); statusErr != nil || status != WorkerReady {
@@ -226,6 +238,58 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	}
 }
 
+func TestPlaywrightWorkerFactoryConfiguresPublicWebWithoutDriverAllowlist(t *testing.T) {
+	t.Setenv("PLAYWRIGHT_MCP_CDP_ENDPOINT", "http://127.0.0.1:9222")
+	t.Setenv("PLAYWRIGHT_MCP_ENDPOINT", "ws://127.0.0.1:3000")
+	t.Setenv("PLAYWRIGHT_MCP_EXTENSION", "true")
+	t.Setenv("PLAYWRIGHT_MCP_PROXY_SERVER", "http://unmanaged-proxy.example")
+	t.Setenv("PLAYWRIGHT_MCP_PROXY_BYPASS", "localhost")
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkPublicWeb
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+	server := root.Tools.MCP.Servers["playwright"]
+	server.EnvFile = "/operator/playwright.env"
+	root.Tools.MCP.Servers["playwright"] = server
+	factory, err := NewPlaywrightWorkerFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakePlaywrightClient{catalog: playwrightCatalogFixture()}
+	factory.clientFactory = func() playwrightMCPClient { return client }
+	opened, err := factory.Open(context.Background(), WorkerOpenRequest{
+		SessionID: "session_public", Target: "gateway", Profile: "managed", DryRun: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := opened.Owner.(*playwrightWorker)
+	if err = worker.networkProxy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if status, statusErr := worker.Status(context.Background()); statusErr != nil || status != WorkerLost {
+		t.Fatalf("Status() after proxy exit = %q, %v", status, statusErr)
+	}
+	if err = worker.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(client.connectCfg.Args, " "), "--allowed-origins") ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CAPS"] != "vision" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_PROXY_SERVER"] != client.connectCfg.Args[3] ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_PROXY_BYPASS"] != "<-loopback>" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_ENDPOINT"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_EXTENSION"] != "" ||
+		client.connectCfg.EnvFile != "/operator/playwright.env" ||
+		!strings.Contains(strings.Join(client.connectCfg.Args, " "), "--proxy-bypass <-loopback>") {
+		t.Fatalf("public-web driver config = %+v", client.connectCfg)
+	}
+}
+
 func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 	tests := []struct {
 		name string
@@ -239,9 +303,28 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 		{name: "config equals argument", args: []string{"--config=browser-policy.json"}},
 		{name: "caps argument", args: []string{"--caps", "pdf"}},
 		{name: "caps equals argument", args: []string{"--caps=pdf"}},
+		{name: "proxy argument", args: []string{"--proxy-server", "http://proxy.example"}},
+		{name: "proxy equals argument", args: []string{"--proxy-server=http://proxy.example"}},
+		{name: "proxy bypass argument", args: []string{"--proxy-bypass", "localhost"}},
+		{name: "proxy bypass equals argument", args: []string{"--proxy-bypass=localhost"}},
+		{name: "CDP endpoint argument", args: []string{"--cdp-endpoint", "http://127.0.0.1:9222"}},
+		{name: "CDP endpoint equals argument", args: []string{"--cdp-endpoint=http://127.0.0.1:9222"}},
+		{name: "bound endpoint argument", args: []string{"--endpoint", "ws://127.0.0.1:3000"}},
+		{name: "bound endpoint equals argument", args: []string{"--endpoint=ws://127.0.0.1:3000"}},
+		{name: "extension argument", args: []string{"--extension"}},
+		{name: "extension equals argument", args: []string{"--extension=chrome"}},
 		{name: "allowed environment", env: map[string]string{"PLAYWRIGHT_MCP_ALLOWED_ORIGINS": "*"}},
 		{name: "blocked environment", env: map[string]string{"PLAYWRIGHT_MCP_BLOCKED_ORIGINS": ""}},
+		{name: "caps environment", env: map[string]string{"PLAYWRIGHT_MCP_CAPS": "pdf"}},
 		{name: "config environment", env: map[string]string{"PLAYWRIGHT_MCP_CONFIG": "browser-policy.json"}},
+		{name: "proxy environment", env: map[string]string{"PLAYWRIGHT_MCP_PROXY_SERVER": "http://proxy.example"}},
+		{name: "proxy bypass environment", env: map[string]string{"PLAYWRIGHT_MCP_PROXY_BYPASS": "localhost"}},
+		{
+			name: "CDP endpoint environment",
+			env:  map[string]string{"PLAYWRIGHT_MCP_CDP_ENDPOINT": "http://127.0.0.1:9222"},
+		},
+		{name: "bound endpoint environment", env: map[string]string{"PLAYWRIGHT_MCP_ENDPOINT": "ws://127.0.0.1:3000"}},
+		{name: "extension environment", env: map[string]string{"PLAYWRIGHT_MCP_EXTENSION": "true"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -905,8 +988,15 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
 		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")
 	}
+	var privateProbeRequests atomic.Int64
+	var privateProbeURL string
 	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if request.URL.Path == "/private-probe" {
+			privateProbeRequests.Add(1)
+			_, _ = fmt.Fprint(writer, "<!doctype html><title>Policy bypass</title>")
+			return
+		}
 		if request.URL.Path == "/large" {
 			_, _ = fmt.Fprint(writer, "<!doctype html><title>Large Fixture</title>")
 			for index := range config.BrowserMaxSnapshotRefs + 100 {
@@ -914,25 +1004,27 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 			}
 			return
 		}
-		_, _ = fmt.Fprint(writer, `<!doctype html><title>MintClaw Fixture</title>
+		_, _ = fmt.Fprintf(writer, `<!doctype html><title>MintClaw Fixture</title>
 <form onsubmit="event.preventDefault(); document.querySelector('output').textContent='Saved '+document.querySelector('input').value">
 <label>Name <input aria-label="Name"></label>
 <label>State <select aria-label="State"><option value="CA">California</option><option value="NY">New York</option></select></label>
 <button type="submit">Save</button><button type="button" onclick="prompt('Type DELETE'); alert('Saved')">Prompt</button>
-</form><output></output><div style="height:2000px"></div>`)
+</form><output></output><img src="%s" alt="private probe"><div style="height:2000px"></div>`, privateProbeURL)
 	}))
 	defer fixture.Close()
+	privateProbeURL = fixture.URL + "/private-probe"
 	fixtureURL, err := url.Parse(fixture.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixtureURL.Host = "127.0.0.1.nip.io:" + fixtureURL.Port()
+	fixtureURL.Host = "browser-fixture.test:" + fixtureURL.Port()
 	fixtureOrigin := fixtureURL.String()
 
 	root := admittedBrowserConfig()
 	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
 	profile := target.Profiles[config.BrowserDefaultProfile]
-	profile.AllowedOrigins = []string{fixtureOrigin}
+	profile.NetworkMode = config.BrowserNetworkPublicWeb
+	profile.AllowedOrigins = nil
 	target.Profiles[config.BrowserDefaultProfile] = profile
 	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
 	server := root.Tools.MCP.Servers["playwright"]
@@ -946,6 +1038,12 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	factory, err := NewPlaywrightWorkerFactory(root)
 	if err != nil {
 		t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
+	}
+	factory.proxyLookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("8.8.8.8")}, nil
+	}
+	factory.proxyDial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, fixture.Listener.Addr().String())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -1039,6 +1137,19 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 		len(observation.Snapshot) > config.BrowserMaxSnapshotBytes {
 		t.Fatalf("Observe(large fixture) = bytes %d, elements %d, truncated %t, error %v",
 			len(observation.Snapshot), len(observation.Elements), observation.Truncated, err)
+	}
+	privateNavigateErr := worker.Execute(ctx, DriverAction{
+		Kind: DriverNavigate, URL: fixture.URL + "/private-probe",
+	})
+	if privateNavigateErr != nil && !errors.Is(privateNavigateErr, ErrDenied) {
+		t.Fatalf("private fixture navigate error = %v", privateNavigateErr)
+	}
+	if privateProbeRequests.Load() != 0 || worker.networkProxy.Denials() == 0 {
+		t.Fatalf(
+			"private fixture requests = %d, proxy denials = %d",
+			privateProbeRequests.Load(),
+			worker.networkProxy.Denials(),
+		)
 	}
 	if err = worker.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
