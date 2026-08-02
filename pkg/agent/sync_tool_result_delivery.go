@@ -24,20 +24,24 @@ func (al *AgentLoop) syncToolResultDelivery() *syncToolResultDelivery {
 	return &syncToolResultDelivery{deliverToUser: al.deliverToolResultToUser}
 }
 
+func normalizeToolResultForSyncDelivery(ts *turnState, result *tools.ToolResult) *tools.ToolResult {
+	if result == nil {
+		return tools.ErrorResult("nil tool result")
+	}
+	if ts != nil && ts.opts.SuppressToolUserDelivery {
+		result.ResponseHandled = false
+		result.ImmediateDelivery = false
+	}
+	return result
+}
+
 func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 	ctx context.Context,
 	ts *turnState,
 	result *tools.ToolResult,
 	toolName string,
 ) ([]providers.Attachment, *tools.ToolResult) {
-	if result == nil {
-		return nil, tools.ErrorResult("nil tool result")
-	}
-
-	if ts.opts.SuppressToolUserDelivery {
-		result.ResponseHandled = false
-		result.ImmediateDelivery = false
-	}
+	result = normalizeToolResultForSyncDelivery(ts, result)
 
 	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
 		if d == nil || d.deliverToUser == nil {

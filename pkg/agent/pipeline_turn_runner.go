@@ -20,7 +20,7 @@ func (p *Pipeline) runTurnLoop(
 
 	exec, err := p.SetupTurn(turnCtx, ts)
 	if err != nil {
-		return turnResult{}, turnStatus, err
+		return turnResult{}, TurnEndStatusError, err
 	}
 	defer func() {
 		if exec != nil && exec.model.cleanup != nil {
@@ -107,11 +107,13 @@ func (p *Pipeline) runTurnLoop(
 				messages = append(messages, providerMsg)
 				totalContentLen += len(providerMsg.Content)
 				if !ts.opts.NoHistory {
-					writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, pm)
-					if writeErr == nil {
-						ts.recordPersistedMessage(pm)
+					writeErr := persistFullSessionMessage(turnCtx, ts.agent.Sessions, ts.sessionKey, pm)
+					if writeErr != nil {
+						turnStatus = TurnEndStatusError
+						return turnResult{}, turnStatus, fmt.Errorf("persist steering message: %w", writeErr)
 					}
-					p.ingestMessage(turnCtx, ts, pm, writeErr)
+					ts.recordPersistedMessage(pm)
+					p.ingestMessage(turnCtx, ts, pm, nil)
 				}
 				if exec.shouldTrackTurnOwnedSteering(pm) {
 					ts.recordAcceptedSteeringMessage(pm)
@@ -193,6 +195,10 @@ func (p *Pipeline) runTurnLoop(
 		case ControlToolLoop:
 			// Execute tools via Pipeline
 			toolOutcome := p.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
+			if toolOutcome.JournalErr != nil {
+				turnStatus = TurnEndStatusError
+				return turnResult{}, turnStatus, toolOutcome.JournalErr
+			}
 			switch toolOutcome.Control {
 			case ToolControlContinue:
 				// Re-read exec.messages since ExecuteTools may have updated it

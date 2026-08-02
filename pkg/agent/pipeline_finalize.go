@@ -6,7 +6,6 @@ import (
 	"context"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
-	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
@@ -55,23 +54,12 @@ func (p *Pipeline) Finalize(
 			ModelName:        exec.model.llmModelName,
 			ReasoningContent: responseReasoningContent(exec.response),
 		}
-		writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, finalMsg)
-		if writeErr == nil {
-			ts.recordPersistedMessage(finalMsg)
-		}
-		p.ingestMessage(turnCtx, ts, finalMsg, writeErr)
-		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
-			p.emitEvent(
-				runtimeevents.KindAgentError,
-				ts.eventMeta("runTurn", "turn.error"),
-				ErrorPayload{
-					Stage:   "session_save",
-					Message: err.Error(),
-				},
-			)
+		if writeErr := persistFullSessionMessage(turnCtx, ts.agent.Sessions, ts.sessionKey, finalMsg); writeErr != nil {
 			cancelConfiguredStreamingLLM(turnCtx, exec)
-			return turnResult{status: TurnEndStatusError}, err
+			return turnResult{status: TurnEndStatusError}, writeErr
 		}
+		ts.recordPersistedMessage(finalMsg)
+		p.ingestMessage(turnCtx, ts, finalMsg, nil)
 	}
 
 	contextUsage := computeContextUsage(ts.agent, ts.sessionKey)

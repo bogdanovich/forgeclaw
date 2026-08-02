@@ -323,7 +323,7 @@ func (p *Pipeline) CallLLM(
 				for i := range ts.persistedMessages {
 					ts.persistedMessages[i].Media = nil
 				}
-				ts.refreshRestorePointFromSession(ts.agent)
+				ts.refreshCanonicalRestorePointFromSession()
 			}
 			continue
 		}
@@ -432,7 +432,7 @@ func (p *Pipeline) CallLLM(
 				})
 			}
 			compactCancel()
-			ts.refreshRestorePointFromSession(ts.agent)
+			ts.refreshCanonicalRestorePointFromSession()
 			persistedTurn := ts.persistedMessagesSnapshot()
 			protectedTurnTail := append([]providers.Message(nil), persistedTurn...)
 			asmResp, asmErr := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
@@ -771,7 +771,7 @@ func (p *Pipeline) CallLLM(
 	exec.assistantToolCallsPersisted = false
 	exec.assistantToolCallsWriteErr = nil
 	if !ts.opts.NoHistory {
-		writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, assistantMsg)
+		writeErr := persistFullSessionMessage(turnCtx, ts.agent.Sessions, ts.sessionKey, assistantMsg)
 		exec.assistantToolCallsWriteErr = writeErr
 		exec.assistantToolCallsPersisted = writeErr == nil
 		if writeErr == nil {
@@ -779,7 +779,7 @@ func (p *Pipeline) CallLLM(
 		}
 		p.ingestMessage(turnCtx, ts, assistantMsg, writeErr)
 	}
-	if shouldPublishMintClawToolCallInterim {
+	if shouldPublishMintClawToolCallInterim && (ts.opts.NoHistory || exec.assistantToolCallsPersisted) {
 		interimContent := exec.response.Content
 		if p.shouldPublishToolFeedback(ts) {
 			interimContent = ""

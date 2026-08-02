@@ -19,7 +19,8 @@ func (c *turnAbortController) abortTurn(ts *turnState) (turnResult, error) {
 	}
 	ts.setPhase(TurnPhaseAborted)
 	if !ts.opts.NoHistory {
-		if err := ts.restoreSession(ts.agent); err != nil {
+		_, err := ts.restoreSessionBeforeToolExecution()
+		if err != nil {
 			c.emitEvent(
 				runtimeevents.KindAgentError,
 				ts.eventMeta("abortTurn", "turn.error"),

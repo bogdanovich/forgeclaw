@@ -117,6 +117,8 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	initialResponsePublished := false
 	initialRequiresAggregate := strings.TrimSpace(response) != ""
 	if err != nil {
+		var admissionErr *turnAdmissionError
+		rootAdmissionRejected := errors.As(err, &admissionErr)
 		initialResponsePublished = true
 		initialAdmission = al.maybePublishErrorWithScopes(
 			ctx,
@@ -129,6 +131,9 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			finalResponseAlwaysPublish,
 			target.traceScopes,
 		)
+		if rootAdmissionRejected {
+			initialAdmission = rejectedFinalResponseAdmission(err)
+		}
 		if errors.Is(initialAdmission.err, context.Canceled) {
 			return initialAdmission
 		}

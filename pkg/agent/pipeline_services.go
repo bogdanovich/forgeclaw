@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/logger"
@@ -10,27 +11,20 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
+type turnAdmissionError struct {
+	err error
+}
+
+func (e *turnAdmissionError) Error() string { return fmt.Sprintf("turn admission rejected: %v", e.err) }
+func (e *turnAdmissionError) Unwrap() error { return e.err }
+
 func persistFullSessionMessage(
+	ctx context.Context,
 	store session.SessionStore,
 	sessionKey string,
 	msg providers.Message,
 ) error {
-	if writer, ok := store.(session.ErrorAwareSessionWriter); ok {
-		return writer.AddFullMessageWithError(sessionKey, msg)
-	}
-	store.AddFullMessage(sessionKey, msg)
-	return nil
-}
-
-func persistSessionMessage(
-	store session.SessionStore,
-	sessionKey, role, content string,
-) error {
-	if writer, ok := store.(session.ErrorAwareSessionWriter); ok {
-		return writer.AddMessageWithError(sessionKey, role, content)
-	}
-	store.AddMessage(sessionKey, role, content)
-	return nil
+	return store.AppendTurnMessage(ctx, sessionKey, msg)
 }
 
 func (p *Pipeline) ingestMessage(

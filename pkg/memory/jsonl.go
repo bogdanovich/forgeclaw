@@ -70,8 +70,32 @@ type SessionMeta struct {
 // GetHistory ignores lines before that offset. This keeps all writes
 // append-only, which is both fast and crash-safe.
 type JSONLStore struct {
-	dir   string
-	locks [numLockShards]sync.Mutex
+	dir          string
+	locks        [numLockShards]sync.Mutex
+	journalFault func(jsonlJournalWriteStage) error
+}
+
+func contextCause(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return context.Cause(ctx)
+}
+
+type jsonlJournalWriteStage string
+
+const (
+	jsonlJournalStageFlush  jsonlJournalWriteStage = "flush"
+	jsonlJournalStageAppend jsonlJournalWriteStage = "append"
+	jsonlJournalStageFsync  jsonlJournalWriteStage = "fsync"
+	jsonlJournalStageRename jsonlJournalWriteStage = "rename"
+)
+
+func (s *JSONLStore) injectJournalFault(stage jsonlJournalWriteStage) error {
+	if s.journalFault == nil {
+		return nil
+	}
+	return s.journalFault(stage)
 }
 
 // NewJSONLStore creates a new JSONL-backed store rooted at dir.
@@ -663,22 +687,25 @@ func scanRetainedMessageLines(path string) (int, []int, error) {
 }
 
 func (s *JSONLStore) AddMessage(
-	_ context.Context, sessionKey, role, content string,
+	ctx context.Context, sessionKey, role, content string,
 ) error {
-	return s.addMsg(sessionKey, providers.Message{
+	return s.addMsg(ctx, sessionKey, providers.Message{
 		Role:    role,
 		Content: content,
 	})
 }
 
 func (s *JSONLStore) AddFullMessage(
-	_ context.Context, sessionKey string, msg providers.Message,
+	ctx context.Context, sessionKey string, msg providers.Message,
 ) error {
-	return s.addMsg(sessionKey, msg)
+	return s.addMsg(ctx, sessionKey, msg)
 }
 
 // addMsg is the shared implementation for AddMessage and AddFullMessage.
-func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
+func (s *JSONLStore) addMsg(ctx context.Context, sessionKey string, msg providers.Message) error {
+	if err := contextCause(ctx); err != nil {
+		return err
+	}
 	if messageutil.IsTransientAssistantThoughtMessage(msg) {
 		return nil
 	}
@@ -686,6 +713,9 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	l := s.sessionLock(sessionKey)
 	l.Lock()
 	defer l.Unlock()
+	if err := contextCause(ctx); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	meta, err := s.readMeta(sessionKey)
@@ -696,6 +726,9 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 		meta.CreatedAt = now
 	}
 	meta.UpdatedAt = now
+	if faultErr := s.injectJournalFault(jsonlJournalStageFlush); faultErr != nil {
+		return fmt.Errorf("memory: flush journal metadata: %w", faultErr)
+	}
 	if mutationErr := s.beginHistoryMutation(sessionKey, &meta, true); mutationErr != nil {
 		return mutationErr
 	}
@@ -719,6 +752,10 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	if err != nil {
 		return fmt.Errorf("memory: open jsonl for append: %w", err)
 	}
+	if faultErr := s.injectJournalFault(jsonlJournalStageAppend); faultErr != nil {
+		_ = f.Close()
+		return fmt.Errorf("memory: append message: %w", faultErr)
+	}
 	_, writeErr := f.Write(line)
 	if writeErr != nil {
 		f.Close()
@@ -728,6 +765,10 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	// durability guarantee of writeMeta and rewriteJSONL (which use
 	// WriteFileAtomic with fsync). Without Sync, a power loss could
 	// leave the append in the kernel page cache only — lost on reboot.
+	if faultErr := s.injectJournalFault(jsonlJournalStageFsync); faultErr != nil {
+		_ = f.Close()
+		return fmt.Errorf("memory: sync jsonl: %w", faultErr)
+	}
 	if syncErr := f.Sync(); syncErr != nil {
 		f.Close()
 		return fmt.Errorf("memory: sync jsonl: %w", syncErr)
@@ -738,6 +779,9 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 
 	meta.Count++
 	meta.UpdatedAt = now
+	if faultErr := s.injectJournalFault(jsonlJournalStageRename); faultErr != nil {
+		return fmt.Errorf("memory: commit journal metadata: %w", faultErr)
+	}
 
 	return s.finishHistoryMutation(sessionKey, &meta)
 }
