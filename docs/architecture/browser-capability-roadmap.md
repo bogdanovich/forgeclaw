@@ -332,6 +332,46 @@ B1 is complete only when:
 - current raw Playwright MCP tools are not simultaneously exposed as an
   ungoverned bypass to the migrated specialist.
 
+### Post-B1 network policy sequence
+
+The initial B1 deployment deliberately uses exact-origin admission. That mode
+remains useful for tightly restricted agents: every destination origin,
+including an origin reached by an HTTP redirect, must be listed explicitly.
+It is a supported lockdown policy, not the final ceiling of the browser
+capability.
+
+Network reachability should expand through separate, ordered follow-ups. Each
+follow-up requires its own admission, implementation PR, tests, and deployed
+evidence; it must not be mixed into a driver-compatibility or observation-bound
+fix.
+
+| Order | Working mode | Reachability | Required behavior |
+| --- | --- | --- | --- |
+| N0 | `exact_origins` | Only explicitly configured HTTP or HTTPS origins | Keep the deployed default. Check every navigation and redirect hop; deny an unlisted redirect origin. |
+| N1 | `public_web` | Any public HTTP or HTTPS destination | Admit ordinary public-web navigation and redirects without per-site entries. Resolve and revalidate every hop, and deny loopback, private, link-local, multicast, unspecified, and cloud-metadata destinations, including DNS-rebinding transitions. |
+| N2 | `any_http` | Any syntactically valid HTTP or HTTPS destination, including loopback, private, link-local, and metadata endpoints | Require an explicit high-risk operator setting. Preserve URL normalization, bounded navigation, audit, profile policy, dry-run, effect classification, and approval rules; broaden only network destination admission. |
+
+The implementation must keep these modes explicit and non-escalating:
+
+- profile configuration selects one mode, and `browser_targets` reports the
+  effective mode without exposing hidden policy data;
+- a model or page cannot select a broader mode;
+- an active session never silently falls back from `exact_origins` or
+  `public_web` to `any_http`;
+- policy reload cannot broaden an existing session without closing it and
+  opening a new session under the new policy revision;
+- redirect checks use the destination of every hop rather than trusting only
+  the requested URL;
+- non-HTTP schemes, embedded URL credentials, raw transport endpoints, and
+  arbitrary CDP or MCP forwarding remain outside all three modes;
+- tests cover public-to-private redirects, DNS rebinding, IPv4 and IPv6
+  literals, loopback aliases, link-local and metadata endpoints, and mode
+  changes during an active session.
+
+The delivery order is N1 first and N2 only after N1 has merged and has live
+gateway evidence. N2 must reuse the same broker and driver contract; it is a
+clearly labeled destination-policy expansion, not a second browser stack.
+
 ### Mandatory stop conditions
 
 Stop B1 if:
