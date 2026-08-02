@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -28,6 +29,39 @@ func TestWriteFileAtomic_PropagatesDirectorySyncFailure(t *testing.T) {
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || string(data) != "durable marker" {
 		t.Fatalf("renamed file after sync failure = %q, %v", data, readErr)
+	}
+}
+
+func TestMkdirAllDurableSyncsEveryParentAndReconfirmsExistingPath(t *testing.T) {
+	root := t.TempDir()
+	var synced []string
+	syncDir := func(path string) error {
+		synced = append(synced, path)
+		return nil
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := mkdirAllDurable(root, filepath.Join("state", "outbox"), 0o700, syncDir); err != nil {
+			t.Fatalf("mkdirAllDurable() attempt %d error = %v", attempt+1, err)
+		}
+	}
+	want := []string{root, filepath.Join(root, "state"), root, filepath.Join(root, "state")}
+	if !slices.Equal(synced, want) {
+		t.Fatalf("synced directories = %#v, want %#v", synced, want)
+	}
+}
+
+func TestMkdirAllDurableReportsCommittedDirectorySyncFailure(t *testing.T) {
+	root := t.TempDir()
+	wantErr := errors.New("directory sync failed")
+	err := mkdirAllDurable(root, filepath.Join("state", "outbox"), 0o700, func(string) error {
+		return wantErr
+	})
+	if !IsCommittedWriteError(err) || !errors.Is(err, wantErr) {
+		t.Fatalf("mkdirAllDurable() error = %v, want committed error wrapping %v", err, wantErr)
+	}
+	if info, statErr := os.Stat(filepath.Join(root, "state", "outbox")); statErr != nil || !info.IsDir() {
+		t.Fatalf("durable target was not created before sync failure: info=%v err=%v", info, statErr)
 	}
 }
 

@@ -82,6 +82,8 @@ type Store struct {
 	writeAtomic func(string, []byte, os.FileMode) error
 }
 
+type mkdirDurableFunc func(string, string, os.FileMode) error
+
 // Path returns the directory containing durable outbound intent records.
 func Path(workspace string) string {
 	return filepath.Join(workspace, "state", "outbox")
@@ -89,11 +91,16 @@ func Path(workspace string) string {
 
 // Open creates a workspace-scoped outbox store.
 func Open(workspace string) (*Store, error) {
-	dir := Path(strings.TrimSpace(workspace))
-	if strings.TrimSpace(workspace) == "" {
+	return open(workspace, fileutil.MkdirAllDurable)
+}
+
+func open(workspace string, mkdirDurable mkdirDurableFunc) (*Store, error) {
+	workspace = strings.TrimSpace(workspace)
+	dir := Path(workspace)
+	if workspace == "" {
 		return nil, errors.New("outbox workspace is required")
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := mkdirDurable(workspace, filepath.Join("state", "outbox"), 0o700); err != nil {
 		return nil, fmt.Errorf("create outbox directory: %w", err)
 	}
 	return &Store{

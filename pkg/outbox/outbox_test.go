@@ -168,6 +168,20 @@ func TestCreateDoesNotAdmitFailedPersistence(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsUnconfirmedDirectoryDurability(t *testing.T) {
+	workspace := t.TempDir()
+	wantErr := &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+	store, err := open(workspace, func(root, relativePath string, perm os.FileMode) error {
+		if root != workspace || relativePath != filepath.Join("state", "outbox") || perm != 0o700 {
+			t.Fatalf("mkdir durable args = root %q relative %q perm %#o", root, relativePath, perm)
+		}
+		return wantErr
+	})
+	if store != nil || !errors.Is(err, wantErr) {
+		t.Fatalf("open() = store %#v error %v, want nil and %v", store, err, wantErr)
+	}
+}
+
 func TestTerminalTransitionReconfirmsCommittedWriteError(t *testing.T) {
 	store := openTestStore(t)
 	intent := createTestIntent(t, store, "response")

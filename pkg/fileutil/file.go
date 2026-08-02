@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // CommittedWriteError reports that rename committed the new file, but the
@@ -72,6 +73,53 @@ func IsCommittedWriteError(err error) bool {
 //	err := utils.WriteFileAtomic("public.txt", data, 0o644)
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return writeFileAtomic(path, data, perm, syncDirectory)
+}
+
+// MkdirAllDurable creates a directory below an existing durable root and
+// syncs every parent entry between the root and target.
+func MkdirAllDurable(root, relativePath string, perm os.FileMode) error {
+	return mkdirAllDurable(root, relativePath, perm, syncDirectory)
+}
+
+func mkdirAllDurable(
+	root, relativePath string,
+	perm os.FileMode,
+	syncDir func(string) error,
+) error {
+	root = filepath.Clean(root)
+	if filepath.IsAbs(relativePath) {
+		return fmt.Errorf("durable directory path must be relative: %q", relativePath)
+	}
+	relativePath = filepath.Clean(relativePath)
+	if relativePath == "." || relativePath == "" || relativePath == ".." ||
+		strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("invalid durable directory path %q", relativePath)
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("stat durable directory root: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("durable directory root is not a directory: %q", root)
+	}
+
+	target := filepath.Join(root, relativePath)
+	if err := os.MkdirAll(target, perm); err != nil {
+		return fmt.Errorf("create durable directory: %w", err)
+	}
+	current := root
+	for _, component := range strings.Split(relativePath, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		parent := filepath.Dir(current)
+		if err := syncDir(parent); err != nil {
+			return &CommittedWriteError{Err: fmt.Errorf(
+				"sync durable directory parent %q: %w",
+				parent,
+				err,
+			)}
+		}
+	}
+	return nil
 }
 
 func writeFileAtomic(
