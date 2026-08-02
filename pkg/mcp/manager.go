@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -125,6 +126,8 @@ type ServerConnection struct {
 	Tools          []*mcp.Tool
 	reconnectMu    sync.Mutex
 	exclusiveLease *exclusiveServerLease
+	cleanup        io.Closer
+	cleanupFailed  bool
 	// recoveryRequired is set after a session-loss reconnect fails. New calls
 	// must recover this known-stale connection before dispatching a tool.
 	recoveryRequired atomic.Bool
@@ -385,6 +388,7 @@ func connectServer(
 	// Create transport based on configuration
 	// Auto-detect transport type if not explicitly specified
 	var transport mcp.Transport
+	var commandTransport *isolatedCommandTransport
 	transportType := config.EffectiveMCPTransportType(cfg)
 	if transportType == "" {
 		return nil, fmt.Errorf("either URL or command must be provided")
@@ -485,7 +489,8 @@ func connectServer(
 			env = append(env, fmt.Sprintf("%s=%s", k, v))
 		}
 		cmd.Env = env
-		transport = &isolatedCommandTransport{ServerName: name, Command: cmd}
+		commandTransport = &isolatedCommandTransport{ServerName: name, Command: cmd}
+		transport = commandTransport
 	default:
 		return nil, fmt.Errorf(
 			"unsupported transport type: %s (supported: stdio, sse, http, streamable-http)",
@@ -516,13 +521,17 @@ func connectServer(
 		return nil, err
 	}
 
-	return &ServerConnection{
+	conn := &ServerConnection{
 		Name:    name,
 		Config:  cfg,
 		Client:  client,
 		Session: session,
 		Tools:   tools,
-	}, nil
+	}
+	if commandTransport != nil {
+		conn.cleanup = commandTransport.cleanup
+	}
+	return conn, nil
 }
 
 // GetServers returns all connected servers
@@ -766,7 +775,7 @@ func (m *Manager) Close() error {
 	var errs []error
 	remaining := make(map[string]*ServerConnection)
 	for name, conn := range m.servers {
-		if err := conn.Session.Close(); err != nil {
+		if err := conn.close(); err != nil {
 			logger.ErrorCF("mcp", "Failed to close server connection",
 				map[string]any{
 					"server": name,
@@ -786,6 +795,19 @@ func (m *Manager) Close() error {
 	}
 
 	return nil
+}
+
+func (c *ServerConnection) close() error {
+	if c.cleanupFailed && c.cleanup != nil {
+		err := c.cleanup.Close()
+		c.cleanupFailed = err != nil
+		return err
+	}
+	err := c.Session.Close()
+	if err != nil && c.cleanup != nil {
+		c.cleanupFailed = true
+	}
+	return err
 }
 
 func (c *ServerConnection) releaseExclusiveLease() {

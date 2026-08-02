@@ -10,9 +10,13 @@ import (
 	"time"
 )
 
-func prepareIsolatedCommandProcessTree(command *exec.Cmd) {
+type isolatedCommandProcessTree struct {
+	command *exec.Cmd
+}
+
+func prepareIsolatedCommandProcessTree(command *exec.Cmd) (*isolatedCommandProcessTree, error) {
 	if command == nil {
-		return
+		return &isolatedCommandProcessTree{}, nil
 	}
 	if command.SysProcAttr == nil {
 		command.SysProcAttr = &syscall.SysProcAttr{}
@@ -20,9 +24,13 @@ func prepareIsolatedCommandProcessTree(command *exec.Cmd) {
 	if !command.SysProcAttr.Setsid {
 		command.SysProcAttr.Setpgid = true
 	}
+	return &isolatedCommandProcessTree{command: command}, nil
 }
 
-func stopIsolatedCommandProcessTree(command *exec.Cmd, timeout time.Duration) error {
+func (t *isolatedCommandProcessTree) started() error { return nil }
+
+func (t *isolatedCommandProcessTree) stop(timeout time.Duration) error {
+	command := t.command
 	if command == nil || command.Process == nil || command.Process.Pid <= 0 {
 		return nil
 	}

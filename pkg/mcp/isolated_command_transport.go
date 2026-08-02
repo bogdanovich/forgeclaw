@@ -26,6 +26,7 @@ type isolatedCommandTransport struct {
 	ServerName        string
 	Command           *exec.Cmd
 	TerminateDuration time.Duration
+	cleanup           io.Closer
 }
 
 func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connection, error) {
@@ -42,8 +43,18 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if err != nil {
 		return nil, err
 	}
-	prepareIsolatedCommandProcessTree(t.Command)
+	processTree, err := prepareIsolatedCommandProcessTree(t.Command)
+	if err != nil {
+		return nil, err
+	}
 	if err := isolation.Start(t.Command); err != nil {
+		_ = processTree.stop(t.TerminateDuration)
+		return nil, err
+	}
+	if err := processTree.started(); err != nil {
+		_ = t.Command.Process.Kill()
+		_ = processTree.stop(t.TerminateDuration)
+		_ = t.Command.Wait()
 		return nil, err
 	}
 	logger.InfoCF("mcp", "MCP stdio process started",
@@ -73,13 +84,16 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if td <= 0 {
 		td = isolatedCommandTerminateDuration
 	}
-	return newIsolatedIOConn(
-		&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, waitCh: waitCh, terminateDuration: td},
-	), nil
+	pipe := &isolatedPipeRWC{
+		stdout: stdout, stdin: stdin,
+		waitCh: waitCh, terminateDuration: td, stopProcessTree: processTree.stop,
+	}
+	t.cleanup = pipe
+	return newIsolatedIOConn(pipe), nil
 }
 
 type isolatedPipeRWC struct {
-	cmd               *exec.Cmd
+	stopProcessTree   func(time.Duration) error
 	stdout            io.ReadCloser
 	stdin             io.WriteCloser
 	waitCh            <-chan error
@@ -100,7 +114,7 @@ func (s *isolatedPipeRWC) Close() error {
 	// descendants sharing the owned process group are gone before Close
 	// succeeds and an exclusive profile lease may be released.
 	_ = s.stdin.Close()
-	if err := stopIsolatedCommandProcessTree(s.cmd, s.terminateDuration); err != nil {
+	if err := s.stopProcessTree(s.terminateDuration); err != nil {
 		return err
 	}
 	timer := time.NewTimer(s.terminateDuration)
