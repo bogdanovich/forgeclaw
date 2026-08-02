@@ -269,7 +269,7 @@ func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 		observe: browser.Observation{
 			SessionID: "browser_session_1", TabID: "tab_primary", SnapshotID: "snapshot_2",
 			SnapshotGeneration: 4, URL: "https://example.com/done", Origin: "https://example.com",
-			Snapshot: "- status Published",
+			Snapshot: "- status Published", Truncated: true,
 		},
 	}
 	tool := NewBrowserActTool(browserToolTestConfig(), source)
@@ -292,6 +292,7 @@ func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 	var result browserActionResult
 	decodeBrowserToolResult(t, tool.Execute(resumeCtx, args), &result)
 	if result.InvocationID != "invocation_1" || result.Observation == nil ||
+		!result.Observation.Truncated ||
 		source.executePrepared != "prepared_1" || source.executeApproval == nil ||
 		*source.executeApproval != binding || source.prepareRequest.RequestID == "" ||
 		source.prepareRequest.Owner != source.executeOwner {

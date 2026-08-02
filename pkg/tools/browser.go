@@ -359,7 +359,7 @@ func (runtime *browserToolRuntime) observationResult(observation browser.Observa
 			TabID: observation.TabID, SnapshotID: observation.SnapshotID,
 			SnapshotGeneration: observation.SnapshotGeneration,
 		}},
-		Truncated: false,
+		Truncated: observation.Truncated,
 		Limits: browserObservationLimits{
 			SnapshotBytes: limits.SnapshotBytes, SnapshotRefs: limits.SnapshotRefs,
 		},

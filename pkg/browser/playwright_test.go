@@ -376,6 +376,12 @@ func TestPlaywrightWorkerRejectsSelectorsOversizedInputAndUnknownActions(t *test
 		t.Fatalf("mapPlaywrightAction(malformed dialog) error = %v, want ErrInvalid", err)
 	}
 	tool, arguments, err := mapPlaywrightAction(
+		DriverAction{Kind: DriverClick, Target: "f1e2", Element: "Save"}, worker.limits,
+	)
+	if err != nil || tool != "browser_click" || arguments["target"] != "f1e2" {
+		t.Fatalf("mapPlaywrightAction(frame-qualified target) = %q, %+v, %v", tool, arguments, err)
+	}
+	tool, arguments, err = mapPlaywrightAction(
 		DriverAction{Kind: DriverDialog, Accept: true, PromptProvided: true}, worker.limits,
 	)
 	if err != nil || tool != "browser_handle_dialog" || arguments["promptText"] != "" {
@@ -683,18 +689,61 @@ func TestPlaywrightWorkerBoundsObservationAndRedactsDriverError(t *testing.T) {
 	}
 }
 
-func TestPlaywrightObservationEnforcesReferenceLimit(t *testing.T) {
+func TestPlaywrightObservationProjectsReferenceLimit(t *testing.T) {
 	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
 		"### Snapshot\n```yaml\n- button [ref=e1]\n- textbox [ref=e2]\n```"
-	if _, err := parsePlaywrightObservation(observation, 1024, 2); err != nil {
+	full, err := parsePlaywrightObservation(observation, 1024, 2)
+	if err != nil || full.Truncated {
 		t.Fatalf("parsePlaywrightObservation() boundary error = %v", err)
 	}
-	if _, err := parsePlaywrightObservation(observation, 1024, 1); !errors.Is(err, ErrDriverIncompatible) {
-		t.Fatalf("parsePlaywrightObservation() over-limit error = %v", err)
+	projected, err := parsePlaywrightObservation(observation, 1024, 1)
+	if err != nil || !projected.Truncated || projected.Snapshot != "- button [ref=e1]" ||
+		len(projected.Elements) != 1 || projected.Elements[0].Target != "e1" {
+		t.Fatalf("parsePlaywrightObservation() projected = %+v, %v", projected, err)
 	}
 	malformed := strings.Replace(observation, "[ref=e1]", "[ref=selector]", 1)
 	if _, err := parsePlaywrightObservation(malformed, 1024, 2); !errors.Is(err, ErrDriverIncompatible) {
 		t.Fatalf("parsePlaywrightObservation() malformed ref error = %v", err)
+	}
+}
+
+func TestPlaywrightObservationAcceptsFrameQualifiedReferences(t *testing.T) {
+	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n- button \"Save\" [ref=f1e2]\n```"
+	parsed, err := parsePlaywrightObservation(observation, 1024, 2)
+	if err != nil || parsed.Truncated || len(parsed.Elements) != 1 ||
+		parsed.Elements[0] != (DriverElement{Target: "f1e2", Role: "button", Name: "Save"}) {
+		t.Fatalf("parsePlaywrightObservation(frame-qualified ref) = %+v, %v", parsed, err)
+	}
+
+	for _, target := range []string{"f0e1", "f1e0", "f1f2e3", "frame1e2", ".submit"} {
+		if playwrightTargetPattern.MatchString(target) {
+			t.Fatalf("playwrightTargetPattern unexpectedly accepted %q", target)
+		}
+	}
+}
+
+func TestPlaywrightObservationProjectsByteLimitAtLineBoundary(t *testing.T) {
+	snapshot := "- heading \"First\"\n- paragraph \"Second\"\n- button [ref=e1]"
+	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n" + snapshot + "\n```"
+	limit := len("- heading \"First\"\n- paragraph \"Second\"")
+	projected, err := parsePlaywrightObservation(observation, limit, 2)
+	if err != nil || !projected.Truncated || projected.Snapshot != "- heading \"First\"" ||
+		len(projected.Elements) != 0 {
+		t.Fatalf("parsePlaywrightObservation() byte projection = %+v, %v", projected, err)
+	}
+}
+
+func TestPlaywrightObservationBudgetsOpaqueReferenceExpansion(t *testing.T) {
+	snapshot := "- button [ref=e1]\n- button [ref=e2]"
+	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n" + snapshot + "\n```"
+	limit := visiblePlaywrightSnapshotBytes("- button [ref=e1]\n")
+	projected, err := parsePlaywrightObservation(observation, limit, 2)
+	if err != nil || !projected.Truncated || projected.Snapshot != "- button [ref=e1]" ||
+		len(projected.Elements) != 1 {
+		t.Fatalf("parsePlaywrightObservation() opaque-ref projection = %+v, %v", projected, err)
 	}
 }
 
@@ -734,6 +783,13 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if request.URL.Path == "/large" {
+			_, _ = fmt.Fprint(writer, "<!doctype html><title>Large Fixture</title>")
+			for index := range config.BrowserMaxSnapshotRefs + 100 {
+				_, _ = fmt.Fprintf(writer, `<button>Action %d</button>`, index)
+			}
+			return
+		}
 		_, _ = fmt.Fprint(writer, `<!doctype html><title>MintClaw Fixture</title>
 <form onsubmit="event.preventDefault(); document.querySelector('output').textContent='Saved '+document.querySelector('input').value">
 <label>Name <input aria-label="Name"></label>
@@ -847,6 +903,18 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	if observation, err = worker.Observe(ctx); err != nil || observation.PendingDialog != nil {
 		t.Fatalf("Observe() after chained alert = %+v, %v", observation, err)
+	}
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin + "/large"}); err != nil {
+		t.Fatalf("large fixture navigate error = %v", err)
+	}
+	observation, err = worker.Observe(ctx)
+	if err != nil {
+		t.Fatalf("Observe(large fixture) error = %v", err)
+	}
+	if !observation.Truncated || len(observation.Elements) != config.BrowserMaxSnapshotRefs ||
+		len(observation.Snapshot) > config.BrowserMaxSnapshotBytes {
+		t.Fatalf("Observe(large fixture) = bytes %d, elements %d, truncated %t, error %v",
+			len(observation.Snapshot), len(observation.Elements), observation.Truncated, err)
 	}
 	if err = worker.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
