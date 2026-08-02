@@ -30,6 +30,9 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Browser Capability B1 Admission](browser-capability-b1-admission.md):
   admitted local browser broker, typed session and action contracts, runtime
   approval and recovery boundaries, delivery sequence, and completion gates.
+- [Browser Capability N1 Admission](browser-capability-n1-admission.md):
+  admitted public-web network mode, worker-owned enforcing proxy, redirect and
+  DNS-rebinding boundaries, lifecycle rules, and deployed completion gates.
 - [Node Companion P0 Capability Contracts](node-companion-p0-contracts.md): admitted scope, bounded discovery schema, effective-policy projection, freshness, redaction, and completion gates for model-visible node capabilities.
 - [Node Companion P1 Owner-Control Admission](node-companion-p1-admission.md): admitted owner shell, cancellation, Linux root broker, and interactive terminal contracts with disabled production defaults and exact completion gates.
 - [Node Companion P2 File Transfer Admission](node-companion-p2-admission.md): admitted regular-file transfer, gateway spool, path safety, Linux administrator helper, approval, replay, deployment, and mandatory completion gates.
