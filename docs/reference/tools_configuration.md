@@ -57,12 +57,38 @@ without approval prompts, set:
 | Config | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tools.approval.mode` | string | `required` | `required` uses approval hooks and operator confirmation; `allow_all` bypasses both |
+| `tools.approval.bypass_node_targets` | string[] | `[]` | Exact node target aliases that bypass tool and operator approval while mode remains `required` |
 
 `allow_all` is a global unattended-operation mode. It bypasses only the
 approval boundary. Pairing, target/profile authorization, discovery revisions,
 node policy, broker identity checks, and timeout/output limits still apply.
 Subagents also remain limited to targets and profiles granted to them. Run
 `mintclaw doctor` to surface this mode as a high-risk finding.
+
+To bypass approval only for explicitly trusted node targets, keep the global
+mode at `required` and list their configured execution-target aliases:
+
+```json
+{
+  "tools": {
+    "approval": {
+      "mode": "required",
+      "bypass_node_targets": ["vpn"]
+    }
+  }
+}
+```
+
+The bypass applies to every current or future first-party node tool carrying
+MintClaw's internal trusted-node capability when its call explicitly includes
+an exact listed target. An injected or replacement tool cannot gain the bypass
+by using a `nodes_*` name or wrapping a first-party tool. The validated tool
+instance is bound through execution, so a concurrent registry replacement
+cannot inherit its approval. Other targets, calls that omit the target, and
+non-node tools continue through the configured approval hooks. Target aliases
+must exist in `execution.targets`; duplicates, unknown targets, and combining
+`bypass_node_targets` with `allow_all` are rejected.
+`mintclaw doctor` reports the scoped bypass as a high-risk finding.
 
 ## Request User Input
 

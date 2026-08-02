@@ -481,6 +481,9 @@ func TestToolApprovalConfigDefaultsToRequired(t *testing.T) {
 
 func TestValidateToolApprovalConfig(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.Execution.Targets = map[string]ExecutionTarget{
+		"vpn": {Type: "node", Node: "vpn-node"},
+	}
 	cfg.Tools.Approval.Mode = " ALLOW_ALL "
 	if err := cfg.ValidateToolApprovalConfig(); err != nil {
 		t.Fatalf("ValidateToolApprovalConfig() error = %v", err)
@@ -493,6 +496,34 @@ func TestValidateToolApprovalConfig(t *testing.T) {
 	err := cfg.ValidateToolApprovalConfig()
 	if err == nil || !strings.Contains(err.Error(), "tools.approval.mode") {
 		t.Fatalf("ValidateToolApprovalConfig() error = %v", err)
+	}
+
+	cfg.Tools.Approval.Mode = ToolApprovalModeRequired
+	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
+	if err = cfg.ValidateToolApprovalConfig(); err != nil {
+		t.Fatalf("ValidateToolApprovalConfig() scoped bypass error = %v", err)
+	}
+	if !cfg.Tools.Approval.BypassesNodeTarget("vpn") || cfg.Tools.Approval.BypassesNodeTarget("other") {
+		t.Fatalf("scoped approval config = %#v", cfg.Tools.Approval)
+	}
+
+	cfg.Tools.Approval.BypassNodeTargets = []string{"missing"}
+	err = cfg.ValidateToolApprovalConfig()
+	if err == nil || !strings.Contains(err.Error(), `references unknown target "missing"`) {
+		t.Fatalf("ValidateToolApprovalConfig() unknown target error = %v", err)
+	}
+
+	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn", "vpn"}
+	err = cfg.ValidateToolApprovalConfig()
+	if err == nil || !strings.Contains(err.Error(), `contains duplicate target "vpn"`) {
+		t.Fatalf("ValidateToolApprovalConfig() duplicate target error = %v", err)
+	}
+
+	cfg.Tools.Approval.Mode = ToolApprovalModeAllowAll
+	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
+	err = cfg.ValidateToolApprovalConfig()
+	if err == nil || !strings.Contains(err.Error(), "cannot be set when mode is allow_all") {
+		t.Fatalf("ValidateToolApprovalConfig() redundant bypass error = %v", err)
 	}
 }
 

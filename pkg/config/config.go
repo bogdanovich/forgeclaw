@@ -1346,7 +1346,8 @@ const (
 )
 
 type ToolApprovalConfig struct {
-	Mode string `json:"mode,omitempty" yaml:"-" env:"MINTCLAW_TOOLS_APPROVAL_MODE"`
+	Mode              string   `json:"mode,omitempty"                yaml:"-" env:"MINTCLAW_TOOLS_APPROVAL_MODE"`
+	BypassNodeTargets []string `json:"bypass_node_targets,omitempty" yaml:"-"`
 }
 
 func (c ToolApprovalConfig) EffectiveMode() string {
@@ -1359,6 +1360,10 @@ func (c ToolApprovalConfig) EffectiveMode() string {
 
 func (c ToolApprovalConfig) AllowAll() bool {
 	return c.EffectiveMode() == ToolApprovalModeAllowAll
+}
+
+func (c ToolApprovalConfig) BypassesNodeTarget(target string) bool {
+	return slices.Contains(c.BypassNodeTargets, target)
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -2246,7 +2251,6 @@ func (c *Config) ValidateToolApprovalConfig() error {
 	switch mode {
 	case ToolApprovalModeRequired, ToolApprovalModeAllowAll:
 		c.Tools.Approval.Mode = mode
-		return nil
 	default:
 		return fmt.Errorf(
 			"tools.approval.mode: unsupported value %q (allowed: %q, %q)",
@@ -2255,6 +2259,23 @@ func (c *Config) ValidateToolApprovalConfig() error {
 			ToolApprovalModeAllowAll,
 		)
 	}
+	if mode == ToolApprovalModeAllowAll && len(c.Tools.Approval.BypassNodeTargets) > 0 {
+		return errors.New("tools.approval.bypass_node_targets cannot be set when mode is allow_all")
+	}
+	seen := make(map[string]struct{}, len(c.Tools.Approval.BypassNodeTargets))
+	for _, target := range c.Tools.Approval.BypassNodeTargets {
+		if !validExecutionTargetName(target) {
+			return fmt.Errorf("tools.approval.bypass_node_targets contains invalid target %q", target)
+		}
+		if _, exists := c.Execution.Targets[target]; !exists {
+			return fmt.Errorf("tools.approval.bypass_node_targets references unknown target %q", target)
+		}
+		if _, duplicate := seen[target]; duplicate {
+			return fmt.Errorf("tools.approval.bypass_node_targets contains duplicate target %q", target)
+		}
+		seen[target] = struct{}{}
+	}
+	return nil
 }
 
 func (c *Config) ValidateRequestUserInputConfig() error {

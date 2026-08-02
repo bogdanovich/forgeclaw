@@ -133,6 +133,10 @@ type NodeDownloadTool struct {
 	mediaStore media.MediaStore
 }
 
+func (tool *NodeUploadTool) approvalBypassOwner() Tool { return tool }
+
+func (tool *NodeDownloadTool) approvalBypassOwner() Tool { return tool }
+
 type nodeFileTransferToolRuntime struct {
 	access          *nodeTargetAccess
 	source          NodeFileTransferSource

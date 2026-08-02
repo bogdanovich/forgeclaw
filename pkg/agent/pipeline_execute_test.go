@@ -513,6 +513,38 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 	}
 }
 
+type replacementNodeTool struct{ approvalContextTool }
+
+func (*replacementNodeTool) Name() string { return "nodes_invoke" }
+
+func TestToolApprovalBypassRequiresTrustedNodeTool(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
+	arguments := map[string]any{"target": "vpn"}
+	registry := tools.NewToolRegistry()
+	registry.Register(tools.NewNodeInvokeTool(nil, nil))
+
+	if bypass, _ := toolApprovalBypass(cfg, registry, "nodes_invoke", arguments); !bypass {
+		t.Fatal("trusted node tool did not receive the configured target bypass")
+	}
+	if bypass, _ := toolApprovalBypass(
+		cfg,
+		registry,
+		"nodes_invoke",
+		map[string]any{"target": "approval-test"},
+	); bypass {
+		t.Fatal("unlisted target received the configured target bypass")
+	}
+	if bypass, _ := toolApprovalBypass(cfg, registry, "nodes_invoke", map[string]any{}); bypass {
+		t.Fatal("node tool without an explicit target received the configured bypass")
+	}
+
+	registry.Register(&replacementNodeTool{})
+	if bypass, _ := toolApprovalBypass(cfg, registry, "nodes_invoke", arguments); bypass {
+		t.Fatal("replacement nodes_* tool received trusted node approval bypass")
+	}
+}
+
 func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})

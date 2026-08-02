@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
@@ -22,6 +23,31 @@ import (
 )
 
 const repeatedFatalToolErrorStreakLimit = 3
+
+func toolApprovalBypass(
+	cfg *config.Config,
+	registry *tools.ToolRegistry,
+	toolName string,
+	arguments map[string]any,
+) (bool, *tools.TrustedToolExecution) {
+	if cfg == nil {
+		return false, nil
+	}
+	if cfg.Tools.Approval.AllowAll() {
+		return true, nil
+	}
+	if registry == nil {
+		return false, nil
+	}
+	target, execution, trusted := registry.TrustedNodeApprovalBypassTarget(toolName, arguments)
+	if !trusted {
+		return false, nil
+	}
+	if !cfg.Tools.Approval.BypassesNodeTarget(target) {
+		return false, nil
+	}
+	return true, execution
+}
 
 type mcpServerTool interface {
 	MCPServerName() string
@@ -534,23 +560,23 @@ toolLoop:
 			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		allowAllApprovals := p.Cfg != nil && p.Cfg.Tools.Approval.AllowAll()
+		approvalBypass, trustedExecution := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
 		execCtx = tools.WithToolApprovalContinuation(
 			execCtx,
-			ts.opts.ApprovalGrant != nil && !allowAllApprovals,
+			ts.opts.ApprovalGrant != nil && !approvalBypass,
 		)
-		execCtx = tools.WithToolApprovalBypass(execCtx, allowAllApprovals)
+		execCtx = tools.WithToolApprovalBypass(execCtx, approvalBypass)
 
-		if (!allowAllApprovals && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
+		if (!approvalBypass && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}
-			if !allowAllApprovals && p.Interaction.Hooks != nil {
+			if !approvalBypass && p.Interaction.Hooks != nil {
 				approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
 					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 				})
-			} else if !allowAllApprovals {
+			} else if !approvalBypass {
 				approval = ApprovalDecision{Reason: "approval policy is no longer available"}
 			}
 			interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)
@@ -609,7 +635,7 @@ toolLoop:
 					consumeErr = approvalArgsErr
 				} else {
 					var argumentHash string
-					if allowAllApprovals {
+					if approvalBypass {
 						// ApprovalArguments above still validates current tool
 						// state. This transition consumes the original durable
 						// binding, not a newly prepared time-bound node plan.
@@ -798,14 +824,26 @@ toolLoop:
 		if !ts.tryMarkToolExecutionStarted() {
 			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
-		toolResult := ts.agent.Tools.ExecuteWithContext(
-			execCtx,
-			toolName,
-			toolArgs,
-			ts.channel,
-			ts.chatID,
-			asyncCallback,
-		)
+		var toolResult *tools.ToolResult
+		if trustedExecution != nil {
+			toolResult = ts.agent.Tools.ExecuteTrustedWithContext(
+				execCtx,
+				trustedExecution,
+				toolArgs,
+				ts.channel,
+				ts.chatID,
+				asyncCallback,
+			)
+		} else {
+			toolResult = ts.agent.Tools.ExecuteWithContext(
+				execCtx,
+				toolName,
+				toolArgs,
+				ts.channel,
+				ts.chatID,
+				asyncCallback,
+			)
+		}
 		if toolResult != nil && toolResult.Async && asyncAckDelivery.ParentHandled {
 			toolResult.ResponseHandled = true
 		}

@@ -149,6 +149,8 @@ type NodeInvokeTool struct {
 	runtime *nodeInvocationToolRuntime
 }
 
+func (tool *NodeInvokeTool) approvalBypassOwner() Tool { return tool }
+
 type NodeStatusTool struct {
 	runtime *nodeInvocationToolRuntime
 }

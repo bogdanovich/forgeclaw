@@ -20,6 +20,7 @@ const (
 	CheckChannelOpenAllowFrom     = "channels.open_allow_from"
 	CheckChannelPermissiveTrigger = "channels.permissive_group_trigger"
 	CheckToolApprovalAllowAll     = "tools.approval_allow_all"
+	CheckToolApprovalBypassNodes  = "tools.approval_bypass_node_targets"
 	CheckExecRemoteWrite          = "tools.exec_remote_write"
 	CheckFilesystemWriteScope     = "tools.filesystem_write_scope"
 	CheckInstallSkillEnabled      = "tools.install_skill_enabled"
@@ -142,6 +143,22 @@ func checkToolRisks(cfg *config.Config) []Finding {
 			Evidence{
 				Path:    "tools.approval.mode",
 				Summary: "approval mode is allow_all",
+			},
+		))
+	}
+	if len(cfg.Tools.Approval.BypassNodeTargets) > 0 {
+		findings = append(findings, newFinding(
+			CheckToolApprovalBypassNodes,
+			SeverityFail,
+			"Node target approvals are bypassed",
+			"Commands and file operations on explicitly listed node targets proceed without approval-hook or operator confirmation.",
+			"Remove targets from tools.approval.bypass_node_targets when unattended operation is no longer needed.",
+			Evidence{
+				Path: "tools.approval.bypass_node_targets",
+				Summary: fmt.Sprintf(
+					"approval bypass is enabled for %d node target(s)",
+					len(cfg.Tools.Approval.BypassNodeTargets),
+				),
 			},
 		))
 	}

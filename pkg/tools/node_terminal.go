@@ -66,6 +66,8 @@ type NodeTerminalTool struct {
 	runtimeEvents runtimeevents.Bus
 }
 
+func (tool *NodeTerminalTool) approvalBypassOwner() Tool { return tool }
+
 // NodeTerminalOperator opens terminals for an explicitly authenticated
 // operator while sharing the same target and command authority checks as the
 // model-facing tool.
