@@ -189,7 +189,7 @@ func playwrightServerWithOriginPolicy(
 	} {
 		if _, exists := server.Env[variable]; exists {
 			return config.MCPServerConfig{}, fmt.Errorf(
-				"browser driver origin control must come from the managed profile, not %s",
+				"browser driver policy and capabilities must be managed, not %s",
 				variable,
 			)
 		}

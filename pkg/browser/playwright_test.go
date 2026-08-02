@@ -251,7 +251,7 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 			server.Env = test.env
 			root.Tools.MCP.Servers["playwright"] = server
 			if _, err := NewPlaywrightWorkerFactory(root); err == nil ||
-				!strings.Contains(err.Error(), "origin control must come from the managed profile") {
+				!strings.Contains(err.Error(), "policy and capabilities must be managed") {
 				t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
 			}
 		})
