@@ -548,7 +548,7 @@ func (al *AgentLoop) processInteractionInbound(
 			"This session is waiting for an answer from the authorized user.",
 		)
 	}
-	answerContent := interactionAnswerContent(record, msg)
+	answerContent := al.interactionAnswerContent(record, msg)
 	answer, err := parseInteractionAnswer(record, answerContent, msg.Context.MessageID)
 	if err != nil {
 		return interactionInboundCallerOwned, al.publishInteractionNotice(
@@ -588,9 +588,16 @@ func (al *AgentLoop) processInteractionInbound(
 	)
 }
 
-func interactionAnswerContent(record interactions.Record, msg bus.InboundMessage) string {
-	if record.Kind != interactions.KindApproval || msg.Context.Channel != "telegram" ||
+func (al *AgentLoop) interactionAnswerContent(record interactions.Record, msg bus.InboundMessage) string {
+	if record.Kind != interactions.KindApproval ||
 		strings.TrimSpace(msg.Context.ReplyToMessageID) == "" {
+		return msg.Content
+	}
+	if al == nil || al.cfg == nil {
+		return msg.Content
+	}
+	channel := al.cfg.Channels.Get(msg.Context.Channel)
+	if channel == nil || channel.Type != config.ChannelTelegram {
 		return msg.Content
 	}
 

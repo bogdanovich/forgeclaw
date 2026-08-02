@@ -429,18 +429,21 @@ func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
 }
 
 func TestInteractionAnswerContentUsesTelegramApprovalButtonChoice(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channels["tg1"] = &config.Channel{Enabled: true, Type: config.ChannelTelegram}
+	al := &AgentLoop{cfg: cfg}
 	record := interactions.Record{Kind: interactions.KindApproval}
 	msg := bus.InboundMessage{
 		Content: "[quoted assistant message]: approve?\n\nAllow once",
 		Context: bus.InboundContext{
-			Channel: "telegram", ReplyToMessageID: "prompt-1",
+			Channel: "tg1", ReplyToMessageID: "prompt-1",
 			Raw: map[string]string{
 				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
 			},
 		},
 	}
 
-	content := interactionAnswerContent(record, msg)
+	content := al.interactionAnswerContent(record, msg)
 	if content != bus.InboundInteractionChoiceAllowOnce {
 		t.Fatalf("interactionAnswerContent() = %q", content)
 	}
@@ -451,6 +454,8 @@ func TestInteractionAnswerContentUsesTelegramApprovalButtonChoice(t *testing.T) 
 }
 
 func TestInteractionAnswerContentIgnoresChoiceOutsideTelegramApprovalReply(t *testing.T) {
+	cfg := config.DefaultConfig()
+	al := &AgentLoop{cfg: cfg}
 	record := interactions.Record{Kind: interactions.KindQuestion}
 	msg := bus.InboundMessage{
 		Content: "Allow once",
@@ -461,20 +466,42 @@ func TestInteractionAnswerContentIgnoresChoiceOutsideTelegramApprovalReply(t *te
 			},
 		},
 	}
-	if got := interactionAnswerContent(record, msg); got != msg.Content {
+	if got := al.interactionAnswerContent(record, msg); got != msg.Content {
 		t.Fatalf("question interaction content = %q", got)
 	}
 
 	record.Kind = interactions.KindApproval
 	msg.Context.Channel = "slack"
-	if got := interactionAnswerContent(record, msg); got != msg.Content {
+	if got := al.interactionAnswerContent(record, msg); got != msg.Content {
 		t.Fatalf("non-Telegram interaction content = %q", got)
 	}
 
 	msg.Context.Channel = "telegram"
 	msg.Context.ReplyToMessageID = ""
-	if got := interactionAnswerContent(record, msg); got != msg.Content {
+	if got := al.interactionAnswerContent(record, msg); got != msg.Content {
 		t.Fatalf("non-reply interaction content = %q", got)
+	}
+}
+
+func TestInteractionAnswerContentRejectsNonTelegramInstanceNamedTelegram(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channels["telegram"] = &config.Channel{Enabled: true, Type: config.ChannelSlack}
+	al := &AgentLoop{cfg: cfg}
+	msg := bus.InboundMessage{
+		Content: "[quoted assistant message]: approve?\n\nAllow once",
+		Context: bus.InboundContext{
+			Channel: "telegram", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+
+	if got := al.interactionAnswerContent(
+		interactions.Record{Kind: interactions.KindApproval},
+		msg,
+	); got != msg.Content {
+		t.Fatalf("non-Telegram instance content = %q", got)
 	}
 }
 
