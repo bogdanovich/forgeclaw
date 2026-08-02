@@ -165,7 +165,8 @@ live personal deployment.
 | ID | Severity | Rationale | Remediation | Limitations |
 | --- | --- | --- | --- | --- |
 | `gateway.public_exposure` | fail | Wildcard or public gateway binds can expose local control surfaces. | Bind to loopback or put the gateway behind authenticated infrastructure. | Static bind analysis only; does not inspect firewall/NAT. |
-| `channels.open_allow_from` | warning | Empty or wildcard `allow_from` allows all sender identities accepted by the channel. | Configure explicit sender/chat/account allowlists. | Channel-specific identity semantics vary. |
+| `channels.empty_allow_from` | fail | An enabled channel with an empty `allow_from` denies every inbound sender. | Configure trusted sender/chat/account IDs, or use `["*"]` for intentional public access. | Channel-specific identity semantics vary. |
+| `channels.open_allow_from` | warning | A wildcard `allow_from` allows all sender identities accepted by the channel. | Configure explicit sender/chat/account allowlists unless public access is intentional. | Channel-specific identity semantics vary. |
 | `channels.permissive_group_trigger` | warning | Group channels without mention, prefix, or topic constraints can activate unexpectedly. | Require mention-only triggers or narrow prefixes/topics. | Does not know whether a channel is currently in group chats. |
 | `tools.exec_remote_write` | fail | Remote exec with write-capable permissions can start mutating host processes. | Disable remote exec or set `permission_mode: read_only`. | Does not execute or classify runtime commands. |
 | `tools.filesystem_write_scope` | fail | Write tools with broad workspace/write scopes can mutate host files. | Keep workspace restriction enabled and write roots narrow. | Path broadness is conservative and local-config based. |

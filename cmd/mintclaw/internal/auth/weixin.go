@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -16,6 +17,8 @@ func newWeixinCommand() *cobra.Command {
 	var baseURL string
 	var proxy string
 	var timeout int
+	var allowFrom []string
+	var public bool
 
 	cmd := &cobra.Command{
 		Use:   "weixin",
@@ -27,20 +30,31 @@ to authorize your account. On success, the bot token is saved to the mintclaw
 config so you can start the gateway immediately.
 
 Example:
-  mintclaw auth weixin`,
+  mintclaw auth weixin --allow-from YOUR_USER_ID`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runWeixinOnboard(baseURL, proxy, time.Duration(timeout)*time.Second)
+			policy, err := explicitChannelAllowFrom(allowFrom, public)
+			if err != nil {
+				return err
+			}
+			return runWeixinOnboard(baseURL, proxy, time.Duration(timeout)*time.Second, policy)
 		},
 	}
 
 	cmd.Flags().StringVar(&baseURL, "base-url", "https://ilinkai.weixin.qq.com/", "iLink API base URL")
 	cmd.Flags().StringVar(&proxy, "proxy", "", "HTTP proxy URL (e.g. http://localhost:7890)")
 	cmd.Flags().IntVar(&timeout, "timeout", 300, "Login timeout in seconds")
+	cmd.Flags().StringSliceVar(&allowFrom, "allow-from", nil, "Sender ID allowed to use the channel (repeatable)")
+	cmd.Flags().BoolVar(&public, "public", false, "Allow every sender")
+	cmd.MarkFlagsMutuallyExclusive("allow-from", "public")
 
 	return cmd
 }
 
-func runWeixinOnboard(baseURL, proxy string, timeout time.Duration) error {
+func runWeixinOnboard(
+	baseURL, proxy string,
+	timeout time.Duration,
+	allowFrom config.FlexibleStringSlice,
+) error {
 	fmt.Println("Starting Weixin (WeChat personal) login...")
 	fmt.Println()
 
@@ -70,9 +84,9 @@ func runWeixinOnboard(baseURL, proxy string, timeout time.Duration) error {
 		effectiveBaseURL = baseURL
 	}
 
-	if err := saveWeixinConfig(botToken, effectiveBaseURL, proxy); err != nil {
+	if err := saveWeixinConfig(botToken, effectiveBaseURL, proxy, allowFrom); err != nil {
 		fmt.Printf("⚠️  Could not auto-save to config: %v\n", err)
-		printManualWeixinConfig(botToken, effectiveBaseURL)
+		printManualWeixinConfig(botToken, effectiveBaseURL, allowFrom)
 		return nil
 	}
 
@@ -80,14 +94,14 @@ func runWeixinOnboard(baseURL, proxy string, timeout time.Duration) error {
 	fmt.Println()
 	fmt.Println("  mintclaw gateway")
 	fmt.Println()
-	fmt.Println("To restrict which WeChat users can send messages, add their user IDs")
-	fmt.Println("to channels.weixin.allow_from in your config.")
-
 	return nil
 }
 
 // saveWeixinConfig patches channels.weixin in the config and saves it.
-func saveWeixinConfig(token, baseURL, proxy string) error {
+func saveWeixinConfig(
+	token, baseURL, proxy string,
+	allowFrom config.FlexibleStringSlice,
+) error {
 	cfgPath := internal.GetConfigPath()
 
 	cfg, err := config.LoadConfig(cfgPath)
@@ -101,6 +115,7 @@ func saveWeixinConfig(token, baseURL, proxy string) error {
 		cfg.Channels[config.ChannelWeixin] = bc
 	}
 	bc.Enabled = true
+	bc.AllowFrom = allowFrom
 
 	if decoded, err := bc.GetDecoded(); err == nil && decoded != nil {
 		if weixinCfg, ok := decoded.(*config.WeixinSettings); ok {
@@ -118,7 +133,7 @@ func saveWeixinConfig(token, baseURL, proxy string) error {
 	return config.SaveConfig(cfgPath, cfg)
 }
 
-func printManualWeixinConfig(token, baseURL string) {
+func printManualWeixinConfig(token, baseURL string, allowFrom config.FlexibleStringSlice) {
 	fmt.Println()
 	fmt.Println("Add the following to the channels section of your mintclaw config:")
 	fmt.Println()
@@ -129,6 +144,7 @@ func printManualWeixinConfig(token, baseURL string) {
 	if baseURL != "" && baseURL != defaultBase {
 		fmt.Printf("    \"base_url\": %q,\n", baseURL)
 	}
-	fmt.Println(`    "allow_from": []`)
+	encodedAllowFrom, _ := json.Marshal(allowFrom)
+	fmt.Printf("    \"allow_from\": %s\n", encodedAllowFrom)
 	fmt.Println(`  }`)
 }

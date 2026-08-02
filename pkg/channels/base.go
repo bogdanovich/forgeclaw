@@ -98,39 +98,26 @@ type BaseChannel struct {
 
 func NewBaseChannel(
 	name string,
-	config any,
+	channelConfig any,
 	bus *bus.MessageBus,
 	allowList []string,
 	opts ...BaseChannelOption,
 ) *BaseChannel {
-	isEmpty := true
-	for _, s := range allowList {
-		if s != "" {
-			isEmpty = false
-			break
-		}
-	}
-	if isEmpty {
-		allowList = []string{}
-	}
+	normalizedAllowList := config.NormalizeAllowFrom(allowList)
 	bc := &BaseChannel{
-		config:    config,
+		config:    channelConfig,
 		bus:       bus,
 		name:      name,
-		allowList: allowList,
+		allowList: normalizedAllowList,
 	}
 	for _, opt := range opts {
 		opt(bc)
 	}
 
-	// Security Audit: Check for open-by-default (unsecured) channels.
-	// MintClaw aims to be secure-by-default. If allow_from is empty, the bot
-	// currently defaults to accepting messages from ANYONE. To explicitly
-	// acknowledge and permit this (e.g. for a public bot), use ["*"].
 	if len(bc.allowList) == 0 {
-		logger.WarnCF("channels", "SECURITY: Channel allows EVERYONE (allow_from is empty)", map[string]any{
+		logger.WarnCF("channels", "Channel denies all senders because allow_from is empty", map[string]any{
 			"channel": bc.name,
-			"hint":    "Set allow_from to your ID, or use '*' to explicitly acknowledge open access.",
+			"hint":    "Set allow_from to trusted sender IDs, or use '*' for intentional public access.",
 		})
 	}
 
@@ -252,7 +239,7 @@ func (c *BaseChannel) IsRunning() bool {
 
 func (c *BaseChannel) IsAllowed(senderID string) bool {
 	if len(c.allowList) == 0 {
-		return true
+		return false
 	}
 
 	// Extract parts from compound senderID like "123456|username"
@@ -297,7 +284,7 @@ func (c *BaseChannel) IsAllowed(senderID string) bool {
 // across all legacy formats and the new canonical "platform:id" format.
 func (c *BaseChannel) IsAllowedSender(sender bus.SenderInfo) bool {
 	if len(c.allowList) == 0 {
-		return true
+		return false
 	}
 
 	for _, allowed := range c.allowList {

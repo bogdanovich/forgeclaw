@@ -14,7 +14,7 @@ MaixCam is a dedicated channel for connecting to Sipeed MaixCAM and MaixCAM2 AI 
       "type": "maixcam",
       "host": "0.0.0.0",
       "port": 18790,
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -25,7 +25,7 @@ MaixCam is a dedicated channel for connecting to Sipeed MaixCAM and MaixCAM2 AI 
 | enabled    | bool   | Yes      | Whether to enable the MaixCam channel                            |
 | host       | string | Yes      | TCP server listening address                                     |
 | port       | int    | Yes      | TCP server listening port                                        |
-| allow_from | array  | No       | Allowlist of device IDs; empty means all devices are allowed     |
+| allow_from | array  | No       | Allowlist of device IDs; empty denies all devices; use `["*"]` for public access     |
 
 ## Use Cases
 

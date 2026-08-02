@@ -15,7 +15,7 @@ MintClaw supports LINE through the LINE Messaging API with webhook callbacks.
       "channel_secret": "YOUR_CHANNEL_SECRET",
       "channel_access_token": "YOUR_CHANNEL_ACCESS_TOKEN",
       "webhook_path": "/webhook/line",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -27,7 +27,7 @@ MintClaw supports LINE through the LINE Messaging API with webhook callbacks.
 | channel_secret       | string | Yes      | Channel Secret for the LINE Messaging API                          |
 | channel_access_token | string | Yes      | Channel Access Token for the LINE Messaging API                    |
 | webhook_path         | string | No       | Webhook path (default: /webhook/line)                              |
-| allow_from           | array  | No       | User ID whitelist; empty means all users are allowed               |
+| allow_from           | array  | No       | User ID whitelist; empty denies all users; use `["*"]` for public access               |
 
 ## Setup
 

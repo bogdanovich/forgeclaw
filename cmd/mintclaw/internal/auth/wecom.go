@@ -79,29 +79,45 @@ type wecomQRQueryResponse struct {
 
 func newWeComCommand() *cobra.Command {
 	var timeout time.Duration
+	var allowFrom []string
+	var public bool
 
 	cmd := &cobra.Command{
 		Use:   "wecom",
 		Short: "Scan a WeCom QR code and configure channels.wecom",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return authWeComCmd(timeout)
+			policy, err := explicitChannelAllowFrom(allowFrom, public)
+			if err != nil {
+				return err
+			}
+			return authWeComCmd(timeout, policy)
 		},
 	}
 
 	cmd.Flags().DurationVar(&timeout, "timeout", wecomQRPollTimeout, "How long to wait for QR confirmation")
+	cmd.Flags().StringSliceVar(&allowFrom, "allow-from", nil, "Sender ID allowed to use the channel (repeatable)")
+	cmd.Flags().BoolVar(&public, "public", false, "Allow every sender")
+	cmd.MarkFlagsMutuallyExclusive("allow-from", "public")
 
 	return cmd
 }
 
-func authWeComCmd(timeout time.Duration) error {
-	return authWeComCmdWithScanner(context.Background(), os.Stdout, timeout, scanWeComQRCodeInteractive)
+func authWeComCmd(timeout time.Duration, allowFrom config.FlexibleStringSlice) error {
+	return authWeComCmdWithScanner(
+		context.Background(),
+		os.Stdout,
+		timeout,
+		allowFrom,
+		scanWeComQRCodeInteractive,
+	)
 }
 
 func authWeComCmdWithScanner(
 	ctx context.Context,
 	writer io.Writer,
 	timeout time.Duration,
+	allowFrom config.FlexibleStringSlice,
 	scanner wecomQRScanner,
 ) error {
 	if scanner == nil {
@@ -124,7 +140,7 @@ func authWeComCmdWithScanner(
 		return err
 	}
 
-	applyWeComAuthResult(cfg, botInfo)
+	applyWeComAuthResult(cfg, botInfo, allowFrom)
 
 	if saveErr := config.SaveConfig(internal.GetConfigPath(), cfg); saveErr != nil {
 		return fmt.Errorf("failed to save config: %w", saveErr)
@@ -155,13 +171,18 @@ func defaultWeComQRFlowOptions(timeout time.Duration) wecomQRFlowOptions {
 	}
 }
 
-func applyWeComAuthResult(cfg *config.Config, botInfo wecomQRBotInfo) {
+func applyWeComAuthResult(
+	cfg *config.Config,
+	botInfo wecomQRBotInfo,
+	allowFrom config.FlexibleStringSlice,
+) {
 	bc := cfg.Channels.GetByType(config.ChannelWeCom)
 	if bc == nil {
 		bc = &config.Channel{Type: config.ChannelWeCom}
 		cfg.Channels["wecom"] = bc
 	}
 	bc.Enabled = true
+	bc.AllowFrom = allowFrom
 
 	decoded, err := bc.GetDecoded()
 	if err != nil {
