@@ -40,6 +40,7 @@ func (t *fixedToolResultTool) Description() string { return "fixed tool result" 
 func (t *fixedToolResultTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
+
 func (t *fixedToolResultTool) Execute(context.Context, map[string]any) *tools.ToolResult {
 	t.executions++
 	return t.result
