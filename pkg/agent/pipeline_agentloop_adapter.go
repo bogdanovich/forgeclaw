@@ -15,6 +15,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 			ChannelStreaming:  newConfigChannelStreamingProvider(cfg),
 			NativeSearch:      newConfigNativeSearchPolicy(cfg),
 			LLMRetry:          newConfigLLMRetryPolicy(cfg),
+			RetrySleeper:      contextRetrySleeper{},
 			MediaLimits:       newConfigMediaLimitsProvider(cfg),
 			FinalTurnRender:   newConfigFinalTurnRenderPolicy(cfg),
 			ModelResolution:   newConfigPipelineModelResolution(cfg),

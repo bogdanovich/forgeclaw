@@ -361,7 +361,7 @@ func (p *Pipeline) CallLLM(
 				"retry":   retry,
 				"backoff": backoff.String(),
 			})
-			if sleepErr := sleepWithContext(turnCtx, backoff); sleepErr != nil {
+			if sleepErr := p.sleepBeforeLLMRetry(turnCtx, backoff); sleepErr != nil {
 				if ts.hardAbortRequested() {
 					_ = ts.requestHardAbort()
 					return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
