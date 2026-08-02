@@ -6,14 +6,44 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 func acquireStoreLock(path string) (func(), error) {
-	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	owner, err := currentWindowsStoreOwner()
+	if err != nil {
+		return nil, err
+	}
+	descriptor, _, err := ownerOnlyWindowsStoreDescriptor(owner)
+	if err != nil {
+		return nil, err
+	}
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	attributes := &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: descriptor,
+	}
+	handle, err := windows.CreateFile(
+		pathPtr,
+		windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		attributes,
+		windows.OPEN_ALWAYS,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open browser state lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(handle), path)
+	if err = secureWindowsStoreHandle(handle, owner); err != nil {
+		_ = lock.Close()
+		return nil, err
 	}
 	overlapped := &windows.Overlapped{}
 	err = windows.LockFileEx(

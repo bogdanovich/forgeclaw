@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 func TestFileStorePersistsAndExclusivelyOwnsState(t *testing.T) {
@@ -41,9 +42,42 @@ func TestFileStorePersistsAndExclusivelyOwnsState(t *testing.T) {
 		t.Fatalf("reopen FileStore error = %v", err)
 	}
 	t.Cleanup(reopened.Close)
+	if err = store.CreateSession(
+		context.Background(),
+		testOpeningSession(testOwner()),
+	); !errors.Is(
+		err,
+		ErrStoreClosed,
+	) {
+		t.Fatalf("closed store CreateSession() error = %v, want ErrStoreClosed", err)
+	}
 	stored, err := reopened.GetSession(context.Background(), session.ID)
 	if err != nil || stored != session {
 		t.Fatalf("persisted session = %+v, %v; want %+v", stored, err, session)
+	}
+}
+
+func TestFileStoreRollsBackRejectedBoundedWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "browser.json")
+	store, err := NewFileStore(path, 0, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := testOpeningSession(testOwner())
+	if err = store.CreateSession(context.Background(), session); !errors.Is(err, ErrStoreFull) {
+		t.Fatalf("CreateSession() error = %v, want ErrStoreFull", err)
+	}
+	if _, err = store.GetSession(context.Background(), session.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("live GetSession() error = %v, want ErrNotFound", err)
+	}
+	store.Close()
+	reopened, err := NewFileStore(path, 0, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err = reopened.GetSession(context.Background(), session.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reopened GetSession() error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -136,6 +170,46 @@ func TestBrokerRecoverMarksSessionLostAndAcceptedInvocationUnknown(t *testing.T)
 		OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"},
 	); err != nil {
 		t.Fatalf("Open() after recovery error = %v", err)
+	}
+}
+
+func TestBrokerOpenReconcilesCommittedReadyWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "browser.json")
+	store, err := NewFileStore(path, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	originalWrite := store.writeFile
+	writes := 0
+	store.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		writes++
+		if writeErr := originalWrite(path, data, mode); writeErr != nil {
+			return writeErr
+		}
+		if writes == 2 {
+			return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+		}
+		return nil
+	}
+	factory := &fakeWorkerFactory{}
+	broker := lifecycleTestBroker(t, admittedBrowserConfig(), store, factory)
+	session, err := broker.Open(
+		context.Background(),
+		OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"},
+	)
+	if err == nil || session.State != SessionLost || factory.workers[0].closed != 1 {
+		t.Fatalf("Open() = %+v, %v; worker = %+v", session, err, factory.workers[0])
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored.State != SessionLost {
+		t.Fatalf("stored session = %+v, %v", stored, getErr)
+	}
+	if _, err = broker.Open(
+		context.Background(),
+		OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"},
+	); err != nil {
+		t.Fatalf("Open() after committed warning reconciliation error = %v", err)
 	}
 }
 
@@ -304,6 +378,60 @@ func TestBrokerExecutePreparedDoesNotDispatchBeforeDurableAcceptance(t *testing.
 	}
 }
 
+func TestBrokerExecutePreparedDoesNotDispatchAfterCommittedAcceptanceWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "browser.json")
+	store, err := NewFileStore(path, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	originalWrite := store.writeFile
+	writes := 0
+	store.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		writes++
+		if writeErr := originalWrite(path, data, mode); writeErr != nil {
+			return writeErr
+		}
+		if writes == 4 {
+			return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+		}
+		return nil
+	}
+	broker := lifecycleTestBroker(t, admittedBrowserConfig(), store, &fakeWorkerFactory{})
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := preparedInvocation(session, "invocation_committed_acceptance")
+	if err = store.CreateInvocation(context.Background(), invocation); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	execute := func(context.Context) (json.RawMessage, error) {
+		calls++
+		return json.RawMessage(`{"unexpected":true}`), nil
+	}
+	if _, err = broker.ExecutePrepared(
+		context.Background(),
+		owner,
+		invocation.ID,
+		invocation.ActionHash,
+		execute,
+	); !fileutil.IsCommittedWriteError(
+		err,
+	) {
+		t.Fatalf("first ExecutePrepared() error = %v, want committed write warning", err)
+	}
+	if calls != 0 {
+		t.Fatalf("executor calls after committed acceptance warning = %d", calls)
+	}
+	got, err := broker.ExecutePrepared(context.Background(), owner, invocation.ID, invocation.ActionHash, execute)
+	if err != nil || got.State != InvocationUnknown || calls != 0 {
+		t.Fatalf("second ExecutePrepared() = %+v, %v; calls = %d", got, err, calls)
+	}
+}
+
 func TestBrokerExecutePreparedCancellationBoundary(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -356,6 +484,39 @@ func TestBrokerExecutePreparedCancellationBoundary(t *testing.T) {
 				t.Fatalf("executor calls = %d, want %d", calls, wantCalls)
 			}
 		})
+	}
+}
+
+func TestBrokerExecutePreparedUsesConfiguredDeadline(t *testing.T) {
+	root := admittedBrowserConfig()
+	root.Tools.Browser.Limits.ActionSeconds = 1
+	store := NewMemoryStore()
+	broker := lifecycleTestBroker(t, root, store, &fakeWorkerFactory{})
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := preparedInvocation(session, "invocation_deadline")
+	if err = store.CreateInvocation(context.Background(), invocation); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	got, err := broker.ExecutePrepared(
+		context.Background(),
+		owner,
+		invocation.ID,
+		invocation.ActionHash,
+		func(ctx context.Context) (json.RawMessage, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	)
+	if err != nil || got.State != InvocationUnknown || got.AcceptedAt == 0 {
+		t.Fatalf("ExecutePrepared() = %+v, %v", got, err)
+	}
+	if elapsed := time.Since(started); elapsed < 900*time.Millisecond || elapsed > 3*time.Second {
+		t.Fatalf("configured action deadline elapsed = %s", elapsed)
 	}
 }
 

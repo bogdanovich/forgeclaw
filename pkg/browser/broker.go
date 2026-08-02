@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 type WorkerStatus string
@@ -50,8 +51,9 @@ type OpenRequest struct {
 	Profile string
 }
 
-// InvocationExecutor crosses the driver acceptance boundary exactly once. A
-// caller must not add retries below this callback.
+// InvocationExecutor crosses the driver acceptance boundary exactly once. It
+// must stop driver work and return when its context is done; a caller must not
+// add retries below this callback.
 type InvocationExecutor func(context.Context) (json.RawMessage, error)
 
 // workerSlot is the broker's sole owner of a live worker. A successful cleanup
@@ -124,6 +126,13 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 		ExpiresAt: now.Add(time.Duration(limits.SessionSeconds) * time.Second).UnixNano(),
 	}
 	if err = broker.store.CreateSession(ctx, session); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			current, getErr := broker.store.GetSession(context.WithoutCancel(ctx), session.ID)
+			if getErr != nil {
+				return Session{}, errors.Join(err, getErr)
+			}
+			return broker.reconcileFailedSessionMutationLocked(ctx, current, "worker_unavailable", err)
+		}
 		return Session{}, err
 	}
 	opened, openErr := broker.factory.Open(ctx, WorkerOpenRequest{
@@ -146,6 +155,13 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 	if err = broker.store.UpdateSession(ctx, ready.Revision-1, ready); err != nil {
 		persistReadyErr := fmt.Errorf("persist ready browser session: %w", err)
 		slot.safeFailure = "worker_unavailable"
+		if fileutil.IsCommittedWriteError(err) {
+			current, getErr := broker.store.GetSession(context.WithoutCancel(ctx), session.ID)
+			if getErr != nil {
+				return session, errors.Join(persistReadyErr, getErr, ErrWorkerUnavailable)
+			}
+			return broker.reconcileFailedSessionMutationLocked(ctx, current, slot.safeFailure, persistReadyErr)
+		}
 		if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
 			return session, errors.Join(persistReadyErr, ErrWorkerUnavailable)
 		}
@@ -155,6 +171,16 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 		session.UpdatedAt = broker.now().UTC().UnixNano()
 		session.LastActivityAt = session.UpdatedAt
 		if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
+			if fileutil.IsCommittedWriteError(updateErr) {
+				if current, getErr := broker.store.GetSession(
+					context.WithoutCancel(ctx),
+					session.ID,
+				); getErr == nil &&
+					current.State.Terminal() {
+					delete(broker.slots, session.ID)
+					return current, errors.Join(persistReadyErr, updateErr, ErrWorkerUnavailable)
+				}
+			}
 			return session, errors.Join(persistReadyErr, updateErr, ErrWorkerUnavailable)
 		}
 		delete(broker.slots, session.ID)
@@ -174,6 +200,13 @@ func (broker *Broker) finishFailedOpen(
 		session.Revision++
 		session.UpdatedAt = broker.now().UTC().UnixNano()
 		if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
+			if fileutil.IsCommittedWriteError(updateErr) {
+				current, getErr := broker.store.GetSession(context.WithoutCancel(ctx), session.ID)
+				if getErr != nil {
+					return Session{}, errors.Join(ErrWorkerUnavailable, updateErr, getErr)
+				}
+				return broker.reconcileFailedSessionMutationLocked(ctx, current, "worker_unavailable", updateErr)
+			}
 			return Session{}, errors.Join(ErrWorkerUnavailable, updateErr)
 		}
 		return session, ErrWorkerUnavailable
@@ -186,6 +219,13 @@ func (broker *Broker) finishFailedOpen(
 	closing.Revision++
 	closing.UpdatedAt = broker.now().UTC().UnixNano()
 	if updateErr := broker.store.UpdateSession(ctx, closing.Revision-1, closing); updateErr != nil {
+		if fileutil.IsCommittedWriteError(updateErr) {
+			current, getErr := broker.store.GetSession(context.WithoutCancel(ctx), session.ID)
+			if getErr != nil {
+				return session, errors.Join(ErrWorkerUnavailable, updateErr, getErr)
+			}
+			return broker.reconcileFailedSessionMutationLocked(ctx, current, slot.safeFailure, updateErr)
+		}
 		_ = broker.cleanupSlot(ctx, slot)
 		return session, errors.Join(ErrWorkerUnavailable, updateErr)
 	}
@@ -200,10 +240,36 @@ func (broker *Broker) finishFailedOpen(
 	session.UpdatedAt = broker.now().UTC().UnixNano()
 	session.LastActivityAt = session.UpdatedAt
 	if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
+		if fileutil.IsCommittedWriteError(updateErr) {
+			if current, getErr := broker.store.GetSession(
+				context.WithoutCancel(ctx),
+				session.ID,
+			); getErr == nil &&
+				current.State.Terminal() {
+				delete(broker.slots, session.ID)
+				return current, errors.Join(ErrWorkerUnavailable, updateErr)
+			}
+		}
 		return session, errors.Join(ErrWorkerUnavailable, updateErr)
 	}
 	delete(broker.slots, session.ID)
 	return session, ErrWorkerUnavailable
+}
+
+func (broker *Broker) reconcileFailedSessionMutationLocked(
+	ctx context.Context,
+	current Session,
+	safeFailure string,
+	cause error,
+) (Session, error) {
+	completionTimeout := time.Duration(broker.config.Limits.Effective().ActionSeconds) * time.Second
+	completionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionTimeout)
+	defer cancel()
+	if current.State.Terminal() {
+		return current, errors.Join(cause, ErrWorkerUnavailable)
+	}
+	finished, finishErr := broker.finishSessionLocked(completionCtx, current, SessionLost, safeFailure)
+	return finished, errors.Join(cause, finishErr, ErrWorkerUnavailable)
 }
 
 func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string) (Session, error) {
@@ -269,6 +335,16 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	session.UpdatedAt = broker.now().UTC().UnixNano()
 	session.LastActivityAt = session.UpdatedAt
 	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			if current, getErr := broker.store.GetSession(
+				context.WithoutCancel(ctx),
+				session.ID,
+			); getErr == nil &&
+				current.State.Terminal() {
+				delete(broker.slots, session.ID)
+				return current, err
+			}
+		}
 		return Session{}, err
 	}
 	delete(broker.slots, session.ID)
@@ -435,6 +511,16 @@ func (broker *Broker) finishSessionLocked(
 	session.UpdatedAt = broker.now().UTC().UnixNano()
 	session.LastActivityAt = session.UpdatedAt
 	if err := broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			if current, getErr := broker.store.GetSession(
+				context.WithoutCancel(ctx),
+				session.ID,
+			); getErr == nil &&
+				current.State.Terminal() {
+				delete(broker.slots, session.ID)
+				return current, err
+			}
+		}
 		return Session{}, err
 	}
 	delete(broker.slots, session.ID)
@@ -558,10 +644,28 @@ func (broker *Broker) ExecutePrepared(
 	if err = broker.store.UpdateInvocation(ctx, invocation.Revision-1, invocation); err != nil {
 		return Invocation{}, err
 	}
-	result, executeErr := execute(ctx)
-	if executeErr != nil {
+	executionDeadline := now.Add(time.Duration(broker.config.Limits.Effective().ActionSeconds) * time.Second)
+	sessionDeadline := time.Unix(0, session.ExpiresAt)
+	if sessionDeadline.Before(executionDeadline) {
+		executionDeadline = sessionDeadline
+	}
+	idleDeadline := time.Unix(0, session.LastActivityAt).
+		Add(time.Duration(broker.config.Limits.Effective().IdleSeconds) * time.Second)
+	if idleDeadline.Before(executionDeadline) {
+		executionDeadline = idleDeadline
+	}
+	executionCtx, cancelExecution := context.WithDeadline(ctx, executionDeadline)
+	result, executeErr := execute(executionCtx)
+	executionContextErr := executionCtx.Err()
+	cancelExecution()
+	completionCtx, cancelCompletion := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		time.Duration(broker.config.Limits.Effective().ActionSeconds)*time.Second,
+	)
+	defer cancelCompletion()
+	if executeErr != nil || executionContextErr != nil {
 		return broker.completeInvocationLocked(
-			context.WithoutCancel(ctx),
+			completionCtx,
 			invocation,
 			InvocationUnknown,
 			nil,
@@ -570,7 +674,7 @@ func (broker *Broker) ExecutePrepared(
 	}
 	if len(result) == 0 || len(result) > MaxTerminalBytes || !json.Valid(result) {
 		return broker.completeInvocationLocked(
-			context.WithoutCancel(ctx),
+			completionCtx,
 			invocation,
 			InvocationUnknown,
 			nil,
@@ -578,7 +682,7 @@ func (broker *Broker) ExecutePrepared(
 		)
 	}
 	completed, err := broker.completeInvocationLocked(
-		context.WithoutCancel(ctx),
+		completionCtx,
 		invocation,
 		InvocationSucceeded,
 		result,
@@ -591,7 +695,7 @@ func (broker *Broker) ExecutePrepared(
 	session.Revision++
 	session.UpdatedAt = broker.now().UTC().UnixNano()
 	session.LastActivityAt = session.UpdatedAt
-	if err = broker.store.UpdateSession(context.WithoutCancel(ctx), session.Revision-1, session); err != nil {
+	if err = broker.store.UpdateSession(completionCtx, session.Revision-1, session); err != nil {
 		return completed, err
 	}
 	return completed, nil

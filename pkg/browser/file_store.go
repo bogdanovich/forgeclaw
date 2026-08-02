@@ -22,8 +22,9 @@ const (
 )
 
 var (
-	ErrStoreFull  = errors.New("browser state store is full")
-	ErrStoreOwned = errors.New("browser state store is owned by another process")
+	ErrStoreFull   = errors.New("browser state store is full")
+	ErrStoreOwned  = errors.New("browser state store is owned by another process")
+	ErrStoreClosed = errors.New("browser state store is closed")
 )
 
 type fileStoreDocument struct {
@@ -43,6 +44,7 @@ type FileStore struct {
 	releaseLock func()
 
 	mu          sync.Mutex
+	closed      bool
 	sessions    map[string]Session
 	invocations map[string]Invocation
 }
@@ -58,19 +60,8 @@ func NewFileStore(path string, maxRecords, maxBytes int) (*FileStore, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultFileStoreBytes
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create browser state directory: %w", err)
-	}
-	directoryInfo, err := os.Lstat(filepath.Dir(path))
-	if err != nil || !directoryInfo.IsDir() || directoryInfo.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("browser state directory must be an owner-only directory")
-	}
-	if info, statErr := os.Lstat(path); statErr == nil {
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-			return nil, errors.New("browser state store must be an owner-only regular file")
-		}
-	} else if !os.IsNotExist(statErr) {
-		return nil, fmt.Errorf("inspect browser state store: %w", statErr)
+	if err := prepareStorePath(path); err != nil {
+		return nil, err
 	}
 	release, err := acquireStoreLock(path + ".lock")
 	if err != nil {
@@ -78,7 +69,7 @@ func NewFileStore(path string, maxRecords, maxBytes int) (*FileStore, error) {
 	}
 	store := &FileStore{
 		path: path, maxRecords: maxRecords, maxBytes: maxBytes,
-		writeFile: fileutil.WriteFileAtomic, releaseLock: release,
+		writeFile: writeSecureStoreFile, releaseLock: release,
 		sessions: make(map[string]Session), invocations: make(map[string]Invocation),
 	}
 	if err := store.load(); err != nil {
@@ -93,6 +84,11 @@ func (store *FileStore) Close() {
 		return
 	}
 	store.mu.Lock()
+	if store.closed {
+		store.mu.Unlock()
+		return
+	}
+	store.closed = true
 	release := store.releaseLock
 	store.releaseLock = nil
 	store.mu.Unlock()
@@ -222,9 +218,13 @@ func (store *FileStore) persistLocked(
 	document := fileStoreDocument{Version: fileStoreVersion, Sessions: store.sessions, Invocations: store.invocations}
 	raw, err := json.Marshal(document)
 	if err != nil {
+		store.sessions = previousSessions
+		store.invocations = previousInvocations
 		return err
 	}
 	if len(raw) > store.maxBytes {
+		store.sessions = previousSessions
+		store.invocations = previousInvocations
 		return ErrStoreFull
 	}
 	if err = store.writeFile(store.path, raw, 0o600); err != nil {
@@ -233,6 +233,13 @@ func (store *FileStore) persistLocked(
 			store.invocations = previousInvocations
 		}
 		return err
+	}
+	return nil
+}
+
+func (store *FileStore) ensureOpenLocked() error {
+	if store.closed || store.releaseLock == nil {
+		return ErrStoreClosed
 	}
 	return nil
 }
@@ -246,6 +253,9 @@ func (store *FileStore) CreateSession(_ context.Context, session Session) error 
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
 	if _, exists := store.sessions[session.ID]; exists {
 		return ErrConflict
 	}
@@ -265,6 +275,9 @@ func (store *FileStore) CreateSession(_ context.Context, session Session) error 
 func (store *FileStore) GetSession(_ context.Context, id string) (Session, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return Session{}, err
+	}
 	session, ok := store.sessions[id]
 	if !ok {
 		return Session{}, ErrNotFound
@@ -275,6 +288,9 @@ func (store *FileStore) GetSession(_ context.Context, id string) (Session, error
 func (store *FileStore) ListSessions(_ context.Context) ([]Session, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
 	result := make([]Session, 0, len(store.sessions))
 	for _, session := range store.sessions {
 		result = append(result, session)
@@ -289,6 +305,9 @@ func (store *FileStore) UpdateSession(_ context.Context, expected uint64, next S
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
 	current, ok := store.sessions[next.ID]
 	if !ok {
 		return ErrNotFound
@@ -316,6 +335,9 @@ func (store *FileStore) CreateInvocation(_ context.Context, invocation Invocatio
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
 	if _, exists := store.invocations[invocation.ID]; exists {
 		return ErrConflict
 	}
@@ -335,6 +357,9 @@ func (store *FileStore) CreateInvocation(_ context.Context, invocation Invocatio
 func (store *FileStore) GetInvocation(_ context.Context, id string) (Invocation, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return Invocation{}, err
+	}
 	invocation, ok := store.invocations[id]
 	if !ok {
 		return Invocation{}, ErrNotFound
@@ -349,6 +374,9 @@ func (store *FileStore) ListInvocations(_ context.Context, sessionID string) ([]
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
 	result := make([]Invocation, 0)
 	for _, invocation := range store.invocations {
 		if invocation.SessionID == sessionID {
@@ -366,6 +394,9 @@ func (store *FileStore) UpdateInvocation(_ context.Context, expected uint64, nex
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
 	current, ok := store.invocations[next.ID]
 	if !ok {
 		return ErrNotFound
@@ -388,6 +419,9 @@ func (store *FileStore) UpdateInvocation(_ context.Context, expected uint64, nex
 func (store *FileStore) PruneInvocations(_ context.Context, completedBefore int64) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.ensureOpenLocked(); err != nil {
+		return err
+	}
 	previousSessions, previousInvocations := store.cloneLocked()
 	changed := false
 	for id, invocation := range store.invocations {
