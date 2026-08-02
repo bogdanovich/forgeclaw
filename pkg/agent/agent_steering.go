@@ -165,6 +165,13 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	aggregateAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
+		finalContext := outboundContextWithMessageKind(
+			&initialMsg.Context,
+			target.Channel,
+			target.ChatID,
+			initialMsg.Context.ReplyToMessageID,
+			messageKindFinalReply,
+		)
 		aggregateAdmission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
@@ -173,19 +180,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			target.ChatID,
 			target.SessionKey,
 			finalResponse,
-			&bus.InboundContext{
-				Channel: initialMsg.Context.Channel,
-				ChatID:  initialMsg.Context.ChatID,
-				TopicID: initialMsg.Context.TopicID,
-				Raw: func() map[string]string {
-					raw := make(map[string]string, len(initialMsg.Context.Raw)+1)
-					for k, v := range initialMsg.Context.Raw {
-						raw[k] = v
-					}
-					raw[metadataKeyMessageKind] = messageKindFinalReply
-					return raw
-				}(),
-			},
+			&finalContext,
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
 			target.traceScopes,
