@@ -176,7 +176,7 @@ func writeFileAtomic(
 	// Atomic rename: temp file becomes the target
 	// On POSIX: rename() is atomic
 	// On Windows: Rename() is atomic for files
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceFileAtomic(tmpPath, path); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 	// The temp path no longer exists after rename, including when directory

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -97,9 +98,11 @@ func TestWriteFileAtomic_Permissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat failed: %v", err)
 	}
-	// On Unix, check file mode (ignoring directory bits)
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("permissions = %o, want %o", got, 0o600)
+	// Windows does not expose POSIX permission bits through os.FileMode.
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("permissions = %o, want %o", got, 0o600)
+		}
 	}
 }
 
@@ -226,8 +229,11 @@ func TestWriteFileAtomic_Concurrent(t *testing.T) {
 }
 
 func TestWriteFileAtomic_InvalidPath(t *testing.T) {
-	// /dev/null/impossible is not a valid path on any OS
-	err := WriteFileAtomic("/dev/null/impossible/file.txt", []byte("data"), 0o644)
+	parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("data"), 0o600); err != nil {
+		t.Fatalf("WriteFile(parent fixture) error = %v", err)
+	}
+	err := WriteFileAtomic(filepath.Join(parentFile, "file.txt"), []byte("data"), 0o644)
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
 	}
