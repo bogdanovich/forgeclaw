@@ -24,7 +24,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 ) (*providers.LLMResponse, bool, error) {
 	exec.streamingPublisher = nil
 	exec.streamingFallback = false
-	if !p.configuredStreamingEligible(ts, exec) {
+	if !p.configuredStreamingEligible(ctx, ts, exec) {
 		return nil, false, nil
 	}
 	streamProvider, ok := exec.model.activeProvider.(providers.StreamingProvider)
@@ -277,10 +277,23 @@ func cancelConfiguredStreamingLLM(ctx context.Context, exec *turnExecution) {
 	publisher.Cancel(ctx)
 }
 
-func (p *Pipeline) configuredStreamingEligible(ts *turnState, exec *turnExecution) bool {
+func (p *Pipeline) configuredStreamingEligible(
+	ctx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+) bool {
 	if p == nil || ts == nil || exec == nil || p.Runtime.Bus == nil {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"reason": "missing_pipeline_state",
+		})
+		return false
+	}
+	if hasOutboundSource(ctx) {
+		logger.DebugCF("agent", "configured streaming not used", map[string]any{
+			"agent_id": ts.agent.ID,
+			"channel":  ts.channel,
+			"chat_id":  ts.chatID,
+			"reason":   "durable_outbound_requires_admission",
 		})
 		return false
 	}

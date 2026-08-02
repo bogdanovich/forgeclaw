@@ -225,6 +225,41 @@ func TestCoordinatorReleasesDefinitelyRejectedRetryAdmission(t *testing.T) {
 	}
 }
 
+func TestCoordinatorReadmitsCanonicalPayloadAfterBusRejection(t *testing.T) {
+	coordinator := NewCoordinator()
+	workspace := t.TempDir()
+	identity := testIdentity()
+	message := func(content string) bus.OutboundMessage {
+		return bus.OutboundMessage{
+			Context:    bus.InboundContext{Channel: identity.Channel, ChatID: identity.ChatID},
+			SessionKey: identity.SessionKey,
+			Content:    content,
+		}
+	}
+	first, err := coordinator.AdmitMessage(workspace, identity, message("original response"))
+	if err != nil || !first.Dispatch {
+		t.Fatalf("AdmitMessage(first) = %+v, %v", first, err)
+	}
+	if releaseErr := coordinator.ReleaseAdmission(first.Intent.ID); releaseErr != nil {
+		t.Fatalf("ReleaseAdmission(first) error = %v", releaseErr)
+	}
+
+	replayed, err := coordinator.AdmitMessage(workspace, identity, message("regenerated response"))
+	if err != nil || !replayed.Dispatch {
+		t.Fatalf("AdmitMessage(replay) = %+v, %v", replayed, err)
+	}
+	if replayed.Intent.Message == nil || replayed.Intent.Message.Content != "original response" {
+		t.Fatalf("replayed canonical intent = %#v", replayed.Intent.Message)
+	}
+	duplicate, err := coordinator.AdmitMessage(workspace, identity, message("third response"))
+	if err != nil || duplicate.Dispatch {
+		t.Fatalf("AdmitMessage(duplicate) = %+v, %v, want no second dispatch", duplicate, err)
+	}
+	if duplicate.Intent.Message == nil || duplicate.Intent.Message.Content != "original response" {
+		t.Fatalf("duplicate canonical intent = %#v", duplicate.Intent.Message)
+	}
+}
+
 func TestCoordinatorReconcilesCommittedBeginAttempt(t *testing.T) {
 	coordinator := NewCoordinator()
 	identity := testIdentity()

@@ -32,6 +32,14 @@ func withOutboundSource(ctx context.Context, sourceID string) context.Context {
 	return context.WithValue(ctx, outboundSourceKey{}, &outboundSource{id: sourceID})
 }
 
+func hasOutboundSource(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	source, ok := ctx.Value(outboundSourceKey{}).(*outboundSource)
+	return ok && source != nil && strings.TrimSpace(source.id) != ""
+}
+
 func takeOutboundIdentity(
 	ctx context.Context,
 	kind outbox.Kind,

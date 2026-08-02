@@ -200,7 +200,7 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 	}
 	existing, err := s.read(intent.ID)
 	if err == nil {
-		if !sameLogicalIntent(existing, intent) {
+		if existing.ID != intent.ID || existing.Identity != intent.Identity {
 			return Intent{}, fmt.Errorf("outbox intent %q conflicts with existing record", intent.ID)
 		}
 		if existing.Status != StatusPending {
@@ -512,22 +512,4 @@ func statusAllowed(status Status, allowed []Status) bool {
 		}
 	}
 	return false
-}
-
-func sameLogicalIntent(left, right Intent) bool {
-	return left.ID == right.ID &&
-		left.Identity == right.Identity &&
-		payloadEqual(left, right)
-}
-
-func payloadEqual(left, right Intent) bool {
-	leftPayload, leftErr := json.Marshal(struct {
-		Message *bus.OutboundMessage
-		Media   *bus.OutboundMediaMessage
-	}{left.Message, left.Media})
-	rightPayload, rightErr := json.Marshal(struct {
-		Message *bus.OutboundMessage
-		Media   *bus.OutboundMediaMessage
-	}{right.Message, right.Media})
-	return leftErr == nil && rightErr == nil && string(leftPayload) == string(rightPayload)
 }

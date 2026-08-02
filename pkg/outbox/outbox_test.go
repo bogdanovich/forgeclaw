@@ -136,7 +136,7 @@ func TestStoreRejectsInvalidTransitions(t *testing.T) {
 	}
 }
 
-func TestCreateIsIdempotentButRejectsPayloadConflict(t *testing.T) {
+func TestCreateReturnsCanonicalPayloadForStableIdentity(t *testing.T) {
 	store := openTestStore(t)
 	intent := newTestIntent(t, "response", 0)
 	if _, err := store.Create(intent); err != nil {
@@ -146,11 +146,15 @@ func TestCreateIsIdempotentButRejectsPayloadConflict(t *testing.T) {
 		t.Fatalf("Create() duplicate error = %v", err)
 	}
 
-	conflict := intent
-	conflict.Message = cloneMessage(intent.Message)
-	conflict.Message.Content = "different response"
-	if _, err := store.Create(conflict); err == nil {
-		t.Fatal("Create() accepted conflicting payload for stable identity")
+	replayed := intent
+	replayed.Message = cloneMessage(intent.Message)
+	replayed.Message.Content = "different regenerated response"
+	canonical, err := store.Create(replayed)
+	if err != nil {
+		t.Fatalf("Create() replay error = %v", err)
+	}
+	if canonical.Message == nil || canonical.Message.Content != intent.Message.Content {
+		t.Fatalf("Create() canonical payload = %#v, want original response", canonical.Message)
 	}
 }
 

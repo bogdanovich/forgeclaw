@@ -315,6 +315,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		fallbacks         []string
 		streamingProvider bool
 		streamDelegate    bool
+		durableInbound    bool
 		wantStreamCalls   int
 		wantChatCalls     int
 	}{
@@ -379,6 +380,16 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 			wantChatCalls:     1,
 		},
 		{
+			name:              "durable inbound uses admitted final delivery",
+			channel:           "mintclaw",
+			channelStreaming:  true,
+			modelStreaming:    true,
+			streamingProvider: true,
+			streamDelegate:    true,
+			durableInbound:    true,
+			wantChatCalls:     1,
+		},
+		{
 			name:              "omitted fields use chat",
 			channel:           "mintclaw",
 			streamingProvider: true,
@@ -396,16 +407,21 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 				tt.fallbacks,
 			)
 			msgBus := bus.NewMessageBus()
+			streamer := &recordingStreamer{}
 			if tt.streamDelegate {
 				msgBus.SetStreamDelegate(
-					configuredStreamingDelegate{streamer: &recordingStreamer{}},
+					configuredStreamingDelegate{streamer: streamer},
 				)
+			}
+			turnCtx := context.Background()
+			if tt.durableInbound {
+				turnCtx = withOutboundSource(turnCtx, "spool-configured-streaming")
 			}
 
 			if tt.streamingProvider {
 				provider := &configuredStreamingProvider{}
 				al := NewAgentLoop(cfg, msgBus, provider)
-				runConfiguredStreamingTurn(t, al, tt.channel)
+				runConfiguredStreamingTurnWithContext(t, turnCtx, al, tt.channel)
 				if provider.streamCalls != tt.wantStreamCalls {
 					t.Fatalf(
 						"ChatStream calls = %d, want %d",
@@ -415,6 +431,13 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 				}
 				if provider.chatCalls != tt.wantChatCalls {
 					t.Fatalf("Chat calls = %d, want %d", provider.chatCalls, tt.wantChatCalls)
+				}
+				if tt.durableInbound && (len(streamer.updates) != 0 || len(streamer.finalized) != 0) {
+					t.Fatalf(
+						"durable turn used streamer: updates=%v finalized=%v",
+						streamer.updates,
+						streamer.finalized,
+					)
 				}
 				return
 			}
@@ -1491,8 +1514,18 @@ func configuredStreamingProcessOptions(channel string) processOptions {
 
 func runConfiguredStreamingTurn(t *testing.T, al *AgentLoop, channel string) string {
 	t.Helper()
+	return runConfiguredStreamingTurnWithContext(t, context.Background(), al, channel)
+}
+
+func runConfiguredStreamingTurnWithContext(
+	t *testing.T,
+	ctx context.Context,
+	al *AgentLoop,
+	channel string,
+) string {
+	t.Helper()
 	got, err := al.runAgentLoop(
-		context.Background(),
+		ctx,
 		al.GetRegistry().GetDefaultAgent(),
 		configuredStreamingProcessOptions(channel),
 	)
