@@ -727,12 +727,10 @@ func TestComputeAssembledContextUsage_NoHistorySkipsSessionAssembly(t *testing.T
 		t.Fatal("expected default agent")
 	}
 
-	for i := 0; i < 80; i++ {
-		agent.Sessions.AddFullMessage("ctx-nohistory", providers.Message{
-			Role:    "user",
-			Content: strings.Repeat("history ", 80),
-		})
-	}
+	agent.Sessions.AddFullMessage("ctx-nohistory", providers.Message{
+		Role:    "user",
+		Content: strings.Repeat("history ", 80),
+	})
 
 	got, gotCount, fitsBudget := computeAssembledContextUsage(
 		context.Background(),

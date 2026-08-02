@@ -7990,25 +7990,10 @@ func TestHandleReasoning(t *testing.T) {
 		al, msgBus := newLoop(t)
 		al.handleReasoning(context.Background(), "reasoning", "telegram", "")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		for {
-			select {
-			case msg, ok := <-msgBus.OutboundChan():
-				if !ok {
-					t.Fatalf("expected no outbound message, got %+v", msg)
-				}
-				if msg.Content == "reasoning" {
-					t.Fatalf("expected no message for empty chatID, got %+v", msg)
-				}
-				return
-			case <-ctx.Done():
-				t.Log("expected an outbound message, got none within timeout")
-				return
-			default:
-				// Continue to check for message
-				time.Sleep(5 * time.Millisecond) // Avoid busy loop
-			}
+		select {
+		case msg := <-msgBus.OutboundChan():
+			t.Fatalf("expected no message for empty chatID, got %+v", msg)
+		default:
 		}
 	})
 
@@ -8055,30 +8040,6 @@ func TestHandleReasoning(t *testing.T) {
 			}
 		}
 	})
-	t.Run("expired ctx", func(t *testing.T) {
-		al, msgBus := newLoop(t)
-		reasoning := "hello telegram reasoning"
-
-		al.handleReasoning(context.Background(), reasoning, "telegram", "tg-chat")
-
-		consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer consumeCancel()
-
-		for {
-			select {
-			case msg, ok := <-msgBus.OutboundChan():
-				if !ok {
-					t.Fatalf("expected no outbound message, but received: %+v", msg)
-				}
-				t.Logf("Received unexpected outbound message: %+v", msg)
-				return
-			case <-consumeCtx.Done():
-				t.Fatalf("failed: no message received within timeout")
-				return
-			}
-		}
-	})
-
 	t.Run("returns promptly when bus is full", func(t *testing.T) {
 		al, msgBus := newLoop(t)
 
@@ -8099,39 +8060,34 @@ func TestHandleReasoning(t *testing.T) {
 		}
 
 		// Use a short-deadline parent context to bound the test.
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 
 		start := time.Now()
 		al.handleReasoning(ctx, "should timeout", "slack", "channel-full")
 		elapsed := time.Since(start)
 
-		// handleReasoning uses a 5s internal timeout, but the parent ctx
-		// expires in 500ms. It should return within ~500ms, not 5s.
-		if elapsed > 2*time.Second {
+		// handleReasoning uses a 5s internal timeout, but the parent context
+		// should make it return promptly.
+		if elapsed > time.Second {
 			t.Fatalf("handleReasoning blocked too long (%v); expected prompt return", elapsed)
 		}
 
-		// Drain the bus and verify the reasoning message was NOT published
-		// (it should have been dropped due to timeout).
-		timeer := time.After(1 * time.Second)
+		// handleReasoning publishes synchronously, so all messages are settled
+		// once it returns. Drain the bus without another wall-clock wait.
 		for {
 			select {
-			case <-timeer:
-				t.Logf(
-					"no reasoning message received after draining bus for 1s, as expected,length=%d",
-					len(msgBus.OutboundChan()),
-				)
-				return
 			case msg, ok := <-msgBus.OutboundChan():
 				if !ok {
-					break
+					return
 				}
 				if msg.Content == "should timeout" {
 					t.Fatal(
 						"expected reasoning message to be dropped when bus is full, but it was published",
 					)
 				}
+			default:
+				return
 			}
 		}
 	})

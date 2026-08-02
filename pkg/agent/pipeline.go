@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
@@ -45,6 +46,7 @@ type PipelineConfigServices struct {
 	ChannelStreaming  channelStreamingConfigProvider
 	NativeSearch      nativeSearchPolicy
 	LLMRetry          llmRetryPolicy
+	RetrySleeper      retrySleeper
 	MediaLimits       mediaLimitsProvider
 	FinalTurnRender   finalTurnRenderPolicy
 	ModelResolution   pipelineModelResolution
@@ -134,6 +136,10 @@ type nativeSearchPolicy interface {
 
 type llmRetryPolicy interface {
 	llmRetrySettings() (maxRetries int, backoffSecs int)
+}
+
+type retrySleeper interface {
+	Sleep(ctx context.Context, delay time.Duration) error
 }
 
 type mediaLimitsProvider interface {
