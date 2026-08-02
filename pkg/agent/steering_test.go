@@ -2584,7 +2584,7 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 	}
 }
 
-func TestAgentLoop_InterruptHard_AfterToolStartPreservesDurableIntent(t *testing.T) {
+func TestAgentLoop_HardAbort_AfterToolStartPreservesDurableIntent(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -2672,8 +2672,8 @@ func TestAgentLoop_InterruptHard_AfterToolStartPreservesDurableIntent(t *testing
 		t.Fatal("expected active turn before hard abort")
 	}
 
-	if err := al.InterruptHard(); err != nil {
-		t.Fatalf("InterruptHard failed: %v", err)
+	if err := al.HardAbort(sessionKey); err != nil {
+		t.Fatalf("HardAbort failed: %v", err)
 	}
 
 	select {
@@ -2712,18 +2712,6 @@ func TestAgentLoop_InterruptHard_AfterToolStartPreservesDurableIntent(t *testing
 	}
 
 	events := collectRuntimeEventStream(runtimeCh)
-	interruptEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentInterruptReceived)
-	if !ok {
-		t.Fatal("expected interrupt received event")
-	}
-	interruptPayload, ok := interruptEvt.Payload.(InterruptReceivedPayload)
-	if !ok {
-		t.Fatalf("expected InterruptReceivedPayload, got %T", interruptEvt.Payload)
-	}
-	if interruptPayload.Kind != InterruptKindHard {
-		t.Fatalf("expected hard interrupt payload, got %q", interruptPayload.Kind)
-	}
-
 	turnEndEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentTurnEnd)
 	if !ok {
 		t.Fatal("expected turn end event")

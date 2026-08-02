@@ -397,6 +397,34 @@ type restoreFailingSessionStore struct {
 	err error
 }
 
+type recordingReasoningPublisher struct {
+	toolCallInterims int
+}
+
+func (*recordingReasoningPublisher) targetReasoningChannelID(string) string { return "" }
+
+func (*recordingReasoningPublisher) publishMintClawReasoning(
+	context.Context,
+	string,
+	string,
+	string,
+	string,
+) {
+}
+
+func (p *recordingReasoningPublisher) publishMintClawToolCallInterim(
+	context.Context,
+	*turnState,
+	string,
+	string,
+	string,
+	[]providers.ToolCall,
+) {
+	p.toolCallInterims++
+}
+
+func (*recordingReasoningPublisher) handleReasoning(context.Context, string, string, string) {}
+
 func (s *restoreFailingSessionStore) RestoreTurnSnapshot(
 	context.Context,
 	string,
@@ -1632,7 +1660,7 @@ func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
 	}
 }
 
-func TestAbortTurnSnapshotFailureIsNotReportedAsSuccessfulRollback(t *testing.T) {
+func TestHardAbortSnapshotFailureIsNotReportedAsSuccessfulRollback(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
 	injectedErr := errors.New("restore snapshot")
@@ -1649,14 +1677,68 @@ func TestAbortTurnSnapshotFailureIsNotReportedAsSuccessfulRollback(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
+	al.registerActiveTurn(ts)
+	defer al.clearActiveTurn(ts)
 
-	_, err := al.abortTurn(ts)
+	err := al.HardAbort(ts.sessionKey)
 	if !errors.Is(err, injectedErr) {
-		t.Fatalf("abortTurn() error = %v, want %v", err, injectedErr)
+		t.Fatalf("HardAbort() error = %v, want %v", err, injectedErr)
 	}
 	history := agent.Sessions.GetHistory(ts.sessionKey)
 	if len(history) != 1 || history[0].Content != opts.Dispatch.UserMessage {
 		t.Fatalf("failed rollback unexpectedly changed history: %+v", history)
+	}
+}
+
+func TestCallLLMMintClawToolInterimRequiresDurableIntent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		noHistory  bool
+		failIntent bool
+		want       int
+	}{
+		{name: "journal failure", failIntent: true, want: 0},
+		{name: "explicit no history", noHistory: true, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &toolCallRespProvider{toolName: "search", response: "must not continue"}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			if tc.failIntent {
+				agent.Sessions = &saveFailingSessionStore{
+					SessionStore: agent.Sessions,
+					err:          errors.New("intent journal failed"),
+				}
+			}
+			recorder := &recordingReasoningPublisher{}
+			pipeline := NewPipeline(al)
+			pipeline.Interaction.Reasoning = recorder
+			opts := normalizeProcessOptions(makeTestProcessOpts("mintclaw-interim-" + tc.name))
+			opts.NoHistory = tc.noHistory
+			opts.Dispatch.InboundContext = &bus.InboundContext{
+				Channel: "mintclaw",
+				ChatID:  "session-1",
+			}
+			ts := newTurnState(agent, opts, turnEventScope{
+				turnID:  "turn-mintclaw-interim",
+				context: newTurnContext(opts.Dispatch.InboundContext, nil, nil),
+			})
+			exec, err := pipeline.SetupTurn(t.Context(), ts)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := pipeline.CallLLM(t.Context(), t.Context(), ts, exec, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Control != ControlToolLoop {
+				t.Fatalf("CallLLM() control = %v, want %v", outcome.Control, ControlToolLoop)
+			}
+			if recorder.toolCallInterims != tc.want {
+				t.Fatalf("tool-call interims = %d, want %d", recorder.toolCallInterims, tc.want)
+			}
+		})
 	}
 }
 

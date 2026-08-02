@@ -328,7 +328,8 @@ type turnState struct {
 	gracefulInterruptHint string
 	gracefulTerminalUsed  bool
 	hardAbort             bool
-	toolExecutionStarted  atomic.Bool
+	toolExecutionBoundary sync.Mutex
+	toolExecutionStarted  bool
 	providerCancel        context.CancelFunc
 	turnCancel            context.CancelFunc
 
@@ -628,14 +629,29 @@ func (ts *turnState) recordToolExecution(
 	})
 }
 
-func (ts *turnState) markToolExecutionStarted() {
-	if ts != nil {
-		ts.toolExecutionStarted.Store(true)
+func (ts *turnState) tryMarkToolExecutionStarted() bool {
+	if ts == nil {
+		return false
 	}
+	ts.toolExecutionBoundary.Lock()
+	defer ts.toolExecutionBoundary.Unlock()
+	if ts.hardAbortRequested() {
+		return false
+	}
+	ts.toolExecutionStarted = true
+	return true
 }
 
-func (ts *turnState) canRollbackCanonicalHistory() bool {
-	return ts == nil || !ts.toolExecutionStarted.Load()
+func (ts *turnState) restoreSessionBeforeToolExecution(agent *AgentInstance) (bool, error) {
+	if ts == nil {
+		return false, nil
+	}
+	ts.toolExecutionBoundary.Lock()
+	defer ts.toolExecutionBoundary.Unlock()
+	if ts.toolExecutionStarted {
+		return false, nil
+	}
+	return true, ts.restoreSession(agent)
 }
 
 func (ts *turnState) toolExecutionsSnapshot() []ToolExecutionRecord {

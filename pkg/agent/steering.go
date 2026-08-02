@@ -784,11 +784,12 @@ func (al *AgentLoop) hardAbortScope(scope runtimeSessionScope) error {
 	// Use isHardAbort=true for hard abort to immediately cancel all children.
 	ts.Finish(true)
 
-	// Roll back session history to the state before the turn started.
-	if ts.session != nil {
-		history := ts.session.GetHistory(scope.sessionKey)
-		if ts.initialHistoryLength < len(history) {
-			ts.session.SetHistory(scope.sessionKey, history[:ts.initialHistoryLength])
+	// Before tool execution, restore the complete pre-turn snapshot. Once a tool
+	// has started, preserve the durable unresolved intent for side-effect recovery.
+	if ts.session != nil && !ts.opts.NoHistory {
+		_, err := ts.restoreSessionBeforeToolExecution(ts.agent)
+		if err != nil {
+			return fmt.Errorf("restore aborted turn: %w", err)
 		}
 	}
 

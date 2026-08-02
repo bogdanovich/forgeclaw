@@ -334,7 +334,9 @@ toolLoop:
 				}
 			case HookActionRespond:
 				if toolReq != nil && toolReq.HookResult != nil {
-					ts.markToolExecutionStarted()
+					if !ts.tryMarkToolExecutionStarted() {
+						return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
+					}
 					hookResult := toolReq.HookResult
 					runner.recordCommittedHookResponseDecision(tc, toolName)
 
@@ -792,7 +794,9 @@ toolLoop:
 		}
 
 		toolStart := time.Now()
-		ts.markToolExecutionStarted()
+		if !ts.tryMarkToolExecutionStarted() {
+			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
+		}
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,

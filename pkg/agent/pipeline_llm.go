@@ -594,7 +594,7 @@ func (p *Pipeline) CallLLM(
 	}
 	reasoningContent := responseReasoningContent(exec.response)
 	shouldPublishMintClawToolCallInterim := ts.channel == "mintclaw" && len(exec.response.ToolCalls) > 0
-	if shouldPublishMintClawToolCallInterim && exec.assistantToolCallsWriteErr == nil {
+	if shouldPublishMintClawToolCallInterim {
 		// MintClaw tool-call turns publish their reasoning/content/tool summary as a
 		// structured sequence after the tool-call payload is normalized below.
 	} else if ts.channel == "mintclaw" {
@@ -779,7 +779,7 @@ func (p *Pipeline) CallLLM(
 		}
 		p.ingestMessage(turnCtx, ts, assistantMsg, writeErr)
 	}
-	if shouldPublishMintClawToolCallInterim {
+	if shouldPublishMintClawToolCallInterim && (ts.opts.NoHistory || exec.assistantToolCallsPersisted) {
 		interimContent := exec.response.Content
 		if p.shouldPublishToolFeedback(ts) {
 			interimContent = ""
