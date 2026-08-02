@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -260,9 +261,17 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 		lowerHost == "metadata.google.internal" {
 		return "", errors.New("origin host is outside the public network policy")
 	}
-	if ip := net.ParseIP(host); ip != nil && !browserPublicIP(ip) {
-		return "", errors.New("origin IP is outside the public network policy")
-	} else if ip == nil {
+	if ip := net.ParseIP(host); ip != nil {
+		if !browserPublicIP(ip) {
+			return "", errors.New("origin IP is outside the public network policy")
+		}
+		lowerHost = ip.String()
+	} else if legacyIP, recognized := parseBrowserIPv4(lowerHost); recognized {
+		if !browserPublicIP(legacyIP) {
+			return "", errors.New("origin IP is outside the public network policy")
+		}
+		lowerHost = legacyIP.String()
+	} else {
 		if !browserHostnamePattern.MatchString(host) || !strings.Contains(lowerHost, ".") ||
 			strings.HasPrefix(lowerHost, ".") || strings.HasSuffix(lowerHost, ".") ||
 			strings.Contains(lowerHost, "..") {
@@ -285,6 +294,55 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 		normalizedHost = "[" + lowerHost + "]"
 	}
 	return scheme + "://" + normalizedHost, nil
+}
+
+func parseBrowserIPv4(host string) (net.IP, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return nil, false
+	}
+	numbers := make([]uint64, len(parts))
+	for index, part := range parts {
+		value, ok := parseBrowserIPv4Number(part)
+		if !ok {
+			return nil, false
+		}
+		numbers[index] = value
+	}
+	for _, value := range numbers[:len(numbers)-1] {
+		if value > 255 {
+			return nil, false
+		}
+	}
+	lastLimit := uint64(1) << (8 * (5 - len(numbers)))
+	if numbers[len(numbers)-1] >= lastLimit {
+		return nil, false
+	}
+	value := numbers[len(numbers)-1]
+	for index, part := range numbers[:len(numbers)-1] {
+		value += part << (8 * (3 - index))
+	}
+	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value)), true
+}
+
+func parseBrowserIPv4Number(part string) (uint64, bool) {
+	if part == "" {
+		return 0, false
+	}
+	base := 10
+	digits := part
+	if strings.HasPrefix(digits, "0x") {
+		base = 16
+		digits = digits[2:]
+	} else if len(digits) > 1 && digits[0] == '0' {
+		base = 8
+		digits = digits[1:]
+	}
+	if digits == "" {
+		return 0, true
+	}
+	value, err := strconv.ParseUint(digits, base, 32)
+	return value, err == nil
 }
 
 func browserPublicIP(ip net.IP) bool {

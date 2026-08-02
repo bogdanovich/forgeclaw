@@ -158,6 +158,50 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 			wantErr: "outside the public network policy",
 		},
 		{
+			name: "short numeric loopback",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://127.1"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "outside the public network policy",
+		},
+		{
+			name: "octal numeric loopback",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://0177.0.0.1"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "outside the public network policy",
+		},
+		{
+			name: "hex numeric loopback",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://0x7f.0.0.1"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "outside the public network policy",
+		},
+		{
+			name: "single-integer numeric loopback",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://2130706433"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "outside the public network policy",
+		},
+		{
 			name: "localhost origin",
 			mutate: func(cfg *Config) {
 				target := cfg.Tools.Browser.Targets["gateway"]
@@ -217,6 +261,16 @@ func TestNormalizeBrowserOriginCanonicalizesDefaultPortsAndDNSCase(t *testing.T)
 		t.Fatalf("NormalizeBrowserOrigin() error = %v", err)
 	}
 	if origin != "https://example.com" {
+		t.Fatalf("NormalizeBrowserOrigin() = %q", origin)
+	}
+}
+
+func TestNormalizeBrowserOriginCanonicalizesPublicNumericIPv4(t *testing.T) {
+	origin, err := NormalizeBrowserOrigin("http://0x8.0x8.0x8.0x8")
+	if err != nil {
+		t.Fatalf("NormalizeBrowserOrigin() error = %v", err)
+	}
+	if origin != "http://8.8.8.8" {
 		t.Fatalf("NormalizeBrowserOrigin() = %q", origin)
 	}
 }

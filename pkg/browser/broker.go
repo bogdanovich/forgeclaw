@@ -138,12 +138,46 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	if !validIdentifier(sessionID) {
 		return Session{}, fmt.Errorf("%w: malformed session ID", ErrInvalid)
 	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
 	session, err := broker.store.GetSession(ctx, sessionID)
 	if err != nil {
 		return Session{}, err
 	}
 	if !session.Owner.Equal(owner) {
 		return Session{}, ErrNotFound
+	}
+	if session.State != SessionReady {
+		return session, nil
+	}
+	worker := broker.workers[session.ID]
+	safeFailure := ""
+	if worker == nil {
+		safeFailure = "worker_lost"
+	} else {
+		status, statusErr := worker.Status(ctx)
+		switch {
+		case statusErr != nil && ctx.Err() != nil:
+			return Session{}, ctx.Err()
+		case statusErr != nil:
+			safeFailure = "worker_unavailable"
+		case status == WorkerLost:
+			safeFailure = "worker_lost"
+		case status != WorkerReady:
+			safeFailure = "worker_status_invalid"
+		}
+	}
+	if safeFailure == "" {
+		return session, nil
+	}
+	delete(broker.workers, session.ID)
+	session.State = SessionLost
+	session.SafeFailure = safeFailure
+	session.Revision++
+	session.UpdatedAt = broker.now().UTC().UnixNano()
+	session.LastActivityAt = session.UpdatedAt
+	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+		return Session{}, err
 	}
 	return session, nil
 }

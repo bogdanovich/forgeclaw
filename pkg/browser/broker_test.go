@@ -14,12 +14,14 @@ import (
 )
 
 type fakeWorker struct {
-	closeErr error
-	closed   int
+	closeErr  error
+	closed    int
+	status    WorkerStatus
+	statusErr error
 }
 
-func (*fakeWorker) Status(context.Context) (WorkerStatus, error) {
-	return WorkerReady, nil
+func (worker *fakeWorker) Status(context.Context) (WorkerStatus, error) {
+	return worker.status, worker.statusErr
 }
 
 func (worker *fakeWorker) Close(context.Context) error {
@@ -44,7 +46,7 @@ func (factory *fakeWorkerFactory) Open(
 	if factory.openErr != nil {
 		return nil, factory.openErr
 	}
-	worker := &fakeWorker{}
+	worker := &fakeWorker{status: WorkerReady}
 	factory.workers = append(factory.workers, worker)
 	return worker, nil
 }
@@ -189,6 +191,85 @@ func TestBrokerDoesNotRevealForeignSession(t *testing.T) {
 	}
 	if _, err = broker.Close(context.Background(), other, session.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Close() foreign error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestBrokerStatusPersistsLiveWorkerLossAndReleasesProfile(t *testing.T) {
+	store := NewMemoryStore()
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	factory.workers[0].status = WorkerLost
+	lost, err := broker.Status(context.Background(), owner, session.ID)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if lost.State != SessionLost || lost.SafeFailure != "worker_lost" {
+		t.Fatalf("Status() lost session = %+v", lost)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored != lost {
+		t.Fatalf("stored lost session = %+v, %v; want %+v", stored, err, lost)
+	}
+	owner.ExecutionID = "execution_2"
+	if _, err = broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	}); err != nil {
+		t.Fatalf("Open() after worker loss error = %v", err)
+	}
+	if len(factory.requests) != 2 {
+		t.Fatalf("worker opens = %d, want 2", len(factory.requests))
+	}
+}
+
+func TestBrokerStatusRedactsWorkerFailure(t *testing.T) {
+	store := NewMemoryStore()
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	factory.workers[0].statusErr = errors.New("secret driver endpoint")
+	lost, err := broker.Status(context.Background(), owner, session.ID)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if lost.State != SessionLost || lost.SafeFailure != "worker_unavailable" ||
+		strings.Contains(lost.SafeFailure, "secret") {
+		t.Fatalf("Status() lost session = %+v", lost)
+	}
+}
+
+func TestBrokerStatusCancellationDoesNotLoseSession(t *testing.T) {
+	store := NewMemoryStore()
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	factory.workers[0].statusErr = context.Canceled
+	if _, err = broker.Status(ctx, owner, session.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Status() canceled error = %v", err)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.State != SessionReady {
+		t.Fatalf("stored session after canceled status = %+v, %v", stored, err)
 	}
 }
 
