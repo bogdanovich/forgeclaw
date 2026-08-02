@@ -562,7 +562,7 @@ func (c *MintClawChannel) SendPlaceholder(ctx context.Context, chatID string) (s
 
 // BeginStream implements channels.StreamingCapable for MintClaw WebUI.
 func (c *MintClawChannel) BeginStream(ctx context.Context, chatID string) (channels.Streamer, error) {
-	return c.beginStream(ctx, chatID, "", runtimeevents.TraceScope{})
+	return c.beginStream(ctx, chatID, "", "", runtimeevents.TraceScope{})
 }
 
 // BeginStreamForScope preserves live turn correlation for operator clients.
@@ -570,15 +570,17 @@ func (c *MintClawChannel) BeginStreamForScope(
 	ctx context.Context,
 	chatID string,
 	sessionKey string,
+	requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (channels.Streamer, error) {
-	return c.beginStream(ctx, chatID, sessionKey, traceScope)
+	return c.beginStream(ctx, chatID, sessionKey, requestID, traceScope)
 }
 
 func (c *MintClawChannel) beginStream(
 	ctx context.Context,
 	chatID string,
 	sessionKey string,
+	requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (channels.Streamer, error) {
 	if c == nil || c.config == nil || !c.config.Streaming.Enabled {
@@ -592,6 +594,7 @@ func (c *MintClawChannel) beginStream(
 		channel:          c,
 		chatID:           chatID,
 		sessionKey:       sessionKey,
+		requestID:        requestID,
 		traceScope:       traceScope,
 		throttleInterval: time.Duration(streamCfg.ThrottleSeconds) * time.Second,
 		minGrowth:        streamCfg.MinGrowthChars,
@@ -602,6 +605,7 @@ type mintclawStreamer struct {
 	channel          *MintClawChannel
 	chatID           string
 	sessionKey       string
+	requestID        string
 	traceScope       runtimeevents.TraceScope
 	agentID          string
 	modelName        string
@@ -771,6 +775,7 @@ func (s *mintclawStreamer) sendLockedWithFinal(
 			"message_id":      messageID,
 		}
 		setStreamingIdentityPayload(payload, s.sessionKey, s.traceScope)
+		setStreamingRequestPayload(payload, s.requestID)
 		setStreamingAgentPayload(payload, s.agentID)
 		if final {
 			payload[PayloadKeyFinal] = true
@@ -793,6 +798,7 @@ func (s *mintclawStreamer) sendLockedWithFinal(
 			"message_id":      s.messageID,
 		}
 		setStreamingIdentityPayload(payload, s.sessionKey, s.traceScope)
+		setStreamingRequestPayload(payload, s.requestID)
 		setStreamingAgentPayload(payload, s.agentID)
 		if final {
 			payload[PayloadKeyFinal] = true
@@ -1592,6 +1598,9 @@ func setOutboundIdentityPayload(payload map[string]any, msg bus.OutboundMessage)
 	}
 	requestID := strings.TrimSpace(msg.ReplyToMessageID)
 	if requestID == "" {
+		requestID = strings.TrimSpace(msg.Context.Raw[bus.OutboundMetadataKeyRequestID])
+	}
+	if requestID == "" {
 		requestID = strings.TrimSpace(msg.Context.ReplyToMessageID)
 	}
 	if requestID != "" {
@@ -1624,6 +1633,12 @@ func setStreamingIdentityPayload(
 func setStreamingAgentPayload(payload map[string]any, agentID string) {
 	if strings.TrimSpace(agentID) != "" {
 		payload[PayloadKeyAgentID] = strings.TrimSpace(agentID)
+	}
+}
+
+func setStreamingRequestPayload(payload map[string]any, requestID string) {
+	if strings.TrimSpace(requestID) != "" {
+		payload[bus.OutboundMetadataKeyRequestID] = strings.TrimSpace(requestID)
 	}
 }
 

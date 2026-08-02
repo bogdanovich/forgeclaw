@@ -16,6 +16,7 @@ const (
 	OutboundMetadataKeyUsageTotal   = "usage_total_tokens"
 	OutboundMetadataKeyInteraction  = "interaction_kind"
 	OutboundMetadataKeyControls     = "interaction_controls"
+	OutboundMetadataKeyRequestID    = "request_id"
 
 	OutboundMessageKindThought      = "thought"
 	OutboundMessageKindToolFeedback = "tool_feedback"

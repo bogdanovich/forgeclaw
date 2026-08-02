@@ -119,7 +119,7 @@ type pipelineBus interface {
 	PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error
 	GetStreamer(
 		ctx context.Context,
-		channel, chatID, sessionKey string,
+		channel, chatID, sessionKey, requestID string,
 		traceScope runtimeevents.TraceScope,
 	) (bus.Streamer, bool)
 }

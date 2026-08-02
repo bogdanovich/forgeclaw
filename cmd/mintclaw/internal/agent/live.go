@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 	channelmintclaw "github.com/bogdanovich/mintclaw/pkg/channels/mintclaw"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
@@ -198,6 +199,10 @@ func runLive(parent context.Context, options liveOptions) (result liveResult, er
 			return result, &liveRunError{cause: fmt.Errorf("live gateway rejected request: %s", message)}
 		}
 		if incoming.Type != channelmintclaw.TypeMessageCreate && incoming.Type != channelmintclaw.TypeMessageUpdate {
+			continue
+		}
+		requestID, _ := incoming.Payload[bus.OutboundMetadataKeyRequestID].(string)
+		if strings.TrimSpace(requestID) != result.RequestID {
 			continue
 		}
 		applyLiveIdentity(&result, incoming.Payload)

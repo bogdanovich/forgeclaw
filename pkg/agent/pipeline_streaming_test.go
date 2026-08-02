@@ -144,7 +144,7 @@ type configuredStreamingDelegate struct {
 
 func (d configuredStreamingDelegate) GetStreamer(
 	ctx context.Context,
-	channel, chatID, sessionKey string,
+	channel, chatID, sessionKey, requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (bus.Streamer, bool) {
 	if d.traceScope != nil {

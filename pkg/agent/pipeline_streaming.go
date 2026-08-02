@@ -43,6 +43,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		ts.channel,
 		ts.chatID,
 		ts.sessionKey,
+		ts.opts.Dispatch.MessageID(),
 		runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
 	)
 	if !ok || streamer == nil {

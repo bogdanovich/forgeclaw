@@ -3160,7 +3160,7 @@ func TestGetStreamer_FinalizedStateIsTurnScoped(t *testing.T) {
 	turnTwo := runtimeevents.NewTraceScope("/workspace/main", "turn-2")
 
 	streamer, ok := m.GetStreamer(
-		context.Background(), "test", "chat-1", "session-1", turnOne,
+		context.Background(), "test", "chat-1", "session-1", "request-1", turnOne,
 	)
 	if !ok {
 		t.Fatal("GetStreamer() unavailable")
@@ -3208,7 +3208,7 @@ func TestGetStreamer_UnscopedFallbackMatchesSingleScopedStreamWithoutSession(t *
 	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
 	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "chat-1", "", traceScope)
+	streamer, ok := m.GetStreamer(context.Background(), "test", "chat-1", "", "", traceScope)
 	if !ok {
 		t.Fatal("GetStreamer() unavailable")
 	}
@@ -3343,7 +3343,7 @@ func TestGetStreamer_FinalizeBlocksLateFeedbackUntilQueuedFinal(t *testing.T) {
 
 	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
 	streamer, ok := m.GetStreamer(
-		context.Background(), "test", "chat-1", "session-1", traceScope,
+		context.Background(), "test", "chat-1", "session-1", "request-1", traceScope,
 	)
 	if !ok {
 		t.Fatal("GetStreamer() unavailable")
@@ -4552,7 +4552,7 @@ func TestGetStreamer_FinalizeDismissesTrackedToolFeedback(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4581,7 +4581,7 @@ func TestGetStreamer_FinalizeAppendsResponseFooter(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4633,7 +4633,7 @@ func TestGetStreamer_FinalizeCleansPlaceholderImmediately(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4718,7 +4718,7 @@ func TestGetStreamer_FinalizeCleansPlaceholderWithSessionKey(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4749,7 +4749,7 @@ func TestGetStreamer_PreservesContextUsageStreamer(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4777,7 +4777,7 @@ func TestGetStreamer_PreservesReasoningStreamer(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4807,7 +4807,7 @@ func TestGetStreamer_PreservesModelNameSetter(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4855,7 +4855,7 @@ func TestGetStreamer_SplitOnMarkerStreamsSeparateSegments(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4921,7 +4921,7 @@ func TestGetStreamer_SplitOnMarkerFooterOnlyOnFinalSegment(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4966,7 +4966,7 @@ func TestGetStreamer_SplitOnMarkerTerminalMarkerFooterAfterUsage(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -5009,7 +5009,7 @@ func TestGetStreamer_SplitOnMarkerConsecutiveTerminalMarkersFooterAfterUsage(t *
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -5061,7 +5061,7 @@ func TestGetStreamer_SplitOnMarkerKeepsReasoningOnInitialStreamer(t *testing.T) 
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -5111,7 +5111,7 @@ func TestGetStreamer_SplitOnMarkerPreservesModelNameSetter(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -5164,7 +5164,7 @@ func TestGetStreamer_FinalizeWithConfigDoesNotInvokeAdapterLifecycle(t *testing.
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -5206,7 +5206,7 @@ func TestGetStreamer_FinalizeDismissesResolvedTrackedToolFeedback(t *testing.T) 
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -5275,7 +5275,7 @@ func TestGetStreamer_FinalizeFailureDoesNotDismissTrackedToolFeedback(t *testing
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}

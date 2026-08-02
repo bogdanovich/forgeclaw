@@ -330,16 +330,23 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 	}
 	replyToMessageID := ""
 	if record.Kind == interactions.KindApproval {
+		requestID := ""
+		if record.Origin.ExecutionContext != nil {
+			requestID = strings.TrimSpace(record.Origin.ExecutionContext.MessageID)
+		}
+		if requestID != "" {
+			outboundContext.Raw[bus.OutboundMetadataKeyRequestID] = requestID
+		}
 		if strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") &&
-			record.Origin.ExecutionContext != nil {
-			replyToMessageID = strings.TrimSpace(record.Origin.ExecutionContext.MessageID)
+			requestID != "" {
+			replyToMessageID = requestID
 		}
 		bus.OutboundMetadata{
 			InteractionKind:     bus.OutboundInteractionApproval,
 			InteractionControls: bus.OutboundInteractionControlsPrompt,
 		}.ApplyToContext(&outboundContext)
 	}
-	return runtime.al.sendInteractionMessage(ctx, bus.OutboundMessage{
+	message := bus.OutboundMessage{
 		Channel:          record.Route.Channel,
 		ChatID:           record.Route.ChatID,
 		Context:          outboundContext,
@@ -347,7 +354,18 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 		SessionKey:       record.Route.SessionKey,
 		Content:          content,
 		ReplyToMessageID: replyToMessageID,
-	})
+	}
+	if runtime.al.registry != nil {
+		if agent, ok := runtime.al.registry.GetAgent(record.Route.AgentID); ok && agent != nil {
+			traceScope := runtimeevents.NewTraceScope(agent.Workspace, record.Origin.TurnID)
+			if traceScope.Complete() {
+				if err := bus.SetOutboundTraceScopes(&message, []runtimeevents.TraceScope{traceScope}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return runtime.al.sendInteractionMessage(ctx, message)
 }
 
 func (al *AgentLoop) sendInteractionMessage(ctx context.Context, msg bus.OutboundMessage) error {

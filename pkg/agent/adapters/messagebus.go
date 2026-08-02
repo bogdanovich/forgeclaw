@@ -50,10 +50,10 @@ func (a *messageBusAdapter) PublishOutboundMedia(ctx context.Context, msg bus.Ou
 
 func (a *messageBusAdapter) GetStreamer(
 	ctx context.Context,
-	channel, chatID, sessionKey string,
+	channel, chatID, sessionKey, requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (bus.Streamer, bool) {
-	return a.inner.GetStreamer(ctx, channel, chatID, sessionKey, traceScope)
+	return a.inner.GetStreamer(ctx, channel, chatID, sessionKey, requestID, traceScope)
 }
 
 func (a *messageBusAdapter) InboundChan() <-chan bus.InboundMessage {

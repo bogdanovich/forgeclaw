@@ -945,7 +945,7 @@ func closeWorkerAndWait(w *channelWorker) {
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(
 	ctx context.Context,
-	channelName, chatID, sessionKey string,
+	channelName, chatID, sessionKey, requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (bus.Streamer, bool) {
 	m.mu.RLock()
@@ -963,7 +963,7 @@ func (m *Manager) GetStreamer(
 
 	beginStream := func(beginCtx context.Context) (Streamer, error) {
 		if scoped, ok := ch.(ScopedStreamingCapable); ok {
-			return scoped.BeginStreamForScope(beginCtx, chatID, sessionKey, traceScope)
+			return scoped.BeginStreamForScope(beginCtx, chatID, sessionKey, requestID, traceScope)
 		}
 		return sc.BeginStream(beginCtx, chatID)
 	}

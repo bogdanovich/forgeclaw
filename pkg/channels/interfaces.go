@@ -68,6 +68,7 @@ type ScopedStreamingCapable interface {
 		ctx context.Context,
 		chatID string,
 		sessionKey string,
+		requestID string,
 		traceScope runtimeevents.TraceScope,
 	) (Streamer, error)
 }

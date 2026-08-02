@@ -187,6 +187,7 @@ func TestScopedStreamFinalizeIncludesCorrelationMetadata(t *testing.T) {
 		context.Background(),
 		"mintclaw:stream-final",
 		"sk_v1_stream",
+		"request-stream",
 		runtimeevents.NewTraceScope("/workspace", "turn-stream"),
 	)
 	if err != nil {
@@ -197,7 +198,8 @@ func TestScopedStreamFinalizeIncludesCorrelationMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Payload[PayloadKeyFinal] != true || got.Payload[PayloadKeyKind] != MessageKindFinalReply ||
-		got.Payload[PayloadKeySessionKey] != "sk_v1_stream" || got.Payload[PayloadKeyAgentID] != "main" {
+		got.Payload[PayloadKeySessionKey] != "sk_v1_stream" || got.Payload[PayloadKeyAgentID] != "main" ||
+		got.Payload["request_id"] != "request-stream" {
 		t.Fatalf("payload = %#v", got.Payload)
 	}
 }

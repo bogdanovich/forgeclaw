@@ -36,8 +36,18 @@ func TestRunLiveReturnsCorrelatedFinalFromOneRequest(t *testing.T) {
 				Type:      channelmintclaw.TypeMessageCreate,
 				SessionID: request.SessionID,
 				Payload: map[string]any{
+					channelmintclaw.PayloadKeyContent: "wrong request must be ignored",
+					channelmintclaw.PayloadKeyFinal:   true,
+					"request_id":                      "another-request",
+				},
+			})
+			_ = connection.WriteJSON(channelmintclaw.MintClawMessage{
+				Type:      channelmintclaw.TypeMessageCreate,
+				SessionID: request.SessionID,
+				Payload: map[string]any{
 					channelmintclaw.PayloadKeyContent: "thinking",
 					channelmintclaw.PayloadKeyKind:    channelmintclaw.MessageKindThought,
+					"request_id":                      request.ID,
 				},
 			})
 			_ = connection.WriteJSON(channelmintclaw.MintClawMessage{
@@ -48,6 +58,7 @@ func TestRunLiveReturnsCorrelatedFinalFromOneRequest(t *testing.T) {
 					channelmintclaw.PayloadKeyFinal:      true,
 					channelmintclaw.PayloadKeyAgentID:    "main",
 					channelmintclaw.PayloadKeySessionKey: "sk_v1_live",
+					"request_id":                         request.ID,
 					channelmintclaw.PayloadKeyTraceScopes: []map[string]string{{
 						"workspace": "/srv/mintclaw/workspace",
 						"turn_id":   "turn-live-1",
@@ -90,6 +101,7 @@ func TestRunLiveReturnsApprovalRequired(t *testing.T) {
 					channelmintclaw.PayloadKeyControls:           "prompt",
 					channelmintclaw.PayloadKeyInteractionID:      "interaction-approval-1",
 					channelmintclaw.PayloadKeyInteractionShortID: "abc123",
+					"request_id": request.ID,
 				},
 			})
 		},
