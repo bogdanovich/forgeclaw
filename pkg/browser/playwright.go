@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,7 +23,10 @@ import (
 
 const playwrightPrivateServerName = "browser_driver"
 
-var playwrightTargetPattern = regexp.MustCompile(`^e[1-9][0-9]{0,9}$`)
+var (
+	playwrightTargetPattern    = regexp.MustCompile(`^e[1-9][0-9]{0,9}$`)
+	playwrightSnapshotRefToken = regexp.MustCompile(`\[ref=`)
+)
 
 type DriverActionKind string
 
@@ -225,7 +229,11 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 	if err != nil {
 		return DriverObservation{}, err
 	}
-	return parsePlaywrightObservation(text, worker.limits.SnapshotBytes)
+	return parsePlaywrightObservation(
+		text,
+		worker.limits.SnapshotBytes,
+		worker.limits.SnapshotRefs,
+	)
 }
 
 func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction) error {
@@ -373,7 +381,11 @@ func boundedPlaywrightText(result *sdkmcp.CallToolResult, maximum int) (string, 
 	return builder.String(), nil
 }
 
-func parsePlaywrightObservation(text string, maximumSnapshotBytes int) (DriverObservation, error) {
+func parsePlaywrightObservation(
+	text string,
+	maximumSnapshotBytes int,
+	maximumSnapshotRefs int,
+) (DriverObservation, error) {
 	pageURL := extractPlaywrightLine(text, "- Page URL: ")
 	title := extractPlaywrightLine(text, "- Page Title: ")
 	marker := "### Snapshot\n```yaml\n"
@@ -387,7 +399,9 @@ func parsePlaywrightObservation(text string, maximumSnapshotBytes int) (DriverOb
 		return DriverObservation{}, ErrDriverIncompatible
 	}
 	snapshot := text[start : start+end]
-	if snapshot == "" || len(snapshot) > maximumSnapshotBytes || len(title) > 1024 {
+	if snapshot == "" || len(snapshot) > maximumSnapshotBytes || len(title) > 1024 ||
+		maximumSnapshotRefs <= 0 ||
+		len(playwrightSnapshotRefToken.FindAllStringIndex(snapshot, maximumSnapshotRefs+1)) > maximumSnapshotRefs {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
 	safeURL, origin, err := sanitizeObservedURL(pageURL)
@@ -434,30 +448,57 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 	return parsed.String(), origin, nil
 }
 
-type expectedPlaywrightTool struct {
-	required   []string
-	properties map[string]string
-}
-
-var requiredPlaywrightTools = map[string]expectedPlaywrightTool{
-	"browser_snapshot": {
-		properties: map[string]string{"boxes": "boolean"},
-	},
-	"browser_navigate": {
-		required: []string{"url"}, properties: map[string]string{"url": "string"},
-	},
-	"browser_click": {
-		required: []string{"target"}, properties: map[string]string{
-			"target": "string", "element": "string", "doubleClick": "boolean", "button": "string",
+var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
+	"browser_close": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{},
+		"type":"object"
+	}`),
+	"browser_navigate": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{"url":{"description":"The URL to navigate to","type":"string"}},
+		"required":["url"],
+		"type":"object"
+	}`),
+	"browser_snapshot": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"boxes":{"description":"Include each element's bounding box as [box=x,y,width,height] in the snapshot. Coordinates are viewport-relative, in CSS pixels (Element.getBoundingClientRect)","type":"boolean"},
+			"depth":{"description":"Limit the depth of the snapshot tree","type":"number"},
+			"filename":{"description":"Save snapshot to markdown file instead of returning it in the response.","type":"string"},
+			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"}
 		},
-	},
-	"browser_type": {
-		required: []string{"target", "text"}, properties: map[string]string{
-			"target": "string", "element": "string", "text": "string",
-			"submit": "boolean", "slowly": "boolean",
+		"type":"object"
+	}`),
+	"browser_click": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"button":{"description":"Button to click, defaults to left","enum":["left","right","middle"],"type":"string"},
+			"doubleClick":{"description":"Whether to perform a double click instead of a single click","type":"boolean"},
+			"element":{"description":"Human-readable element description used to obtain permission to interact with the element","type":"string"},
+			"modifiers":{"description":"Modifier keys to press","items":{"enum":["Alt","Control","ControlOrMeta","Meta","Shift"],"type":"string"},"type":"array"},
+			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"}
 		},
-	},
-	"browser_close": {},
+		"required":["target"],
+		"type":"object"
+	}`),
+	"browser_type": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"element":{"description":"Human-readable element description used to obtain permission to interact with the element","type":"string"},
+			"slowly":{"description":"Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once.","type":"boolean"},
+			"submit":{"description":"Whether to submit entered text (press Enter after)","type":"boolean"},
+			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"},
+			"text":{"description":"Text to type into the element","type":"string"}
+		},
+		"required":["target","text"],
+		"type":"object"
+	}`),
 }
 
 func validatePlaywrightCatalog(tools []*sdkmcp.Tool) (string, error) {
@@ -467,10 +508,12 @@ func validatePlaywrightCatalog(tools []*sdkmcp.Tool) (string, error) {
 			available[tool.Name] = tool
 		}
 	}
-	names := make([]string, 0, len(requiredPlaywrightTools))
-	for name, expected := range requiredPlaywrightTools {
+	names := make([]string, 0, len(pinnedPlaywrightToolSchemas))
+	for name, expected := range pinnedPlaywrightToolSchemas {
 		tool := available[name]
-		if tool == nil || validatePlaywrightToolSchema(tool.InputSchema, expected) != nil {
+		actualSchema, actualErr := canonicalPlaywrightSchema(toolSchema(tool))
+		expectedSchema, expectedErr := canonicalPlaywrightSchema(expected)
+		if tool == nil || actualErr != nil || expectedErr != nil || !bytes.Equal(actualSchema, expectedSchema) {
 			return "", ErrDriverIncompatible
 		}
 		names = append(names, name)
@@ -478,7 +521,7 @@ func validatePlaywrightCatalog(tools []*sdkmcp.Tool) (string, error) {
 	sort.Strings(names)
 	hash := sha256.New()
 	for _, name := range names {
-		encoded, err := json.Marshal(available[name].InputSchema)
+		encoded, err := canonicalPlaywrightSchema(available[name].InputSchema)
 		if err != nil {
 			return "", ErrDriverIncompatible
 		}
@@ -490,49 +533,23 @@ func validatePlaywrightCatalog(tools []*sdkmcp.Tool) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func validatePlaywrightToolSchema(schema any, expected expectedPlaywrightTool) error {
+func toolSchema(tool *sdkmcp.Tool) any {
+	if tool == nil {
+		return nil
+	}
+	return tool.InputSchema
+}
+
+func canonicalPlaywrightSchema(schema any) ([]byte, error) {
 	encoded, err := json.Marshal(schema)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var object map[string]any
-	if err = json.Unmarshal(encoded, &object); err != nil || object["type"] != "object" ||
-		object["additionalProperties"] != false {
-		return ErrDriverIncompatible
+	var normalized any
+	if err = json.Unmarshal(encoded, &normalized); err != nil {
+		return nil, err
 	}
-	properties, ok := object["properties"].(map[string]any)
-	if !ok {
-		return ErrDriverIncompatible
-	}
-	for name, expectedType := range expected.properties {
-		property, ok := properties[name].(map[string]any)
-		if !ok || property["type"] != expectedType {
-			return ErrDriverIncompatible
-		}
-	}
-	required := make(map[string]struct{})
-	if rawRequired, exists := object["required"]; exists {
-		values, ok := rawRequired.([]any)
-		if !ok {
-			return ErrDriverIncompatible
-		}
-		for _, value := range values {
-			name, ok := value.(string)
-			if !ok {
-				return ErrDriverIncompatible
-			}
-			required[name] = struct{}{}
-		}
-	}
-	if len(required) != len(expected.required) {
-		return ErrDriverIncompatible
-	}
-	for _, name := range expected.required {
-		if _, ok := required[name]; !ok {
-			return ErrDriverIncompatible
-		}
-	}
-	return nil
+	return json.Marshal(normalized)
 }
 
 func cloneMCPServerConfig(source config.MCPServerConfig) config.MCPServerConfig {

@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -190,7 +191,8 @@ func TestPlaywrightWorkerFactoryRejectsIncompatibleCatalog(t *testing.T) {
 		catalog []*sdkmcp.Tool
 	}{
 		{name: "missing tool", catalog: playwrightCatalogFixture()[:4]},
-		{name: "schema drift", catalog: playwrightCatalogWithTargetType("number")},
+		{name: "extra property", catalog: playwrightCatalogWithMutation("extra_property")},
+		{name: "changed constraint", catalog: playwrightCatalogWithMutation("changed_constraint")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -298,6 +300,17 @@ func TestPlaywrightWorkerBoundsObservationAndRedactsDriverError(t *testing.T) {
 	}
 }
 
+func TestPlaywrightObservationEnforcesReferenceLimit(t *testing.T) {
+	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n- button [ref=e1]\n- textbox [ref=e2]\n```"
+	if _, err := parsePlaywrightObservation(observation, 1024, 2); err != nil {
+		t.Fatalf("parsePlaywrightObservation() boundary error = %v", err)
+	}
+	if _, err := parsePlaywrightObservation(observation, 1024, 1); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("parsePlaywrightObservation() over-limit error = %v", err)
+	}
+}
+
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
 		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")
@@ -381,22 +394,27 @@ func playwrightTextResult(text string) *sdkmcp.CallToolResult {
 }
 
 func playwrightCatalogFixture() []*sdkmcp.Tool {
-	return []*sdkmcp.Tool{
-		playwrightTool("browser_snapshot", nil, map[string]string{"boxes": "boolean"}),
-		playwrightTool("browser_navigate", []string{"url"}, map[string]string{"url": "string"}),
-		playwrightTool("browser_click", []string{"target"}, map[string]string{
-			"target": "string", "element": "string", "doubleClick": "boolean", "button": "string",
-		}),
-		playwrightTool("browser_type", []string{"target", "text"}, map[string]string{
-			"target": "string", "element": "string", "text": "string",
-			"submit": "boolean", "slowly": "boolean",
-		}),
-		playwrightTool("browser_close", nil, map[string]string{}),
-		playwrightTool("browser_run_code_unsafe", []string{"code"}, map[string]string{"code": "string"}),
+	names := []string{
+		"browser_close", "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
 	}
+	catalog := make([]*sdkmcp.Tool, 0, len(names)+1)
+	for _, name := range names {
+		var schema map[string]any
+		if err := json.Unmarshal(pinnedPlaywrightToolSchemas[name], &schema); err != nil {
+			panic(err)
+		}
+		catalog = append(catalog, &sdkmcp.Tool{Name: name, InputSchema: schema})
+	}
+	catalog = append(catalog, &sdkmcp.Tool{
+		Name: "browser_run_code_unsafe",
+		InputSchema: map[string]any{
+			"type": "object", "properties": map[string]any{"code": map[string]any{"type": "string"}},
+		},
+	})
+	return catalog
 }
 
-func playwrightCatalogWithTargetType(targetType string) []*sdkmcp.Tool {
+func playwrightCatalogWithMutation(mutation string) []*sdkmcp.Tool {
 	catalog := playwrightCatalogFixture()
 	for _, tool := range catalog {
 		if tool.Name != "browser_click" {
@@ -404,25 +422,15 @@ func playwrightCatalogWithTargetType(targetType string) []*sdkmcp.Tool {
 		}
 		schema := tool.InputSchema.(map[string]any)
 		properties := schema["properties"].(map[string]any)
-		properties["target"] = map[string]any{"type": targetType}
+		switch mutation {
+		case "extra_property":
+			properties["selector"] = map[string]any{"type": "string"}
+		case "changed_constraint":
+			button := properties["button"].(map[string]any)
+			button["enum"] = append(button["enum"].([]any), "back")
+		default:
+			panic("unknown catalog mutation")
+		}
 	}
 	return catalog
-}
-
-func playwrightTool(name string, required []string, properties map[string]string) *sdkmcp.Tool {
-	schemaProperties := make(map[string]any, len(properties))
-	for property, propertyType := range properties {
-		schemaProperties[property] = map[string]any{"type": propertyType}
-	}
-	schema := map[string]any{
-		"type": "object", "additionalProperties": false, "properties": schemaProperties,
-	}
-	if len(required) != 0 {
-		values := make([]any, len(required))
-		for index, value := range required {
-			values[index] = value
-		}
-		schema["required"] = values
-	}
-	return &sdkmcp.Tool{Name: name, InputSchema: schema}
 }
