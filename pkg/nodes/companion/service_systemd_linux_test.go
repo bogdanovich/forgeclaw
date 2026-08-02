@@ -155,6 +155,53 @@ func TestSystemdServiceManagerBoundsAndNormalizesLogs(t *testing.T) {
 	}
 }
 
+func TestSystemdServiceManagerReturnsEmptyLogsAtExactOutputBudget(t *testing.T) {
+	profile := servicePolicyFixture()
+	minimum, err := json.Marshal(ServiceLogs{
+		Service:   "vpn",
+		Records:   []ServiceLogRecord{},
+		Truncated: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.LogLimits = nodes.ServiceLogLimits{
+		EntriesMax: 2, BytesMax: len(minimum), AgeSecondsMax: 60,
+	}
+	policies, err := normalizeServicePolicies(ServicePolicies{"server-services": profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newSystemdServiceManager(
+		policies,
+		systemdProcessRunner{
+			journal: commandExecutable{
+				path:   os.Args[0],
+				prefix: []string{"-test.run=^TestSystemdReadProcessHelper$", "--", "empty"},
+			},
+			env: append(fixedSystemdEnvironment(), systemdReadHelperEnvironment+"=1"),
+		},
+		func() time.Time { return time.Unix(1_700_000_000, 0) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, err := manager.Logs(t.Context(), ServiceLogRequest{
+		Profile: "server-services",
+		Service: "vpn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs.Records) != 0 || logs.Truncated {
+		t.Fatalf("empty logs = %#v", logs)
+	}
+	data, err := json.Marshal(logs)
+	if err != nil || len(data) != len(minimum) {
+		t.Fatalf("empty logs output = %d bytes, error %v", len(data), err)
+	}
+}
+
 func TestSystemdServiceManagerDoesNotExposeProcessFailure(t *testing.T) {
 	manager := testSystemdServiceManager(t, "fail", "fail")
 	status, err := manager.Status(t.Context(), ServiceStatusRequest{
@@ -284,6 +331,15 @@ func TestSystemdReadProcessHelper(t *testing.T) {
 		fmt.Print(
 			"{\"__REALTIME_TIMESTAMP\":\"1700000001000000\",\"PRIORITY\":\"4\",\"MESSAGE\":\"first\\u0001line\"}\n",
 		)
+	case "empty":
+		want := []string{
+			"--no-pager", "--quiet", "--output=json",
+			"--output-fields=__REALTIME_TIMESTAMP,PRIORITY,MESSAGE",
+			"--unit=wg-quick@wg0.service", "--since=@1699999940", "--lines=2",
+		}
+		if !slices.Equal(args, want) {
+			os.Exit(92)
+		}
 	case "fail":
 		fmt.Fprint(os.Stderr, "secret-manager-detail wg-quick@wg0.service")
 		os.Exit(4)

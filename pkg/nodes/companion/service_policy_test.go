@@ -112,7 +112,7 @@ func TestNormalizeServicePoliciesRequiresLogResultEnvelopeBudget(t *testing.T) {
 	minimum, err := json.Marshal(ServiceLogs{
 		Service:   "maximum_length_service_alias",
 		Records:   []ServiceLogRecord{},
-		Truncated: true,
+		Truncated: false,
 	})
 	if err != nil {
 		t.Fatal(err)

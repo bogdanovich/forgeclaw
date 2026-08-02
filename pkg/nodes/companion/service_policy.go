@@ -173,16 +173,20 @@ func validateServiceLogOutputBudget(profile ServicePolicyProfile) error {
 		if !service.Logs {
 			continue
 		}
-		minimum := ServiceLogs{
-			Service:   alias,
-			Records:   []ServiceLogRecord{},
-			Truncated: true,
+		minimumBytes := 0
+		for _, truncated := range []bool{false, true} {
+			minimum := ServiceLogs{
+				Service:   alias,
+				Records:   []ServiceLogRecord{},
+				Truncated: truncated,
+			}
+			data, err := json.Marshal(minimum)
+			if err != nil {
+				return errors.New("encode minimum service log result")
+			}
+			minimumBytes = max(minimumBytes, len(data))
 		}
-		data, err := json.Marshal(minimum)
-		if err != nil {
-			return errors.New("encode minimum service log result")
-		}
-		if len(data) > profile.LogLimits.BytesMax {
+		if minimumBytes > profile.LogLimits.BytesMax {
 			return fmt.Errorf(
 				"log bytes_max cannot encode the mandatory result for service %q",
 				alias,
