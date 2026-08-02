@@ -353,6 +353,108 @@ func TestFileStorePersistsPreparedApprovalBinding(t *testing.T) {
 	}
 }
 
+func TestBrokerExecutesAdmittedSelectPressAndScrollActions(t *testing.T) {
+	tests := []struct {
+		name       string
+		element    DriverElement
+		action     Action
+		wantEffect Effect
+		wantDriver DriverAction
+	}{
+		{
+			name: "select", element: DriverElement{Target: "e1", Role: "combobox", Name: "State"},
+			action: Action{Kind: ActionSelect, Value: "CA"}, wantEffect: EffectLocalEdit,
+			wantDriver: DriverAction{Kind: DriverSelect, Target: "e1", Element: "State", Value: "CA"},
+		},
+		{
+			name: "press", action: Action{Kind: ActionPress, Key: "Tab"},
+			wantEffect: EffectLocalEdit, wantDriver: DriverAction{Kind: DriverPress, Key: "Tab"},
+		},
+		{
+			name: "scroll", action: Action{Kind: ActionScroll, Direction: "down", Amount: 3},
+			wantEffect: EffectRead,
+			wantDriver: DriverAction{Kind: DriverScroll, Direction: "down", Amount: 3},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryStore()
+			broker, worker, session := openActionTestBroker(t, store)
+			if test.element.Target != "" {
+				worker.observation = driverObservationFixture(test.element)
+				worker.resolveElement = test.element
+			}
+			owner := testOwner()
+			observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			action := test.action
+			if test.element.Target != "" {
+				action.Ref = onlyVisibleRef(t, observation.Snapshot)
+			}
+			prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+				Owner: owner, RequestID: "request_" + test.name, SessionID: session.ID, TabID: session.TabID,
+				SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+				Action: action,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.RequiresApproval || prepared.Action.Effect != test.wantEffect {
+				t.Fatalf("preparation = %+v", prepared)
+			}
+			if test.name == "select" && (prepared.Action.Action.Value != "" ||
+				!validDigest(prepared.Action.InputDigest)) {
+				t.Fatalf("durable selection exposed input: %+v", prepared.Action)
+			}
+			invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+			if err != nil || invocation.State != InvocationSucceeded ||
+				!reflect.DeepEqual(worker.actions, []DriverAction{test.wantDriver}) {
+				t.Fatalf("execution = %+v, %v; driver actions = %+v", invocation, err, worker.actions)
+			}
+		})
+	}
+}
+
+func TestBrokerTreatsEnterAsProtectedCommit(t *testing.T) {
+	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_enter", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionPress, Key: "Enter"},
+	})
+	if err != nil || !prepared.RequiresApproval || prepared.Action.Effect != EffectExternalCommit {
+		t.Fatalf("PrepareAction(Enter) = %+v, %v", prepared, err)
+	}
+	if _, err = broker.ExecuteAction(
+		context.Background(), owner, prepared.Action.ID, nil,
+	); !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("ExecuteAction(Enter) error = %v, want ErrApprovalRequired", err)
+	}
+	if len(worker.actions) != 0 {
+		t.Fatalf("protected Enter reached driver: %+v", worker.actions)
+	}
+}
+
+func TestActionValidationRejectsUnadmittedKeyAndUnboundedScroll(t *testing.T) {
+	for _, action := range []Action{
+		{Kind: ActionPress, Key: "a"},
+		{Kind: ActionPress, Key: "Control+L"},
+		{Kind: ActionScroll, Direction: "left", Amount: 1},
+		{Kind: ActionScroll, Direction: "down", Amount: MaxScrollAmount + 1},
+	} {
+		if err := action.Validate(config.BrowserMaxTextInputBytes); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Action.Validate(%+v) error = %v, want ErrInvalid", action, err)
+		}
+	}
+}
+
 func TestExecuteFillFailsClosedBeforeDriverCallWithoutExactLiveInput(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -130,7 +130,7 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
 		client.connectCfg.Enabled || !reflect.DeepEqual(
 		client.connectCfg.Args,
-		[]string{"--allowed-origins", "http://b.example;https://example.com"},
+		[]string{"--caps", "vision", "--allowed-origins", "http://b.example;https://example.com"},
 	) || client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
 		"http://b.example;https://example.com" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
@@ -165,6 +165,19 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	}); err != nil {
 		t.Fatalf("Execute(click) error = %v", err)
 	}
+	if err = worker.Execute(context.Background(), DriverAction{
+		Kind: DriverSelect, Target: "e5", Element: "State", Value: "CA",
+	}); err != nil {
+		t.Fatalf("Execute(select) error = %v", err)
+	}
+	if err = worker.Execute(context.Background(), DriverAction{Kind: DriverPress, Key: "Tab"}); err != nil {
+		t.Fatalf("Execute(press) error = %v", err)
+	}
+	if err = worker.Execute(context.Background(), DriverAction{
+		Kind: DriverScroll, Direction: "down", Amount: 2,
+	}); err != nil {
+		t.Fatalf("Execute(scroll) error = %v", err)
+	}
 	if err = worker.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -177,7 +190,10 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		t.Fatalf("second Close() error = %v, client closes = %d", err, client.closeCalls)
 	}
 
-	wantTools := []string{"browser_snapshot", "browser_navigate", "browser_type", "browser_click", "browser_close"}
+	wantTools := []string{
+		"browser_snapshot", "browser_navigate", "browser_type", "browser_click",
+		"browser_select_option", "browser_press_key", "browser_mouse_wheel", "browser_close",
+	}
 	if len(client.calls) != len(wantTools) {
 		t.Fatalf("driver calls = %+v", client.calls)
 	}
@@ -198,6 +214,16 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	if click["target"] != "e4" || click["doubleClick"] != false || click["button"] != "left" {
 		t.Fatalf("click arguments = %+v", click)
 	}
+	selectArgs := client.calls[4].arguments
+	if selectArgs["target"] != "e5" || !reflect.DeepEqual(selectArgs["values"], []string{"CA"}) {
+		t.Fatalf("select arguments = %+v", selectArgs)
+	}
+	if got := client.calls[5].arguments["key"]; got != "Tab" {
+		t.Fatalf("press key = %#v", got)
+	}
+	if scroll := client.calls[6].arguments; scroll["deltaX"] != 0 || scroll["deltaY"] != 1000 {
+		t.Fatalf("scroll arguments = %+v", scroll)
+	}
 }
 
 func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
@@ -211,6 +237,8 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 		{name: "blocked argument", args: []string{"--blocked-origins=*&!https://example.com"}},
 		{name: "config argument", args: []string{"--config", "browser-policy.json"}},
 		{name: "config equals argument", args: []string{"--config=browser-policy.json"}},
+		{name: "caps argument", args: []string{"--caps", "pdf"}},
+		{name: "caps equals argument", args: []string{"--caps=pdf"}},
 		{name: "allowed environment", env: map[string]string{"PLAYWRIGHT_MCP_ALLOWED_ORIGINS": "*"}},
 		{name: "blocked environment", env: map[string]string{"PLAYWRIGHT_MCP_BLOCKED_ORIGINS": ""}},
 		{name: "config environment", env: map[string]string{"PLAYWRIGHT_MCP_CONFIG": "browser-policy.json"}},
@@ -329,6 +357,10 @@ func TestPlaywrightWorkerRejectsSelectorsOversizedInputAndUnknownActions(t *test
 		{Kind: DriverFill, Target: "e1", Value: strings.Repeat("x", config.BrowserMaxTextInputBytes+1)},
 		{Kind: "evaluate", Target: "e1"},
 		{Kind: DriverNavigate, URL: "file:///private/data"},
+		{Kind: DriverSelect, Target: "e1", Value: ""},
+		{Kind: DriverPress, Key: "Control+L"},
+		{Kind: DriverScroll, Direction: "down", Amount: MaxScrollAmount + 1},
+		{Kind: DriverScroll, Direction: "left", Amount: 1},
 	}
 	for _, action := range tests {
 		if err := worker.Execute(context.Background(), action); !errors.Is(err, ErrInvalid) {
@@ -436,7 +468,9 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = fmt.Fprint(writer, `<!doctype html><title>MintClaw Fixture</title>
 <form onsubmit="event.preventDefault(); document.querySelector('output').textContent='Saved '+document.querySelector('input').value">
-<label>Name <input aria-label="Name"></label><button type="submit">Save</button></form><output></output>`)
+<label>Name <input aria-label="Name"></label>
+<label>State <select aria-label="State"><option value="CA">California</option><option value="NY">New York</option></select></label>
+<button type="submit">Save</button></form><output></output><div style="height:2000px"></div>`)
 	}))
 	defer fixture.Close()
 	fixtureURL, err := url.Parse(fixture.URL)
@@ -492,6 +526,20 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if err != nil || !strings.Contains(observation.Snapshot, "Ada") {
 		t.Fatalf("Observe() after fill = %+v, %v", observation, err)
 	}
+	state := mustSnapshotRef(t, observation.Snapshot, `combobox "State" \[ref=(e[0-9]+)\]`)
+	if err = worker.Execute(ctx, DriverAction{
+		Kind: DriverSelect, Target: state, Element: "State", Value: "NY",
+	}); err != nil {
+		t.Fatalf("select error = %v", err)
+	}
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverPress, Key: "Tab"}); err != nil {
+		t.Fatalf("press error = %v", err)
+	}
+	if err = worker.Execute(ctx, DriverAction{
+		Kind: DriverScroll, Direction: "down", Amount: 1,
+	}); err != nil {
+		t.Fatalf("scroll error = %v", err)
+	}
 	button := mustSnapshotRef(t, observation.Snapshot, `button "Save" \[ref=(e[0-9]+)\]`)
 	if err = worker.Execute(ctx, DriverAction{
 		Kind: DriverClick, Target: button, Element: "Save",
@@ -523,6 +571,7 @@ func playwrightTextResult(text string) *sdkmcp.CallToolResult {
 func playwrightCatalogFixture() []*sdkmcp.Tool {
 	names := []string{
 		"browser_close", "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
+		"browser_select_option", "browser_press_key", "browser_mouse_wheel",
 	}
 	catalog := make([]*sdkmcp.Tool, 0, len(names)+1)
 	for _, name := range names {
