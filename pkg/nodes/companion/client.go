@@ -173,6 +173,9 @@ func cloneCatalog(catalog nodes.CapabilityCatalog) nodes.CapabilityCatalog {
 		result.Commands[index].FileProfiles = cloneFileProfileDescriptors(
 			catalog.Commands[index].FileProfiles,
 		)
+		result.Commands[index].ServiceProfiles = nodes.CloneServiceProfileDescriptors(
+			catalog.Commands[index].ServiceProfiles,
+		)
 	}
 	return result
 }

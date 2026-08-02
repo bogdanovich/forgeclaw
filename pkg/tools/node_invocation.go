@@ -1002,6 +1002,18 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			nil,
 		)
 	}
+	// Service descriptors require the target-bound profile to remain part of
+	// companion authorization. Discovery can safely project that authority,
+	// but generic dispatch stays closed until the execution plan carries the
+	// same binding end to end.
+	if len(descriptor.ServiceProfiles) > 0 {
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
+	}
 	if resolved.requiresReapproval {
 		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
 			nodeDenialReapprovalRequired,

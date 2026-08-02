@@ -86,6 +86,7 @@ type nodeCommandContract struct {
 	Guidance     []string                      `json:"guidance"`
 	Examples     []json.RawMessage             `json:"examples"`
 	File         *nodeFileCommandContract      `json:"file,omitempty"`
+	Service      *nodeServiceCommandContract   `json:"service,omitempty"`
 }
 
 type nodeFileCommandContract struct {
@@ -96,6 +97,13 @@ type nodeFileCommandContract struct {
 	MaxFileBytes   int64                     `json:"max_file_bytes"`
 	Digest         string                    `json:"digest"`
 	Approval       nodes.FileProfileApproval `json:"approval"`
+}
+
+type nodeServiceCommandContract struct {
+	Manager        string                    `json:"manager"`
+	Services       []nodes.ServiceDescriptor `json:"services"`
+	LogLimits      nodes.ServiceLogLimits    `json:"log_limits"`
+	ActionApproval string                    `json:"action_approval"`
 }
 
 type nodeCommandDescription struct {
@@ -231,6 +239,7 @@ func (tool *NodeDiscoveryTool) describe(
 		registration,
 		entry.Availability,
 		binding.FileProfile,
+		binding.ServiceProfile,
 	)
 	if command == "" {
 		return nodeJSONResult(description)
@@ -239,7 +248,11 @@ func (tool *NodeDiscoveryTool) describe(
 	if !ok || entry.RequiresReapproval {
 		return ErrorResult("command is unavailable on this target")
 	}
-	descriptor, ok = projectFileDescriptorForTarget(descriptor, binding.FileProfile)
+	descriptor, ok = projectDescriptorForTarget(
+		descriptor,
+		binding.FileProfile,
+		binding.ServiceProfile,
+	)
 	if !ok {
 		return ErrorResult("command is unavailable on this target")
 	}
@@ -317,6 +330,7 @@ func (access *nodeTargetAccess) resolve(
 			registration,
 			targetAvailability,
 			binding.FileProfile,
+			binding.ServiceProfile,
 		)
 		entry.CommandCount = len(commands)
 		if connected {
@@ -345,7 +359,8 @@ func visibleNodeCommands(
 	catalog nodes.CapabilityCatalog,
 	registration *nodes.Registration,
 	targetAvailability string,
-	fileProfiles ...string,
+	fileProfile string,
+	serviceProfile string,
 ) []nodeCommandSummary {
 	if registration == nil || len(registration.AllowedCommands) == 0 {
 		return []nodeCommandSummary{}
@@ -364,11 +379,7 @@ func visibleNodeCommands(
 		if _, ok := allowed[descriptor.Name]; !ok {
 			continue
 		}
-		fileProfile := ""
-		if len(fileProfiles) > 0 {
-			fileProfile = fileProfiles[0]
-		}
-		projected, available := projectFileDescriptorForTarget(descriptor, fileProfile)
+		projected, available := projectDescriptorForTarget(descriptor, fileProfile, serviceProfile)
 		if !available {
 			continue
 		}
@@ -383,6 +394,18 @@ func visibleNodeCommands(
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	return commands
+}
+
+func projectDescriptorForTarget(
+	descriptor nodes.CommandDescriptor,
+	fileProfile string,
+	serviceProfile string,
+) (nodes.CommandDescriptor, bool) {
+	projected, available := projectFileDescriptorForTarget(descriptor, fileProfile)
+	if !available {
+		return nodes.CommandDescriptor{}, false
+	}
+	return projectServiceDescriptorForTarget(projected, serviceProfile)
 }
 
 func projectFileDescriptorForTarget(
@@ -422,6 +445,47 @@ func projectFileDescriptorForTarget(
 			return nodes.CommandDescriptor{}, false
 		}
 		descriptor.ModelContract = &contract
+		return descriptor, true
+	}
+	return nodes.CommandDescriptor{}, false
+}
+
+func projectServiceDescriptorForTarget(
+	descriptor nodes.CommandDescriptor,
+	serviceProfile string,
+) (nodes.CommandDescriptor, bool) {
+	if len(descriptor.ServiceProfiles) == 0 {
+		return descriptor, true
+	}
+	if serviceProfile == "" || descriptor.ModelContract == nil {
+		return nodes.CommandDescriptor{}, false
+	}
+	for _, profile := range descriptor.ServiceProfiles {
+		if profile.Alias != serviceProfile {
+			continue
+		}
+		descriptor.ServiceProfiles = []nodes.ServiceProfileDescriptor{profile}
+		descriptor.InputSchema = nodes.ServiceCommandInputSchema(
+			descriptor.Name,
+			descriptor.ServiceProfiles,
+		)
+		contract := *descriptor.ModelContract
+		contract.Availability = nodes.ModelAvailable
+		contract.Constraints.ProfileAliases = nil
+		if descriptor.Name == "service.logs.v1" {
+			contract.OutputBytesMax = profile.LogLimits.BytesMax
+		}
+		if descriptor.Name == "service.action.v1" {
+			if profile.ActionApproval == "required" {
+				contract.ApprovalMode = "each_command"
+			} else {
+				contract.ApprovalMode = ""
+			}
+		}
+		descriptor.ModelContract = &contract
+		if err := descriptor.Validate(); err != nil {
+			return nodes.CommandDescriptor{}, false
+		}
 		return descriptor, true
 	}
 	return nodes.CommandDescriptor{}, false
@@ -521,6 +585,8 @@ func makeNodeCommandContract(
 		}
 	} else if len(descriptor.FileProfiles) == 1 {
 		inputSchema = projectedFileToolInputSchema(descriptor.Name)
+	} else if len(descriptor.ServiceProfiles) == 1 {
+		inputSchema = nodes.ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles)
 	}
 	contract := nodeCommandContract{
 		Name:         descriptor.Name,
@@ -555,7 +621,26 @@ func makeNodeCommandContract(
 			Approval:       profile.Approval,
 		}
 	}
+	if len(descriptor.ServiceProfiles) == 1 {
+		profile := descriptor.ServiceProfiles[0]
+		contract.Constraints.ProfileAliases = nil
+		contract.Service = &nodeServiceCommandContract{
+			Manager:        profile.Manager,
+			Services:       cloneServiceDescriptions(profile.Services),
+			LogLimits:      profile.LogLimits,
+			ActionApproval: profile.ActionApproval,
+		}
+	}
 	return contract
+}
+
+func cloneServiceDescriptions(services []nodes.ServiceDescriptor) []nodes.ServiceDescriptor {
+	result := make([]nodes.ServiceDescriptor, len(services))
+	for index, service := range services {
+		result[index] = service
+		result[index].Actions = append([]nodes.ServiceAction(nil), service.Actions...)
+	}
+	return result
 }
 
 func projectedFileToolInputSchema(command string) json.RawMessage {
@@ -615,25 +700,26 @@ func commandProjectionFits(descriptor nodes.CommandDescriptor) bool {
 }
 
 type discoveryRevisionInput struct {
-	AgentTargets        []string    `json:"agent_targets"`
-	DefaultTarget       string      `json:"default_target"`
-	Target              string      `json:"target"`
-	TargetType          string      `json:"target_type"`
-	TargetExecutor      string      `json:"target_executor"`
-	TargetFileProfile   string      `json:"target_file_profile,omitempty"`
-	TargetBindingDigest string      `json:"target_binding_digest"`
-	NodeIdentityDigest  string      `json:"node_identity_digest"`
-	Command             string      `json:"command"`
-	DescriptorDigest    string      `json:"descriptor_digest"`
-	State               nodes.State `json:"state"`
-	Connected           bool        `json:"connected"`
-	CatalogDigest       string      `json:"catalog_digest"`
-	PolicyRevision      string      `json:"policy_revision"`
-	NodeExecutor        string      `json:"node_executor"`
-	ApprovedCatalog     string      `json:"approved_catalog"`
-	ApprovedCommands    []string    `json:"approved_commands"`
-	ApprovedAt          int64       `json:"approved_at"`
-	RevokedAt           int64       `json:"revoked_at"`
+	AgentTargets         []string    `json:"agent_targets"`
+	DefaultTarget        string      `json:"default_target"`
+	Target               string      `json:"target"`
+	TargetType           string      `json:"target_type"`
+	TargetExecutor       string      `json:"target_executor"`
+	TargetFileProfile    string      `json:"target_file_profile,omitempty"`
+	TargetServiceProfile string      `json:"target_service_profile,omitempty"`
+	TargetBindingDigest  string      `json:"target_binding_digest"`
+	NodeIdentityDigest   string      `json:"node_identity_digest"`
+	Command              string      `json:"command"`
+	DescriptorDigest     string      `json:"descriptor_digest"`
+	State                nodes.State `json:"state"`
+	Connected            bool        `json:"connected"`
+	CatalogDigest        string      `json:"catalog_digest"`
+	PolicyRevision       string      `json:"policy_revision"`
+	NodeExecutor         string      `json:"node_executor"`
+	ApprovedCatalog      string      `json:"approved_catalog"`
+	ApprovedCommands     []string    `json:"approved_commands"`
+	ApprovedAt           int64       `json:"approved_at"`
+	RevokedAt            int64       `json:"revoked_at"`
 }
 
 func (access *nodeTargetAccess) discoveryRevision(
@@ -659,25 +745,26 @@ func (access *nodeTargetAccess) discoveryRevision(
 	approvedCommands := append([]string(nil), registration.AllowedCommands...)
 	sort.Strings(approvedCommands)
 	input := discoveryRevisionInput{
-		AgentTargets:        targets,
-		DefaultTarget:       defaultTarget,
-		Target:              target,
-		TargetType:          binding.Type,
-		TargetExecutor:      binding.Executor,
-		TargetFileProfile:   binding.FileProfile,
-		TargetBindingDigest: base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
-		NodeIdentityDigest:  base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),
-		Command:             command,
-		DescriptorDigest:    descriptorDigest,
-		State:               snapshot.State,
-		Connected:           connected,
-		CatalogDigest:       snapshot.CatalogHash,
-		PolicyRevision:      snapshot.PolicyRevision,
-		NodeExecutor:        snapshot.Executor,
-		ApprovedCatalog:     registration.ApprovedCatalogHash,
-		ApprovedCommands:    approvedCommands,
-		ApprovedAt:          registration.ApprovedAt,
-		RevokedAt:           registration.RevokedAt,
+		AgentTargets:         targets,
+		DefaultTarget:        defaultTarget,
+		Target:               target,
+		TargetType:           binding.Type,
+		TargetExecutor:       binding.Executor,
+		TargetFileProfile:    binding.FileProfile,
+		TargetServiceProfile: binding.ServiceProfile,
+		TargetBindingDigest:  base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
+		NodeIdentityDigest:   base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),
+		Command:              command,
+		DescriptorDigest:     descriptorDigest,
+		State:                snapshot.State,
+		Connected:            connected,
+		CatalogDigest:        snapshot.CatalogHash,
+		PolicyRevision:       snapshot.PolicyRevision,
+		NodeExecutor:         snapshot.Executor,
+		ApprovedCatalog:      registration.ApprovedCatalogHash,
+		ApprovedCommands:     approvedCommands,
+		ApprovedAt:           registration.ApprovedAt,
+		RevokedAt:            registration.RevokedAt,
 	}
 	data, err := json.Marshal(input)
 	if err != nil {

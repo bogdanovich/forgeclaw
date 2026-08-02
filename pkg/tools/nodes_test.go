@@ -280,6 +280,208 @@ func TestNodeDiscoveryProjectsOnlyConfiguredFileProfile(t *testing.T) {
 	}
 }
 
+func TestNodeDiscoveryProjectsOnlyConfiguredServiceProfile(t *testing.T) {
+	descriptor := serviceStatusTestDescriptor()
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "node-policy-v1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef: map[string]nodes.Snapshot{"builder-node": snapshot},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				AllowedCommands:     []string{descriptor.Name},
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+	}
+	cfg := nodeDiscoveryTestConfig()
+	target := cfg.Execution.Targets["build"]
+	target.ServiceProfile = "server-services"
+	cfg.Execution.Targets["build"] = target
+	result := NewNodeDiscoveryTool(cfg, source).Execute(
+		WithToolSessionContext(context.Background(), "main", "session", nil),
+		map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": descriptor.Name,
+		},
+	)
+	payload := decodeNodeResult(t, result)
+	serverRevision := payload["discovery_revision"].(string)
+	command := payload["command"].(map[string]any)
+	service := command["service"].(map[string]any)
+	services := service["services"].([]any)
+	if len(services) != 1 || services[0].(map[string]any)["alias"] != "vpn" ||
+		service["manager"] != "systemd" {
+		t.Fatalf("service projection = %#v", service)
+	}
+	schema := command["input_schema"].(map[string]any)
+	enum := schema["properties"].(map[string]any)["service"].(map[string]any)["enum"].([]any)
+	if len(enum) != 1 || enum[0] != "vpn" {
+		t.Fatalf("service schema = %#v", schema)
+	}
+	for _, hidden := range []string{
+		"server-services",
+		"server-services-v1",
+		"secret-services",
+		"secret-services-v1",
+		"database",
+		"private-node-id",
+	} {
+		if strings.Contains(result.ForLLM, hidden) {
+			t.Fatalf("service discovery leaked %q: %s", hidden, result.ForLLM)
+		}
+	}
+	target.ServiceProfile = "secret-services"
+	cfg.Execution.Targets["build"] = target
+	secretResult := NewNodeDiscoveryTool(cfg, source).Execute(
+		WithToolSessionContext(context.Background(), "main", "session", nil),
+		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
+	)
+	secretPayload := decodeNodeResult(t, secretResult)
+	if secretPayload["discovery_revision"] == serverRevision {
+		t.Fatal("service profile rebinding did not invalidate discovery")
+	}
+
+	target.ServiceProfile = ""
+	cfg.Execution.Targets["build"] = target
+	denied := NewNodeDiscoveryTool(cfg, source).Execute(
+		WithToolSessionContext(context.Background(), "main", "session", nil),
+		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
+	)
+	if !denied.IsError || !strings.Contains(denied.ForLLM, "unavailable") {
+		t.Fatalf("unbound service profile result = %#v", denied)
+	}
+}
+
+func TestNodeDiscoveryAdmitsMaximumServiceActionProjection(t *testing.T) {
+	actions := []nodes.ServiceAction{
+		nodes.ServiceActionDisable,
+		nodes.ServiceActionEnable,
+		nodes.ServiceActionReload,
+		nodes.ServiceActionRestart,
+		nodes.ServiceActionStart,
+		nodes.ServiceActionStop,
+	}
+	services := make([]nodes.ServiceDescriptor, nodes.MaxServicesPerProfile)
+	for index := range services {
+		prefix := fmt.Sprintf("service_%02d_", index)
+		services[index] = nodes.ServiceDescriptor{
+			Alias: prefix + strings.Repeat("x", nodes.MaxAliasLength-len(prefix)),
+			Description: strings.Repeat(
+				"d",
+				nodes.MaxServiceDescriptionProjectionBytes/nodes.MaxServicesPerProfile,
+			),
+			Actions: append([]nodes.ServiceAction(nil), actions...),
+		}
+	}
+	profiles := []nodes.ServiceProfileDescriptor{{
+		Alias:          "maximum-services",
+		Revision:       "maximum-services-v1",
+		Manager:        "systemd",
+		Services:       services,
+		LogLimits:      nodes.ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1},
+		ActionApproval: "required",
+	}}
+	descriptor := nodes.CommandDescriptor{
+		Name:         "service.action.v1",
+		InputSchema:  nodes.ServiceCommandInputSchema("service.action.v1", profiles),
+		OutputSchema: nodes.ServiceCommandOutputSchema("service.action.v1"),
+		Risk:         nodes.RiskPrivileged,
+		ModelContract: &nodes.CommandModelContract{
+			Availability:      nodes.ModelUnavailable,
+			TimeoutSecondsMax: 30,
+			OutputBytesMax:    4096,
+			ResultKind:        "json",
+			AuthorityDigest:   strings.Repeat("a", 64),
+			Guidance:          []string{},
+			Examples:          []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
+	}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("maximum service descriptor: %v", err)
+	}
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "maximum-node",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "node-policy-v1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef: map[string]nodes.Snapshot{"builder-node": snapshot},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				AllowedCommands:     []string{descriptor.Name},
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+	}
+	cfg := nodeDiscoveryTestConfig()
+	target := cfg.Execution.Targets["build"]
+	target.ServiceProfile = profiles[0].Alias
+	cfg.Execution.Targets["build"] = target
+	result := NewNodeDiscoveryTool(cfg, source).Execute(
+		WithToolSessionContext(context.Background(), "main", "session", nil),
+		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
+	)
+	payload := decodeNodeResult(t, result)
+	contract, err := json.Marshal(payload["command"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contract) > nodes.MaxModelContractBytes {
+		t.Fatalf("maximum target service contract = %d bytes, limit %d", len(contract), nodes.MaxModelContractBytes)
+	}
+}
+
+func TestProjectServiceLogsDescriptorUsesSelectedProfileLimits(t *testing.T) {
+	descriptor := serviceStatusTestDescriptor()
+	descriptor.Name = "service.logs.v1"
+	for profileIndex := range descriptor.ServiceProfiles {
+		for serviceIndex := range descriptor.ServiceProfiles[profileIndex].Services {
+			descriptor.ServiceProfiles[profileIndex].Services[serviceIndex].Status = false
+			descriptor.ServiceProfiles[profileIndex].Services[serviceIndex].Logs = true
+		}
+	}
+	descriptor.InputSchema = nodes.ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles)
+	descriptor.OutputSchema = nodes.ServiceCommandOutputSchema(descriptor.Name)
+	descriptor.ModelContract.OutputBytesMax = nodes.MaxServiceLogBytes
+	projected, ok := projectServiceDescriptorForTarget(descriptor, "server-services")
+	if !ok {
+		t.Fatal("service logs descriptor was not projected")
+	}
+	if projected.ModelContract.OutputBytesMax != 4096 {
+		t.Fatalf("output maximum = %d, want 4096", projected.ModelContract.OutputBytesMax)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(projected.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	if properties["entries"].(map[string]any)["maximum"] != float64(100) ||
+		properties["since_seconds"].(map[string]any)["maximum"] != float64(3600) {
+		t.Fatalf("logs schema = %#v", schema)
+	}
+}
+
 func TestProjectedSystemExecContractUsesOnlyVisibleAliases(t *testing.T) {
 	descriptor := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, false)
 	descriptor.InputSchema = json.RawMessage(
@@ -980,5 +1182,46 @@ func testNodeCommand(
 		Risk:             risk,
 		SupportsProgress: supportsProgress,
 		SupportsCancel:   supportsCancel,
+	}
+}
+
+func serviceStatusTestDescriptor() nodes.CommandDescriptor {
+	profiles := []nodes.ServiceProfileDescriptor{
+		{
+			Alias:    "secret-services",
+			Revision: "secret-services-v1",
+			Manager:  "systemd",
+			Services: []nodes.ServiceDescriptor{{Alias: "database", Status: true}},
+			LogLimits: nodes.ServiceLogLimits{
+				EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+			},
+			ActionApproval: "required",
+		},
+		{
+			Alias:    "server-services",
+			Revision: "server-services-v1",
+			Manager:  "systemd",
+			Services: []nodes.ServiceDescriptor{{Alias: "vpn", Status: true}},
+			LogLimits: nodes.ServiceLogLimits{
+				EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+			},
+			ActionApproval: "required",
+		},
+	}
+	return nodes.CommandDescriptor{
+		Name:         "service.status.v1",
+		InputSchema:  nodes.ServiceCommandInputSchema("service.status.v1", profiles),
+		OutputSchema: nodes.ServiceCommandOutputSchema("service.status.v1"),
+		Risk:         nodes.RiskRead,
+		ModelContract: &nodes.CommandModelContract{
+			Availability:      nodes.ModelUnavailable,
+			TimeoutSecondsMax: 30,
+			OutputBytesMax:    4096,
+			ResultKind:        "json",
+			AuthorityDigest:   strings.Repeat("a", 64),
+			Guidance:          []string{},
+			Examples:          []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
 	}
 }
