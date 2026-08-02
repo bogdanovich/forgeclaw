@@ -26,6 +26,7 @@ type browserRuntime struct {
 
 	stopOnce sync.Once
 	closeMu  sync.Mutex
+	shutdown chan error
 	closed   bool
 }
 
@@ -119,13 +120,34 @@ func (runtime *browserRuntime) Close(ctx context.Context) error {
 		if runtime.cancel != nil {
 			runtime.cancel()
 		}
-		if runtime.done != nil {
-			<-runtime.done
-		}
 	})
-	if runtime.broker != nil {
-		if err := runtime.broker.Shutdown(ctx); err != nil {
+	if runtime.done != nil {
+		select {
+		case <-runtime.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	for runtime.broker != nil {
+		if runtime.shutdown == nil {
+			runtime.shutdown = make(chan error, 1)
+			shutdown := runtime.shutdown
+			go func() { shutdown <- runtime.broker.Shutdown(ctx) }()
+		}
+		select {
+		case err := <-runtime.shutdown:
+			runtime.shutdown = nil
+			if err == nil {
+				runtime.broker = nil
+				break
+			}
+			if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) &&
+				ctx.Err() == nil {
+				continue
+			}
 			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	if runtime.store != nil {
@@ -138,6 +160,9 @@ func (runtime *browserRuntime) Close(ctx context.Context) error {
 func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningServices *services) error {
 	if runningServices == nil {
 		return errors.New("browser runtime requires gateway services")
+	}
+	if runningServices.Browser != nil {
+		return errors.New("previous browser runtime still owns resources")
 	}
 	runtime, err := newBrowserRuntime(ctx, cfg)
 	if err != nil {

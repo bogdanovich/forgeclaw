@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,16 +88,102 @@ func TestBrowserRuntimeRetainsOwnershipUntilWorkerShutdownSucceeds(t *testing.T)
 	if _, openErr := browser.NewFileStore(storePath, 0, 0); !errors.Is(openErr, browser.ErrStoreOwned) {
 		t.Fatalf("store after failed shutdown error = %v, want ErrStoreOwned", openErr)
 	}
+	disabled := config.DefaultConfig()
+	disabled.Agents.Defaults.Workspace = root
+	if replaceErr := setupBrowserRuntime(context.Background(), disabled, services); replaceErr == nil ||
+		services.Browser != runtime {
+		t.Fatalf("disabled replacement error = %v, runtime = %+v", replaceErr, services.Browser)
+	}
+	otherWorkspace := gatewayBrowserConfig(t.TempDir())
+	if replaceErr := setupBrowserRuntime(context.Background(), otherWorkspace, services); replaceErr == nil ||
+		services.Browser != runtime {
+		t.Fatalf("workspace replacement error = %v, runtime = %+v", replaceErr, services.Browser)
+	}
 	worker.closeErr = nil
 	if err = closeBrowserRuntime(context.Background(), services); err != nil || services.Browser != nil {
 		t.Fatalf("retry closeBrowserRuntime() error = %v, runtime = %+v", err, services.Browser)
 	}
-	if worker.closeCalls != 2 {
-		t.Fatalf("worker close calls = %d, want 2", worker.closeCalls)
+	if closeCalls := worker.closeCalls.Load(); closeCalls != 2 {
+		t.Fatalf("worker close calls = %d, want 2", closeCalls)
 	}
 	reopened, err := browser.NewFileStore(storePath, 0, 0)
 	if err != nil {
 		t.Fatalf("reopen store after successful retry error = %v", err)
+	}
+	reopened.Close()
+}
+
+func TestBrowserRuntimeCloseHonorsCallerDeadlineAndRetainsOwnership(t *testing.T) {
+	root := t.TempDir()
+	cfg := gatewayBrowserConfig(root)
+	storePath := filepath.Join(root, "state", "browser", browserStateFile)
+	store, err := browser.NewFileStore(storePath, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &gatewayTestBrowserWorker{waitForContextCalls: 1}
+	broker, err := browser.NewBroker(cfg, store, &gatewayTestBrowserFactory{worker: worker})
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	owner := browser.Owner{
+		ActorID: "actor_1", AgentID: "browser", SessionKey: "session_1", ExecutionID: "execution_1",
+	}
+	if _, err = broker.Open(context.Background(), browser.OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	}); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	runtime := &browserRuntime{broker: broker, store: store}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	started := time.Now()
+	err = runtime.Close(ctx)
+	cancel()
+	if err == nil || time.Since(started) > time.Second {
+		t.Fatalf("deadline Close() error = %v, elapsed = %v", err, time.Since(started))
+	}
+	if _, openErr := browser.NewFileStore(storePath, 0, 0); !errors.Is(openErr, browser.ErrStoreOwned) {
+		t.Fatalf("store after deadline error = %v, want ErrStoreOwned", openErr)
+	}
+	if err = runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	reopened, err := browser.NewFileStore(storePath, 0, 0)
+	if err != nil {
+		t.Fatalf("reopen store after retry error = %v", err)
+	}
+	reopened.Close()
+}
+
+func TestBrowserRuntimeCloseDeadlineBoundsSweepWait(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state", "browser", browserStateFile)
+	store, err := browser.NewFileStore(storePath, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	_, cancelSweep := context.WithCancel(context.Background())
+	runtime := &browserRuntime{store: store, cancel: cancelSweep, done: done}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	started := time.Now()
+	err = runtime.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("deadline Close() error = %v, elapsed = %v", err, time.Since(started))
+	}
+	if _, openErr := browser.NewFileStore(storePath, 0, 0); !errors.Is(openErr, browser.ErrStoreOwned) {
+		t.Fatalf("store while sweep is retained error = %v, want ErrStoreOwned", openErr)
+	}
+	close(done)
+	if err = runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() after sweep exit error = %v", err)
+	}
+	reopened, err := browser.NewFileStore(storePath, 0, 0)
+	if err != nil {
+		t.Fatalf("reopen store after sweep exit error = %v", err)
 	}
 	reopened.Close()
 }
@@ -167,16 +254,21 @@ func gatewayBrowserConfig(workspace string) *config.Config {
 }
 
 type gatewayTestBrowserWorker struct {
-	closeErr   error
-	closeCalls int
+	closeErr            error
+	closeCalls          atomic.Int32
+	waitForContextCalls int32
 }
 
 func (*gatewayTestBrowserWorker) Status(context.Context) (browser.WorkerStatus, error) {
 	return browser.WorkerReady, nil
 }
 
-func (worker *gatewayTestBrowserWorker) Close(context.Context) error {
-	worker.closeCalls++
+func (worker *gatewayTestBrowserWorker) Close(ctx context.Context) error {
+	call := worker.closeCalls.Add(1)
+	if call <= worker.waitForContextCalls {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return worker.closeErr
 }
 

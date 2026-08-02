@@ -549,6 +549,12 @@ func (broker *Broker) finishSessionLocked(
 			safeFailure = "worker_lost"
 		}
 	} else if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Session{}, errors.Join(
+				fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable),
+				ctxErr,
+			)
+		}
 		return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
 	} else if slot.safeFailure != "" {
 		desired = SessionLost
@@ -807,7 +813,7 @@ func (broker *Broker) cleanupSlot(ctx context.Context, slot *workerSlot) error {
 		return nil
 	}
 	cleanupTimeout := time.Duration(broker.config.Limits.Effective().ActionSeconds) * time.Second
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	cleanupCtx, cancelCleanup := context.WithTimeout(ctx, cleanupTimeout)
 	defer cancelCleanup()
 	if err := slot.worker.Close(cleanupCtx); err != nil {
 		return err
