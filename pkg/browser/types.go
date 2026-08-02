@@ -57,7 +57,7 @@ func validSessionTransition(from, to SessionState) bool {
 	case SessionOpening:
 		return to == SessionReady || to == SessionClosing || to == SessionLost
 	case SessionReady:
-		return to == SessionClosing || to == SessionExpired || to == SessionLost
+		return to == SessionReady || to == SessionClosing || to == SessionExpired || to == SessionLost
 	case SessionClosing:
 		return to == SessionClosed || to == SessionExpired || to == SessionLost
 	default:

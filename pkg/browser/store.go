@@ -12,10 +12,13 @@ import (
 type Store interface {
 	CreateSession(context.Context, Session) error
 	GetSession(context.Context, string) (Session, error)
+	ListSessions(context.Context) ([]Session, error)
 	UpdateSession(context.Context, uint64, Session) error
 	CreateInvocation(context.Context, Invocation) error
 	GetInvocation(context.Context, string) (Invocation, error)
+	ListInvocations(context.Context, string) ([]Invocation, error)
 	UpdateInvocation(context.Context, uint64, Invocation) error
+	PruneInvocations(context.Context, int64) error
 }
 
 type MemoryStore struct {
@@ -63,6 +66,16 @@ func (store *MemoryStore) GetSession(_ context.Context, id string) (Session, err
 	return session, nil
 }
 
+func (store *MemoryStore) ListSessions(_ context.Context) ([]Session, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	sessions := make([]Session, 0, len(store.sessions))
+	for _, session := range store.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions, nil
+}
+
 func (store *MemoryStore) UpdateSession(_ context.Context, expected uint64, next Session) error {
 	if err := next.Validate(); err != nil {
 		return err
@@ -79,6 +92,7 @@ func (store *MemoryStore) UpdateSession(_ context.Context, expected uint64, next
 	if current.Owner != next.Owner || current.Target != next.Target ||
 		current.Profile != next.Profile || current.CreatedAt != next.CreatedAt ||
 		current.DryRun != next.DryRun || current.PolicyRevision != next.PolicyRevision ||
+		current.ControllerGeneration != next.ControllerGeneration || current.ExpiresAt != next.ExpiresAt ||
 		!validSessionTransition(current.State, next.State) {
 		return ErrConflict
 	}
@@ -118,6 +132,22 @@ func (store *MemoryStore) GetInvocation(_ context.Context, id string) (Invocatio
 	return invocation, nil
 }
 
+func (store *MemoryStore) ListInvocations(_ context.Context, sessionID string) ([]Invocation, error) {
+	if !validIdentifier(sessionID) {
+		return nil, fmt.Errorf("%w: malformed session ID", ErrInvalid)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	invocations := make([]Invocation, 0)
+	for _, invocation := range store.invocations {
+		if invocation.SessionID == sessionID {
+			invocation.TerminalResult = cloneBytes(invocation.TerminalResult)
+			invocations = append(invocations, invocation)
+		}
+	}
+	return invocations, nil
+}
+
 func (store *MemoryStore) UpdateInvocation(_ context.Context, expected uint64, next Invocation) error {
 	if err := next.Validate(); err != nil {
 		return err
@@ -139,6 +169,17 @@ func (store *MemoryStore) UpdateInvocation(_ context.Context, expected uint64, n
 	}
 	next.TerminalResult = cloneBytes(next.TerminalResult)
 	store.invocations[next.ID] = next
+	return nil
+}
+
+func (store *MemoryStore) PruneInvocations(_ context.Context, completedBefore int64) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for id, invocation := range store.invocations {
+		if invocation.State.Terminal() && invocation.CompletedAt > 0 && invocation.CompletedAt < completedBefore {
+			delete(store.invocations, id)
+		}
+	}
 	return nil
 }
 
