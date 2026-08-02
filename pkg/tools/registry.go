@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -51,17 +52,26 @@ type ApprovalArgumentsProvider interface {
 }
 
 type nodeTargetApprovalBypassProvider interface {
-	approvalBypassNodeTarget(args map[string]any) (string, bool)
+	approvalBypassOwner() Tool
 }
 
-// nodeTargetApprovalBypass marks first-party node tools as eligible for an
-// operator-configured target-scoped approval bypass. Its unexported method
-// prevents injected tools from claiming this trust boundary.
-type nodeTargetApprovalBypass struct{}
+// TrustedToolExecution binds approval provenance to the exact tool instance
+// that must execute. Its fields are intentionally private so callers cannot
+// forge a binding for an injected or replacement tool.
+type TrustedToolExecution struct {
+	registry *ToolRegistry
+	name     string
+	target   string
+	tool     Tool
+}
 
-func (nodeTargetApprovalBypass) approvalBypassNodeTarget(args map[string]any) (string, bool) {
-	target, ok := args["target"].(string)
-	return target, ok && target != ""
+func sameToolInstance(left, right Tool) bool {
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	return leftValue.IsValid() && rightValue.IsValid() &&
+		leftValue.Type() == rightValue.Type() &&
+		leftValue.Kind() == reflect.Pointer &&
+		leftValue.Pointer() == rightValue.Pointer()
 }
 
 type safeApprovalDenialProvider interface {
@@ -349,16 +359,25 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 func (r *ToolRegistry) TrustedNodeApprovalBypassTarget(
 	name string,
 	args map[string]any,
-) (string, bool) {
+) (string, *TrustedToolExecution, bool) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return "", false
+		return "", nil, false
 	}
 	provider, ok := tool.(nodeTargetApprovalBypassProvider)
-	if !ok {
-		return "", false
+	if !ok || !sameToolInstance(provider.approvalBypassOwner(), tool) {
+		return "", nil, false
 	}
-	return provider.approvalBypassNodeTarget(args)
+	target, ok := args["target"].(string)
+	if !ok || target == "" {
+		return "", nil, false
+	}
+	return target, &TrustedToolExecution{
+		registry: r,
+		name:     name,
+		target:   target,
+		tool:     tool,
+	}, true
 }
 
 // ApprovalArguments returns the trusted arguments that durable human approval
@@ -417,12 +436,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 	channel, chatID string,
 	asyncCallback AsyncCallback,
 ) *ToolResult {
-	logger.InfoCF("tool", "Tool execution started",
-		map[string]any{
-			"tool": name,
-			"args": ToolLogArguments(name, args),
-		})
-
 	tool, ok := r.Get(name)
 	if !ok {
 		logger.ErrorCF("tool", "Tool not found",
@@ -433,6 +446,52 @@ func (r *ToolRegistry) ExecuteWithContext(
 			fmt.Sprintf("tool %q not found", name),
 		).WithError(fmt.Errorf("tool not found"))
 	}
+	return r.executeToolWithContext(ctx, name, tool, args, channel, chatID, asyncCallback)
+}
+
+// ExecuteTrustedWithContext executes the exact first-party tool instance bound
+// during target-scoped approval. Registry replacement after validation cannot
+// redirect execution to a different tool.
+func (r *ToolRegistry) ExecuteTrustedWithContext(
+	ctx context.Context,
+	binding *TrustedToolExecution,
+	args map[string]any,
+	channel, chatID string,
+	asyncCallback AsyncCallback,
+) *ToolResult {
+	if binding == nil || binding.registry != r || binding.tool == nil || binding.name == "" {
+		return ErrorResult("trusted tool execution binding is invalid").
+			WithError(fmt.Errorf("invalid trusted tool execution binding"))
+	}
+	target, _ := args["target"].(string)
+	if target == "" || target != binding.target {
+		return ErrorResult("trusted node target changed after approval").
+			WithError(fmt.Errorf("trusted node target binding mismatch"))
+	}
+	return r.executeToolWithContext(
+		ctx,
+		binding.name,
+		binding.tool,
+		args,
+		channel,
+		chatID,
+		asyncCallback,
+	)
+}
+
+func (r *ToolRegistry) executeToolWithContext(
+	ctx context.Context,
+	name string,
+	tool Tool,
+	args map[string]any,
+	channel, chatID string,
+	asyncCallback AsyncCallback,
+) *ToolResult {
+	logger.InfoCF("tool", "Tool execution started",
+		map[string]any{
+			"tool": name,
+			"args": ToolLogArguments(name, args),
+		})
 
 	// Validate arguments against the tool's declared schema.
 	if err := validateRegisteredToolArguments(tool, args); err != nil {

@@ -483,18 +483,23 @@ func TestToolApprovalBypassRequiresTrustedNodeTool(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	registry.Register(tools.NewNodeInvokeTool(nil, nil))
 
-	if !toolApprovalBypass(cfg, registry, "nodes_invoke", arguments) {
+	if bypass, _ := toolApprovalBypass(cfg, registry, "nodes_invoke", arguments); !bypass {
 		t.Fatal("trusted node tool did not receive the configured target bypass")
 	}
-	if toolApprovalBypass(cfg, registry, "nodes_invoke", map[string]any{"target": "approval-test"}) {
+	if bypass, _ := toolApprovalBypass(
+		cfg,
+		registry,
+		"nodes_invoke",
+		map[string]any{"target": "approval-test"},
+	); bypass {
 		t.Fatal("unlisted target received the configured target bypass")
 	}
-	if toolApprovalBypass(cfg, registry, "nodes_invoke", map[string]any{}) {
+	if bypass, _ := toolApprovalBypass(cfg, registry, "nodes_invoke", map[string]any{}); bypass {
 		t.Fatal("node tool without an explicit target received the configured bypass")
 	}
 
 	registry.Register(&replacementNodeTool{})
-	if toolApprovalBypass(cfg, registry, "nodes_invoke", arguments) {
+	if bypass, _ := toolApprovalBypass(cfg, registry, "nodes_invoke", arguments); bypass {
 		t.Fatal("replacement nodes_* tool received trusted node approval bypass")
 	}
 }

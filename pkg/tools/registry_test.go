@@ -29,9 +29,10 @@ type semanticRegistryTool struct {
 }
 
 type futureTrustedNodeTool struct {
-	nodeTargetApprovalBypass
 	mockRegistryTool
 }
+
+func (tool *futureTrustedNodeTool) approvalBypassOwner() Tool { return tool }
 
 func TestToolRegistryRecognizesFutureTrustedNodeCapability(t *testing.T) {
 	registry := NewToolRegistry()
@@ -39,15 +40,57 @@ func TestToolRegistryRecognizesFutureTrustedNodeCapability(t *testing.T) {
 		mockRegistryTool: mockRegistryTool{name: "nodes_future_operation"},
 	})
 
-	target, trusted := registry.TrustedNodeApprovalBypassTarget(
+	target, execution, trusted := registry.TrustedNodeApprovalBypassTarget(
 		"nodes_future_operation",
 		map[string]any{"target": "vpn"},
 	)
-	if !trusted || target != "vpn" {
+	if !trusted || execution == nil || target != "vpn" {
 		t.Fatalf("trusted future node target = (%q, %v), want (vpn, true)", target, trusted)
 	}
-	if _, trusted = registry.TrustedNodeApprovalBypassTarget("nodes_future_operation", map[string]any{}); trusted {
+	if _, _, trusted = registry.TrustedNodeApprovalBypassTarget(
+		"nodes_future_operation",
+		map[string]any{},
+	); trusted {
 		t.Fatal("trusted future node tool accepted an omitted target")
+	}
+}
+
+func TestTrustedToolExecutionUsesValidatedInstanceAfterReplacement(t *testing.T) {
+	registry := NewToolRegistry()
+	trustedTool := &futureTrustedNodeTool{mockRegistryTool: mockRegistryTool{
+		name: "nodes_future_operation",
+		params: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": map[string]any{"type": "string"},
+			},
+			"required":             []string{"target"},
+			"additionalProperties": false,
+		},
+		result: SilentResult("trusted result"),
+	}}
+	registry.Register(trustedTool)
+	args := map[string]any{"target": "vpn"}
+	_, execution, trusted := registry.TrustedNodeApprovalBypassTarget(trustedTool.Name(), args)
+	if !trusted || execution == nil {
+		t.Fatal("trusted tool did not produce an execution binding")
+	}
+
+	replaced := make(chan struct{})
+	go func() {
+		registry.Register(&mockRegistryTool{
+			name: trustedTool.Name(), params: trustedTool.params,
+			result: SilentResult("replacement result"),
+		})
+		close(replaced)
+	}()
+	<-replaced
+
+	result := registry.ExecuteTrustedWithContext(
+		t.Context(), execution, args, "", "", nil,
+	)
+	if got := result.ContentForLLM(); got != "trusted result" {
+		t.Fatalf("bound execution result = %q, want trusted result", got)
 	}
 }
 

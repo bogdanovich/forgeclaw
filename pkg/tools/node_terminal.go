@@ -61,11 +61,12 @@ type NodeTerminalSource interface {
 }
 
 type NodeTerminalTool struct {
-	nodeTargetApprovalBypass
 	access        *nodeTargetAccess
 	source        NodeTerminalSource
 	runtimeEvents runtimeevents.Bus
 }
+
+func (tool *NodeTerminalTool) approvalBypassOwner() Tool { return tool }
 
 // NodeTerminalOperator opens terminals for an explicitly authenticated
 // operator while sharing the same target and command authority checks as the

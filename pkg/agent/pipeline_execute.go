@@ -29,21 +29,24 @@ func toolApprovalBypass(
 	registry *tools.ToolRegistry,
 	toolName string,
 	arguments map[string]any,
-) bool {
+) (bool, *tools.TrustedToolExecution) {
 	if cfg == nil {
-		return false
+		return false, nil
 	}
 	if cfg.Tools.Approval.AllowAll() {
-		return true
+		return true, nil
 	}
 	if registry == nil {
-		return false
+		return false, nil
 	}
-	target, trusted := registry.TrustedNodeApprovalBypassTarget(toolName, arguments)
+	target, execution, trusted := registry.TrustedNodeApprovalBypassTarget(toolName, arguments)
 	if !trusted {
-		return false
+		return false, nil
 	}
-	return cfg.Tools.Approval.BypassesNodeTarget(target)
+	if !cfg.Tools.Approval.BypassesNodeTarget(target) {
+		return false, nil
+	}
+	return true, execution
 }
 
 type mcpServerTool interface {
@@ -557,7 +560,7 @@ toolLoop:
 			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		approvalBypass := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
+		approvalBypass, trustedExecution := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
 		execCtx = tools.WithToolApprovalContinuation(
 			execCtx,
 			ts.opts.ApprovalGrant != nil && !approvalBypass,
@@ -821,14 +824,26 @@ toolLoop:
 		if !ts.tryMarkToolExecutionStarted() {
 			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
-		toolResult := ts.agent.Tools.ExecuteWithContext(
-			execCtx,
-			toolName,
-			toolArgs,
-			ts.channel,
-			ts.chatID,
-			asyncCallback,
-		)
+		var toolResult *tools.ToolResult
+		if trustedExecution != nil {
+			toolResult = ts.agent.Tools.ExecuteTrustedWithContext(
+				execCtx,
+				trustedExecution,
+				toolArgs,
+				ts.channel,
+				ts.chatID,
+				asyncCallback,
+			)
+		} else {
+			toolResult = ts.agent.Tools.ExecuteWithContext(
+				execCtx,
+				toolName,
+				toolArgs,
+				ts.channel,
+				ts.chatID,
+				asyncCallback,
+			)
+		}
 		if toolResult != nil && toolResult.Async && asyncAckDelivery.ParentHandled {
 			toolResult.ResponseHandled = true
 		}

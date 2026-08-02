@@ -124,16 +124,18 @@ type NodeFileInfoTool struct {
 }
 
 type NodeUploadTool struct {
-	nodeTargetApprovalBypass
 	runtime    *nodeFileTransferToolRuntime
 	mediaStore media.MediaStore
 }
 
 type NodeDownloadTool struct {
-	nodeTargetApprovalBypass
 	runtime    *nodeFileTransferToolRuntime
 	mediaStore media.MediaStore
 }
+
+func (tool *NodeUploadTool) approvalBypassOwner() Tool { return tool }
+
+func (tool *NodeDownloadTool) approvalBypassOwner() Tool { return tool }
 
 type nodeFileTransferToolRuntime struct {
 	access          *nodeTargetAccess
