@@ -95,7 +95,7 @@ func validInvocationTransition(from, to InvocationState) bool {
 		return to == InvocationAccepted || to == InvocationCanceled
 	case InvocationAccepted:
 		return to == InvocationSucceeded || to == InvocationFailed ||
-			to == InvocationUnknown || to == InvocationCanceled
+			to == InvocationUnknown
 	default:
 		return false
 	}
@@ -223,6 +223,9 @@ func (invocation Invocation) Validate() error {
 			return fmt.Errorf("%w: malformed pre-acceptance cancellation", ErrInvalid)
 		}
 		return nil
+	}
+	if invocation.State == InvocationCanceled {
+		return fmt.Errorf("%w: accepted invocation cannot become canceled", ErrInvalid)
 	}
 	if invocation.AcceptedAt < invocation.CreatedAt || invocation.AcceptedAt > invocation.UpdatedAt {
 		return fmt.Errorf("%w: malformed invocation acceptance", ErrInvalid)

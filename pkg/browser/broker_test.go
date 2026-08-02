@@ -228,10 +228,7 @@ func TestMemoryStoreInvocationAcceptanceAndTerminalState(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	owner := testOwner()
-	session := testReadySession(owner)
-	if err := store.CreateSession(ctx, session); err != nil {
-		t.Fatalf("CreateSession() error = %v", err)
-	}
+	session := createReadySession(t, store, owner)
 	invocation := Invocation{
 		ID: "invocation_1", SessionID: session.ID, Owner: owner,
 		ActionHash: strings.Repeat("a", 64), Effect: EffectLocalEdit,
@@ -279,23 +276,20 @@ func TestMemoryStoreRejectsStaleOrMutatedTransition(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	owner := testOwner()
-	session := testReadySession(owner)
-	if err := store.CreateSession(ctx, session); err != nil {
-		t.Fatalf("CreateSession() error = %v", err)
-	}
+	session := createReadySession(t, store, owner)
 	stale := session
 	stale.State = SessionClosing
-	stale.Revision = 3
+	stale.Revision = 4
 	stale.UpdatedAt++
-	if err := store.UpdateSession(ctx, 1, stale); !errors.Is(err, ErrStale) {
+	if err := store.UpdateSession(ctx, 2, stale); !errors.Is(err, ErrStale) {
 		t.Fatalf("UpdateSession() stale error = %v, want ErrStale", err)
 	}
 	mutated := session
 	mutated.Owner.ActorID = "other_actor"
 	mutated.State = SessionClosing
-	mutated.Revision = 2
+	mutated.Revision = 3
 	mutated.UpdatedAt++
-	if err := store.UpdateSession(ctx, 1, mutated); !errors.Is(err, ErrConflict) {
+	if err := store.UpdateSession(ctx, 2, mutated); !errors.Is(err, ErrConflict) {
 		t.Fatalf("UpdateSession() mutated error = %v, want ErrConflict", err)
 	}
 }
@@ -304,10 +298,7 @@ func TestMemoryStoreAllowsCancellationBeforeAcceptance(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	owner := testOwner()
-	session := testReadySession(owner)
-	if err := store.CreateSession(ctx, session); err != nil {
-		t.Fatalf("CreateSession() error = %v", err)
-	}
+	session := createReadySession(t, store, owner)
 	invocation := Invocation{
 		ID: "invocation_1", SessionID: session.ID, Owner: owner,
 		ActionHash: strings.Repeat("a", 64), Effect: EffectExternalCommit,
@@ -325,6 +316,70 @@ func TestMemoryStoreAllowsCancellationBeforeAcceptance(t *testing.T) {
 	canceled.Revision = 2
 	if err := store.UpdateInvocation(ctx, 1, canceled); err != nil {
 		t.Fatalf("cancel prepared invocation error = %v", err)
+	}
+}
+
+func TestMemoryStoreRejectsCancellationAfterAcceptance(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	owner := testOwner()
+	session := createReadySession(t, store, owner)
+	invocation := Invocation{
+		ID: "invocation_1", SessionID: session.ID, Owner: owner,
+		ActionHash: strings.Repeat("a", 64), Effect: EffectExternalCommit,
+		State: InvocationPrepared, Revision: 1, CreatedAt: 100,
+		UpdatedAt: 100, ExpiresAt: 1000,
+	}
+	if err := store.CreateInvocation(ctx, invocation); err != nil {
+		t.Fatalf("CreateInvocation() error = %v", err)
+	}
+	accepted := invocation
+	accepted.State = InvocationAccepted
+	accepted.AcceptedAt = 200
+	accepted.UpdatedAt = 200
+	accepted.Revision = 2
+	if err := store.UpdateInvocation(ctx, 1, accepted); err != nil {
+		t.Fatalf("accept invocation error = %v", err)
+	}
+	canceled := accepted
+	canceled.State = InvocationCanceled
+	canceled.SafeFailure = "cancellation_requested"
+	canceled.UpdatedAt = 300
+	canceled.CompletedAt = 300
+	canceled.Revision = 3
+	if err := store.UpdateInvocation(ctx, 2, canceled); err == nil {
+		t.Fatal("accepted to canceled update error = nil")
+	}
+	stored, err := store.GetInvocation(ctx, invocation.ID)
+	if err != nil || stored.State != InvocationAccepted {
+		t.Fatalf("stored invocation after rejected cancel = %+v, %v", stored, err)
+	}
+}
+
+func TestMemoryStoreRequiresCanonicalEntryStates(t *testing.T) {
+	ctx := context.Background()
+	owner := testOwner()
+	ready := testOpeningSession(owner)
+	ready.State = SessionReady
+	if err := NewMemoryStore().CreateSession(ctx, ready); !errors.Is(err, ErrConflict) {
+		t.Fatalf("CreateSession() ready error = %v, want ErrConflict", err)
+	}
+	wrongRevision := testOpeningSession(owner)
+	wrongRevision.Revision = 2
+	if err := NewMemoryStore().CreateSession(ctx, wrongRevision); !errors.Is(err, ErrConflict) {
+		t.Fatalf("CreateSession() revision error = %v, want ErrConflict", err)
+	}
+
+	store := NewMemoryStore()
+	session := createReadySession(t, store, owner)
+	accepted := Invocation{
+		ID: "invocation_1", SessionID: session.ID, Owner: owner,
+		ActionHash: strings.Repeat("a", 64), Effect: EffectRead,
+		State: InvocationAccepted, Revision: 1, CreatedAt: 100,
+		UpdatedAt: 100, AcceptedAt: 100, ExpiresAt: 1000,
+	}
+	if err := store.CreateInvocation(ctx, accepted); !errors.Is(err, ErrConflict) {
+		t.Fatalf("CreateInvocation() accepted error = %v, want ErrConflict", err)
 	}
 }
 
@@ -385,11 +440,28 @@ func testOwner() Owner {
 	}
 }
 
-func testReadySession(owner Owner) Session {
+func testOpeningSession(owner Owner) Session {
 	return Session{
 		ID: "browser_session_1", Owner: owner, Target: "gateway", Profile: "managed",
-		State: SessionReady, DryRun: true, PolicyRevision: "b1_v1",
+		State: SessionOpening, DryRun: true, PolicyRevision: "b1_v1",
 		ControllerGeneration: 1, Revision: 1, CreatedAt: 1,
 		UpdatedAt: 1, LastActivityAt: 1, ExpiresAt: 1000,
 	}
+}
+
+func createReadySession(t *testing.T, store *MemoryStore, owner Owner) Session {
+	t.Helper()
+	ctx := context.Background()
+	session := testOpeningSession(owner)
+	if err := store.CreateSession(ctx, session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	session.State = SessionReady
+	session.Revision = 2
+	session.UpdatedAt = 2
+	session.LastActivityAt = 2
+	if err := store.UpdateSession(ctx, 1, session); err != nil {
+		t.Fatalf("ready session update error = %v", err)
+	}
+	return session
 }

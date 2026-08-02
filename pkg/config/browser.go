@@ -225,6 +225,9 @@ func validateBrowserProfile(targetName, name string, profile BrowserProfileConfi
 		if profile.Mode != BrowserProfileManaged {
 			return fmt.Errorf("enabled browser profile %q requires mode %q", name, BrowserProfileManaged)
 		}
+		if !profile.DryRun {
+			return fmt.Errorf("enabled browser profile %q requires dry_run=true in B1", name)
+		}
 		if len(profile.AllowedOrigins) == 0 {
 			return fmt.Errorf("enabled browser profile %q requires allowed_origins", name)
 		}

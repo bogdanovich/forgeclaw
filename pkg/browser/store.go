@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -33,6 +34,9 @@ func NewMemoryStore() *MemoryStore {
 func (store *MemoryStore) CreateSession(_ context.Context, session Session) error {
 	if err := session.Validate(); err != nil {
 		return err
+	}
+	if session.State != SessionOpening || session.Revision != 1 {
+		return fmt.Errorf("%w: session must enter as opening revision 1", ErrConflict)
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -85,6 +89,9 @@ func (store *MemoryStore) UpdateSession(_ context.Context, expected uint64, next
 func (store *MemoryStore) CreateInvocation(_ context.Context, invocation Invocation) error {
 	if err := invocation.Validate(); err != nil {
 		return err
+	}
+	if invocation.State != InvocationPrepared || invocation.Revision != 1 {
+		return fmt.Errorf("%w: invocation must enter as prepared revision 1", ErrConflict)
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()

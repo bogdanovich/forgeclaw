@@ -125,6 +125,17 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 			wantErr: "supports only mode \"managed\"",
 		},
 		{
+			name: "non-dry-run profile",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.DryRun = false
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "requires dry_run=true in B1",
+		},
+		{
 			name: "second profile",
 			mutate: func(cfg *Config) {
 				target := cfg.Tools.Browser.Targets["gateway"]
