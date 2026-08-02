@@ -1622,6 +1622,9 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		"first_name": user.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
+	if choice := c.telegramInteractionChoice(message); choice != "" {
+		metadata[bus.InboundMetadataKeyInteractionChoice] = choice
+	}
 	mergeTelegramRawMetadata(metadata, mediaGroupMetadata)
 
 	inboundCtx := bus.InboundContext{
@@ -1865,6 +1868,22 @@ func (c *TelegramChannel) isOwnBotUser(user *telego.User) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(user.Username), "@"), botUsername)
+}
+
+func (c *TelegramChannel) telegramInteractionChoice(message *telego.Message) string {
+	if message == nil || message.ReplyToMessage == nil ||
+		!c.isOwnBotUser(message.ReplyToMessage.From) {
+		return ""
+	}
+
+	switch strings.TrimSpace(message.Text) {
+	case "Allow once":
+		return bus.InboundInteractionChoiceAllowOnce
+	case "Deny":
+		return bus.InboundInteractionChoiceDeny
+	default:
+		return ""
+	}
 }
 
 func (c *TelegramChannel) ownBotIdentity() (int64, string) {

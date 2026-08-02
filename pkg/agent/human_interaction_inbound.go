@@ -548,7 +548,8 @@ func (al *AgentLoop) processInteractionInbound(
 			"This session is waiting for an answer from the authorized user.",
 		)
 	}
-	answer, err := parseInteractionAnswer(record, msg.Content, msg.Context.MessageID)
+	answerContent := interactionAnswerContent(record, msg)
+	answer, err := parseInteractionAnswer(record, answerContent, msg.Context.MessageID)
 	if err != nil {
 		return interactionInboundCallerOwned, al.publishInteractionNotice(
 			ctx,
@@ -585,6 +586,21 @@ func (al *AgentLoop) processInteractionInbound(
 		msg.Context,
 		claimed,
 	)
+}
+
+func interactionAnswerContent(record interactions.Record, msg bus.InboundMessage) string {
+	if record.Kind != interactions.KindApproval || msg.Context.Channel != "telegram" ||
+		strings.TrimSpace(msg.Context.ReplyToMessageID) == "" {
+		return msg.Content
+	}
+
+	choice := strings.TrimSpace(msg.Context.Raw[bus.InboundMetadataKeyInteractionChoice])
+	switch choice {
+	case bus.InboundInteractionChoiceAllowOnce, bus.InboundInteractionChoiceDeny:
+		return choice
+	default:
+		return msg.Content
+	}
 }
 
 func interactionAnswerOutcome(

@@ -428,6 +428,56 @@ func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
 	}
 }
 
+func TestInteractionAnswerContentUsesTelegramApprovalButtonChoice(t *testing.T) {
+	record := interactions.Record{Kind: interactions.KindApproval}
+	msg := bus.InboundMessage{
+		Content: "[quoted assistant message]: approve?\n\nAllow once",
+		Context: bus.InboundContext{
+			Channel: "telegram", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+
+	content := interactionAnswerContent(record, msg)
+	if content != bus.InboundInteractionChoiceAllowOnce {
+		t.Fatalf("interactionAnswerContent() = %q", content)
+	}
+	answer, err := parseInteractionAnswer(record, content, "answer-1")
+	if err != nil || answer.Text != "allow_once" {
+		t.Fatalf("parseInteractionAnswer() = (%#v, %v)", answer, err)
+	}
+}
+
+func TestInteractionAnswerContentIgnoresChoiceOutsideTelegramApprovalReply(t *testing.T) {
+	record := interactions.Record{Kind: interactions.KindQuestion}
+	msg := bus.InboundMessage{
+		Content: "Allow once",
+		Context: bus.InboundContext{
+			Channel: "telegram", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+	if got := interactionAnswerContent(record, msg); got != msg.Content {
+		t.Fatalf("question interaction content = %q", got)
+	}
+
+	record.Kind = interactions.KindApproval
+	msg.Context.Channel = "slack"
+	if got := interactionAnswerContent(record, msg); got != msg.Content {
+		t.Fatalf("non-Telegram interaction content = %q", got)
+	}
+
+	msg.Context.Channel = "telegram"
+	msg.Context.ReplyToMessageID = ""
+	if got := interactionAnswerContent(record, msg); got != msg.Content {
+		t.Fatalf("non-reply interaction content = %q", got)
+	}
+}
+
 func TestInteractionEventsProjectOwningTaskState(t *testing.T) {
 	workspace := t.TempDir()
 	al := &AgentLoop{cfg: config.DefaultConfig()}
