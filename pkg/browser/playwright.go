@@ -313,22 +313,15 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 		return DriverObservation{}, ErrWorkerUnavailable
 	}
 	if worker.pendingDialog != nil {
-		if worker.lastObservation.Origin == "" {
-			worker.lost = true
-			return DriverObservation{}, ErrDriverIncompatible
+		return worker.pendingDialogObservationLocked()
+	}
+	text, err := worker.callAndConsume(
+		ctx, "browser_snapshot", map[string]any{"boxes": false}, true,
+	)
+	if err != nil {
+		if errors.Is(err, ErrDriverRejected) && worker.pendingDialog != nil {
+			return worker.pendingDialogObservationLocked()
 		}
-		observation := worker.lastObservation
-		observation.Snapshot = ""
-		observation.Elements = nil
-		observation.PendingDialog = cloneDialogObservation(worker.pendingDialog)
-		return observation, nil
-	}
-	result, err := worker.call(ctx, "browser_snapshot", map[string]any{"boxes": false})
-	if err != nil {
-		return DriverObservation{}, err
-	}
-	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
-	if err != nil {
 		return DriverObservation{}, err
 	}
 	observation, err := parsePlaywrightObservation(
@@ -350,11 +343,9 @@ func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (Dri
 		!playwrightTargetPattern.MatchString(target) {
 		return DriverElement{}, "", ErrWorkerUnavailable
 	}
-	result, err := worker.call(ctx, "browser_snapshot", map[string]any{"boxes": false, "target": target})
-	if err != nil {
-		return DriverElement{}, "", err
-	}
-	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
+	text, err := worker.callAndConsume(
+		ctx, "browser_snapshot", map[string]any{"boxes": false, "target": target}, true,
+	)
 	if err != nil {
 		return DriverElement{}, "", err
 	}
@@ -390,31 +381,22 @@ func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction
 	if err != nil {
 		return err
 	}
-	result, callErr := worker.client.CallTool(ctx, tool, arguments)
-	if callErr != nil || result == nil {
+	_, err = worker.callAndConsume(
+		ctx, tool, arguments, playwrightActionIncludesSnapshot(action.Kind),
+	)
+	return err
+}
+
+func (worker *playwrightWorker) pendingDialogObservationLocked() (DriverObservation, error) {
+	if worker.pendingDialog == nil || worker.lastObservation.Origin == "" {
 		worker.lost = true
-		return ErrWorkerUnavailable
+		return DriverObservation{}, ErrDriverIncompatible
 	}
-	driverErr := error(nil)
-	if result.IsError {
-		driverErr = ErrDriverRejected
-	}
-	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
-	if err != nil {
-		worker.lost = true
-		return errors.Join(driverErr, err)
-	}
-	dialog, err := parsePlaywrightPendingDialog(text, playwrightActionIncludesSnapshot(action.Kind))
-	if err != nil {
-		worker.lost = true
-		return errors.Join(driverErr, err)
-	}
-	if dialog != nil && worker.lastObservation.Origin == "" {
-		worker.lost = true
-		return errors.Join(driverErr, ErrDriverIncompatible)
-	}
-	worker.pendingDialog = dialog
-	return driverErr
+	observation := worker.lastObservation
+	observation.Snapshot = ""
+	observation.Elements = nil
+	observation.PendingDialog = cloneDialogObservation(worker.pendingDialog)
+	return observation, nil
 }
 
 func playwrightActionIncludesSnapshot(kind DriverActionKind) bool {
@@ -450,24 +432,37 @@ func (worker *playwrightWorker) Close(ctx context.Context) error {
 	return nil
 }
 
-func (worker *playwrightWorker) call(
+func (worker *playwrightWorker) callAndConsume(
 	ctx context.Context,
 	tool string,
 	arguments map[string]any,
-) (*sdkmcp.CallToolResult, error) {
+	allowSnapshotTail bool,
+) (string, error) {
 	result, err := worker.client.CallTool(ctx, tool, arguments)
+	if err != nil || result == nil {
+		worker.lost = true
+		return "", ErrWorkerUnavailable
+	}
+	driverErr := error(nil)
+	if result.IsError {
+		driverErr = ErrDriverRejected
+	}
+	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
 	if err != nil {
 		worker.lost = true
-		return nil, ErrWorkerUnavailable
+		return "", errors.Join(driverErr, err)
 	}
-	if result == nil {
+	dialog, err := parsePlaywrightPendingDialog(text, allowSnapshotTail)
+	if err != nil {
 		worker.lost = true
-		return nil, ErrWorkerUnavailable
+		return "", errors.Join(driverErr, err)
 	}
-	if result.IsError {
-		return nil, ErrDriverRejected
+	if dialog != nil && worker.lastObservation.Origin == "" {
+		worker.lost = true
+		return "", errors.Join(driverErr, ErrDriverIncompatible)
 	}
-	return result, nil
+	worker.pendingDialog = dialog
+	return text, driverErr
 }
 
 func mapPlaywrightAction(

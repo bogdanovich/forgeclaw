@@ -480,6 +480,54 @@ func TestPlaywrightWorkerPreservesConcurrentDialogFromErrorResult(t *testing.T) 
 	}
 }
 
+func TestPlaywrightWorkerCapturesAsynchronousDialogFromRejectedSnapshot(t *testing.T) {
+	for _, targeted := range []bool{false, true} {
+		name := "observe"
+		if targeted {
+			name = "resolve"
+		}
+		t.Run(name, func(t *testing.T) {
+			client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+				"browser_snapshot": playwrightTextResult(
+					"### Page\n- Page URL: https://example.com/items\n- Page Title: Fixture\n" +
+						"### Snapshot\n```yaml\n- button \"Save\" [ref=e1]\n```",
+				),
+			}}
+			worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+			if _, err := worker.Observe(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			client.callResults["browser_snapshot"] = &sdkmcp.CallToolResult{
+				IsError: true,
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "### Error\n- blocked by dialog\n" +
+					"### Modal state\n- [\"alert\" dialog with message \"Timer fired\"]: can be handled by browser_handle_dialog\n" +
+					"### Snapshot\n```yaml\n\n```"}},
+			}
+			if targeted {
+				if _, _, err := worker.Resolve(context.Background(), "e1"); !errors.Is(err, ErrDriverRejected) {
+					t.Fatalf("Resolve(async dialog) error = %v, want ErrDriverRejected", err)
+				}
+			}
+			calls := len(client.calls)
+			observation, err := worker.Observe(context.Background())
+			if err != nil || observation.PendingDialog == nil ||
+				*observation.PendingDialog != (DialogObservation{Type: "alert", Message: "Timer fired"}) {
+				t.Fatalf("Observe(async dialog) = %+v, %v", observation, err)
+			}
+			wantCalls := calls
+			if !targeted {
+				wantCalls++
+			}
+			if len(client.calls) != wantCalls {
+				t.Fatalf("snapshot calls = %d, want %d", len(client.calls), wantCalls)
+			}
+			if _, err = worker.Observe(context.Background()); err != nil || len(client.calls) != wantCalls {
+				t.Fatalf("cached Observe() error = %v; calls = %d, want %d", err, len(client.calls), wantCalls)
+			}
+		})
+	}
+}
+
 func TestPlaywrightWorkerPreservesDriverErrorWhenModalMetadataIsInvalid(t *testing.T) {
 	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
 		"browser_click": {
