@@ -343,6 +343,36 @@ func TestBrowserActSurfacesTerminalPostActionStateFailure(t *testing.T) {
 	}
 }
 
+func TestBrowserActPreservesDryRunPolicyDenial(t *testing.T) {
+	source := &fakeBrowserToolSource{
+		available: true,
+		prepare: browser.Preparation{Action: browser.PreparedAction{
+			ID: "prepared_1", TabID: "tab_primary", CurrentOrigin: "https://example.com",
+			Action: browser.Action{Kind: browser.ActionClick, Ref: "element_1"},
+			Effect: browser.EffectExternalCommit,
+		}},
+		execute: browser.Invocation{
+			ID: "invocation_1", SessionID: "browser_session_1",
+			Effect: browser.EffectExternalCommit, State: browser.InvocationCanceled,
+			SafeFailure: "dry_run_denied",
+		},
+		executeErr: browser.ErrDenied,
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(
+		WithToolApprovalContinuation(browserToolTestContext(), true),
+		map[string]any{
+			"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+			"snapshot_id": "snapshot_1", "snapshot_generation": 1,
+			"action": map[string]any{"kind": "click", "ref": "element_1"},
+		},
+	)
+	if result == nil || !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), `"code":"policy_denied"`) ||
+		strings.Contains(result.ContentForLLM(), "post_action_state_unavailable") {
+		t.Fatalf("dry-run denial result = %#v", result)
+	}
+}
+
 func TestBrowserActionFromArgsPreservesTypedInputAndDialogPresence(t *testing.T) {
 	fill, err := browserActionFromArgs(map[string]any{
 		"kind": "fill", "ref": "element_1", "value": "draft text",

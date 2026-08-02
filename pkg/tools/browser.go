@@ -496,7 +496,7 @@ func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *T
 		ctx, owner, preparation.Action.ID, approval,
 	)
 	if err != nil {
-		if invocation.State.Terminal() {
+		if errors.Is(err, browser.ErrSnapshotInvalidation) || invocation.AcceptedAt != 0 {
 			return browserPostActionStateError(
 				invocation,
 				errors.Is(err, browser.ErrSnapshotInvalidation),

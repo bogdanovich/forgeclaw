@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 type Observation struct {
@@ -494,6 +495,13 @@ func (broker *Broker) invalidateSnapshotLocked(ctx context.Context, sessionID st
 	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
 		if slot != nil {
 			slot.safeFailure = "snapshot_invalidation_failed"
+		}
+		if fileutil.IsCommittedWriteError(err) {
+			persisted, getErr := broker.store.GetSession(context.WithoutCancel(ctx), session.ID)
+			if getErr != nil {
+				return errors.Join(ErrSnapshotInvalidation, err, getErr)
+			}
+			current = persisted
 		}
 		limits := broker.config.Limits.Effective()
 		quarantineCtx, cancel := context.WithTimeout(
