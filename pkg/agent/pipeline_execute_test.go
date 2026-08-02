@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
@@ -33,6 +35,45 @@ type fixedToolResultTool struct {
 	name       string
 	result     *tools.ToolResult
 	executions int
+}
+
+type boundApprovalSuspensionTool struct {
+	executions       int
+	preparationCalls int
+	continued        bool
+}
+
+func (*boundApprovalSuspensionTool) Name() string { return "bound_approval" }
+func (*boundApprovalSuspensionTool) Description() string {
+	return "request approval bound to trusted prepared authority"
+}
+
+func (*boundApprovalSuspensionTool) Parameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"value": map[string]any{"type": "string"}},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}
+}
+
+func (tool *boundApprovalSuspensionTool) ApprovalArguments(
+	_ context.Context,
+	_ map[string]any,
+) (map[string]any, error) {
+	tool.preparationCalls++
+	return map[string]any{"prepared_action_id": "prepared_1", "action_hash": "trusted_hash"}, nil
+}
+
+func (tool *boundApprovalSuspensionTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+	tool.executions++
+	if tools.ToolApprovalContinuation(ctx) {
+		tool.continued = true
+		return tools.NewToolResult("approved")
+	}
+	return &tools.ToolResult{Silent: true, Suspension: &tools.SuspensionRequest{
+		Kind: interactions.KindApproval, PromptSummary: "Publish the prepared browser action", Timeout: time.Minute,
+	}}
 }
 
 func (t *fixedToolResultTool) Name() string        { return t.name }
@@ -558,6 +599,7 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 	request := manager.requests[0]
 	if request.Origin.ToolCallID != "call-question" || request.Origin.TurnID != ts.turnID ||
 		request.Origin.TaskID != "task-suspend" ||
+		request.Origin.ArgumentHash != "" || request.ApprovalAction != "" ||
 		request.Route.SenderID != "user-1" || request.Route.AccountID != "primary" ||
 		request.Route.TopicID != "topic-1" || request.Route.SpaceID != "space-1" {
 		t.Fatalf("trusted suspension request = %#v", request)
@@ -580,6 +622,96 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 	}
 	if !foundSuspendedEvent {
 		t.Fatal("missing suspended tool execution event")
+	}
+}
+
+func TestPipelineBindsToolOriginatedApprovalSuspensionToTrustedArguments(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &boundApprovalSuspensionTool{}
+	registry.Register(tool)
+	workspace := t.TempDir()
+	agent := &AgentInstance{
+		ID: "browser", Tools: registry, Sessions: session.NewSessionManager(""),
+	}
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-bound-approval",
+		sessionKey: "session-bound-approval", workspace: workspace,
+		opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-bound-approval"}},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{{
+		ID: "call-bound-approval", Name: tool.Name(), Arguments: map[string]any{"value": "model-authored"},
+	}}
+	exec.assistantToolCallsPersisted = true
+	manager := &fakeToolSuspensionManager{
+		disposition: ToolSuspensionDisposition{InteractionID: "interaction-bound", Durable: true},
+	}
+	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
+
+	outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	if outcome.Control != ToolControlSuspend || outcome.SuspendedInteractionID != "interaction-bound" {
+		t.Fatalf("outcome = %+v, want bound approval suspension", outcome)
+	}
+	if tool.executions != 1 || tool.preparationCalls != 1 || len(manager.requests) != 1 {
+		t.Fatalf(
+			"executions = %d, preparations = %d, requests = %d",
+			tool.executions,
+			tool.preparationCalls,
+			len(manager.requests),
+		)
+	}
+	wantHash, err := interactions.HashArguments(workspace, map[string]any{
+		"prepared_action_id": "prepared_1", "action_hash": "trusted_hash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := manager.requests[0]
+	if request.Prompt.Kind != interactions.KindApproval ||
+		request.Origin.ArgumentHash != wantHash ||
+		request.ApprovalAction != "Publish the prepared browser action" {
+		t.Fatalf("bound suspension request = %#v", request)
+	}
+
+	resumeState := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-bound-approval-resume",
+		sessionKey: "session-bound-approval", workspace: workspace,
+		opts: processOptions{
+			Dispatch: DispatchRequest{SessionKey: "session-bound-approval"},
+			ApprovalGrant: &ToolApprovalGrant{
+				InteractionID: "interaction-bound", Revision: 2,
+				OriginExecutionID: "execution-original", OriginArgumentHash: wantHash,
+			},
+		},
+	}
+	resumeExec := newTurnExecution(agent, resumeState.opts, nil, "", nil)
+	resumeExec.normalizedToolCalls = []providers.ToolCall{{
+		ID: "call-bound-approval", Name: tool.Name(), Arguments: map[string]any{"value": "model-authored"},
+	}}
+	hooks := NewHookManager(nil)
+	defer hooks.Close()
+	if err = hooks.Mount(NamedHook("approval", &durableApprovalHook{
+		actionSummary: "Publish the prepared browser action",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	pipeline.Interaction.Hooks = hooks
+	resumeOutcome := pipeline.ExecuteTools(t.Context(), t.Context(), resumeState, resumeExec, 1)
+	if resumeOutcome.Control != ToolControlContinue || !tool.continued || len(manager.consumptions) != 1 {
+		t.Fatalf(
+			"resume outcome = %+v, continued = %t, consumptions = %#v, messages = %#v",
+			resumeOutcome,
+			tool.continued,
+			manager.consumptions,
+			resumeExec.messages,
+		)
+	}
+	if manager.consumptions[0].Origin.ArgumentHash != wantHash || resumeState.opts.ApprovalGrant != nil {
+		t.Fatalf(
+			"consumed hash = %q, retained grant = %#v",
+			manager.consumptions[0].Origin.ArgumentHash,
+			resumeState.opts.ApprovalGrant,
+		)
 	}
 }
 

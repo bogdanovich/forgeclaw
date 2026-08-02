@@ -26,7 +26,11 @@ import (
 func newTestMintClawChannel(t *testing.T) *MintClawChannel {
 	t.Helper()
 
-	bc := &config.Channel{Type: config.ChannelMintClaw, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClaw,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-user"},
+	}
 	cfg := &config.MintClawSettings{}
 	cfg.SetToken("test-token")
 	ch, err := NewMintClawChannel(bc, cfg, bus.NewMessageBus())
@@ -40,7 +44,11 @@ func newTestMintClawChannel(t *testing.T) *MintClawChannel {
 
 func TestHandleMessageSend_ForwardsMessageMetadata(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClaw, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClaw,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-user"},
+	}
 	cfg := &config.MintClawSettings{}
 	cfg.SetToken("test-token")
 	ch, err := NewMintClawChannel(bc, cfg, msgBus)

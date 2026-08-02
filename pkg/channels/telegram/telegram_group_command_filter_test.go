@@ -87,7 +87,7 @@ func newGroupMentionOnlyChannel(t *testing.T, botUsername string) (*TelegramChan
 
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil,
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{MentionOnly: true}),
 		),
 		bot:     newTestTelegramBot(t, botUsername),
@@ -264,7 +264,7 @@ func TestIsBotMentioned_RecoversFromPoisonedTelegoCache(t *testing.T) {
 	}
 
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, bus.NewMessageBus(), nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, bus.NewMessageBus(), []string{"*"}),
 		bot:         bot,
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
@@ -297,7 +297,7 @@ func TestIsReplyToNonBotMessage_TreatsOwnBotReplyAsBotAfterRecovery(t *testing.T
 	}
 
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, bus.NewMessageBus(), nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, bus.NewMessageBus(), []string{"*"}),
 		bot:         bot,
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
@@ -326,7 +326,7 @@ func TestHandleMessage_GroupTopicIgnoresHumanMentionWithoutBotMention(t *testing
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly: false,
 			}),
@@ -392,7 +392,7 @@ func TestHandleMessage_GroupTopicAllowsBotMentionWithHumanMention(t *testing.T) 
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly: false,
 			}),
@@ -455,7 +455,7 @@ func TestHandleMessage_GroupTopicCanDisableNonBotMentionGuard(t *testing.T) {
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly:          false,
 				IgnoreNonBotMentions: &ignoreNonBotMentions,
@@ -510,7 +510,7 @@ func TestHandleMessage_GroupTopicIgnoresReplyToHumanWithoutBotMention(t *testing
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly:         false,
 				IgnoreNonBotReplies: &ignoreNonBotReplies,
@@ -585,7 +585,7 @@ func TestHandleMessage_GroupTopicAllowsReplyToBotWithReplyGuard(t *testing.T) {
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly:         false,
 				IgnoreNonBotReplies: &ignoreNonBotReplies,
@@ -644,7 +644,7 @@ func TestHandleMessage_GroupTopicAllowsImplicitReplyToForumTopicRoot(t *testing.
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly:         false,
 				IgnoreNonBotReplies: &ignoreNonBotReplies,
@@ -719,7 +719,7 @@ func TestHandleMessage_GroupTopicAllowsBotMentionInReplyToHuman(t *testing.T) {
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly:         false,
 				IgnoreNonBotReplies: &ignoreNonBotReplies,

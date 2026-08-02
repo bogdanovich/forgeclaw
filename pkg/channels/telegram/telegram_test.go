@@ -2720,7 +2720,7 @@ func TestBeginStream_RichFinalizeLengthErrorUsesChunkedSend(t *testing.T) {
 func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -2760,7 +2760,7 @@ func TestHandleMessage_ForumTopic_UsesTopicGroupTriggerOverride(t *testing.T) {
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly: true,
 				Topics: map[string]config.GroupTriggerConfig{
@@ -2799,7 +2799,7 @@ func TestHandleMessage_ForumTopic_UsesTopicGroupTriggerOverride(t *testing.T) {
 func TestHandleMessage_NoForum_NoThreadMetadata(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -2833,7 +2833,7 @@ func TestHandleMessage_NoForum_NoThreadMetadata(t *testing.T) {
 func TestHandleMessage_ReplyThread_NonForum_NoIsolation(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -2886,7 +2886,7 @@ func assertHandleMessageQuotedUserReply(
 
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -2973,7 +2973,7 @@ func TestHandleMessage_ReplyToOwnBotMessage_UsesAssistantRole(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
-	ch.BaseChannel = channels.NewBaseChannel("telegram", nil, messageBus, nil)
+	ch.BaseChannel = channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"})
 	ch.ctx = context.Background()
 
 	msg := &telego.Message{
@@ -3012,6 +3012,141 @@ func TestHandleMessage_ReplyToOwnBotMessage_UsesAssistantRole(t *testing.T) {
 	)
 }
 
+func TestHandleMessage_ApprovalButtonReplyPreservesQuoteAndProjectsChoice(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "getMe") {
+				return successUserResponse(t, &telego.User{
+					ID: 42, IsBot: true, FirstName: "MintClaw", Username: "mintclaw_bot",
+				}), nil
+			}
+			t.Fatalf("unexpected API call: %s", url)
+			return nil, nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.BaseChannel = channels.NewBaseChannel("telegram", nil, messageBus, []string{"15"})
+	ch.ctx = context.Background()
+
+	msg := &telego.Message{
+		Text: "Allow once", MessageID: 23,
+		Chat: telego.Chat{ID: 999, Type: "private"},
+		From: &telego.User{ID: 15, FirstName: "Eve"},
+		ReplyToMessage: &telego.Message{
+			MessageID: 101, Text: "Approve this operation?",
+			From: &telego.User{ID: 42, IsBot: true, FirstName: "MintClaw", Username: "mintclaw_bot"},
+		},
+	}
+
+	require.NoError(t, ch.handleMessage(context.Background(), msg))
+	inbound := <-messageBus.InboundChan()
+	assert.Equal(
+		t,
+		"[quoted assistant message from mintclaw_bot]: Approve this operation?\n\nAllow once",
+		inbound.Content,
+	)
+	assert.Equal(t, bus.InboundInteractionChoiceAllowOnce,
+		inbound.Context.Raw[bus.InboundMetadataKeyInteractionChoice])
+}
+
+func TestHandleMessage_ApprovalButtonReplyPassesGroupAndTopicMentionOnly(t *testing.T) {
+	tests := []struct {
+		name     string
+		isForum  bool
+		topicID  int
+		wantChat string
+	}{
+		{name: "group", wantChat: "-100123"},
+		{name: "forum topic", isForum: true, topicID: 1771, wantChat: "-100123/1771"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messageBus := bus.NewMessageBus()
+			ch := &TelegramChannel{
+				BaseChannel: channels.NewBaseChannel(
+					"telegram",
+					nil,
+					messageBus,
+					[]string{"15"},
+					channels.WithGroupTrigger(config.GroupTriggerConfig{
+						MentionOnly: true,
+						Topics: map[string]config.GroupTriggerConfig{
+							"1771": {MentionOnly: true},
+						},
+					}),
+				),
+				bot: newTestTelegramBot(t, "mintclaw_bot"), ctx: context.Background(),
+				chatIDs: make(map[string]int64),
+			}
+			msg := &telego.Message{
+				Text: "Allow once", MessageID: 23, MessageThreadID: test.topicID,
+				Chat: telego.Chat{ID: -100123, Type: "supergroup", IsForum: test.isForum},
+				From: &telego.User{ID: 15, FirstName: "Eve"},
+				ReplyToMessage: &telego.Message{
+					MessageID: 101, Text: "Approve this operation?",
+					From: &telego.User{ID: 1, IsBot: true, Username: "mintclaw_bot"},
+				},
+			}
+
+			require.NoError(t, ch.handleMessage(context.Background(), msg))
+			var inbound bus.InboundMessage
+			select {
+			case inbound = <-messageBus.InboundChan():
+			case <-time.After(time.Second):
+				t.Fatal("approval button reply was filtered")
+			}
+			assert.Equal(t, test.wantChat, inbound.ChatID)
+			assert.False(t, inbound.Context.Mentioned)
+			assert.Equal(t, bus.InboundInteractionChoiceAllowOnce,
+				inbound.Context.Raw[bus.InboundMetadataKeyInteractionChoice])
+		})
+	}
+}
+
+func TestTelegramInteractionChoiceRejectsUntrustedOrArbitraryReplies(t *testing.T) {
+	ch := &TelegramChannel{selfID: 42, selfName: "mintclaw_bot"}
+	assert.Equal(t, bus.InboundInteractionChoiceDeny, ch.telegramInteractionChoice(&telego.Message{
+		Text: "Deny", ReplyToMessage: &telego.Message{
+			From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
+		},
+	}))
+	tests := []struct {
+		name    string
+		message *telego.Message
+	}{
+		{
+			name: "reply to user",
+			message: &telego.Message{Text: "Allow once", ReplyToMessage: &telego.Message{
+				From: &telego.User{ID: 7, FirstName: "Alice"},
+			}},
+		},
+		{
+			name: "arbitrary reply to bot",
+			message: &telego.Message{Text: "Always", ReplyToMessage: &telego.Message{
+				From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
+			}},
+		},
+		{
+			name: "leading whitespace",
+			message: &telego.Message{Text: " Allow once", ReplyToMessage: &telego.Message{
+				From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
+			}},
+		},
+		{
+			name: "trailing whitespace",
+			message: &telego.Message{Text: "Deny\n", ReplyToMessage: &telego.Message{
+				From: &telego.User{ID: 42, IsBot: true, Username: "mintclaw_bot"},
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Empty(t, ch.telegramInteractionChoice(test.message))
+		})
+	}
+}
+
 func TestTelegramQuotedContent_IncludesVoiceMarkerAlongsideCaption(t *testing.T) {
 	msg := &telego.Message{
 		Caption: "listen to this",
@@ -3046,7 +3181,7 @@ func TestQuotedTelegramMediaRefs_ResolvesQuotedAudioInOrder(t *testing.T) {
 func TestHandleMessage_EmptyContent_Ignored(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -3078,7 +3213,7 @@ func TestHandleMessage_EmptyContent_Ignored(t *testing.T) {
 func TestHandleMessage_LocationForwardedAsText(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -3309,7 +3444,7 @@ func TestNewTelegramChannelUsesConfiguredMediaGroupDelay(t *testing.T) {
 func newMediaGroupTestChannel(delay time.Duration) (*bus.MessageBus, *TelegramChannel) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel:     channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel:     channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:         make(map[string]int64),
 		ctx:             context.Background(),
 		mediaGroups:     make(map[string]*telegramMediaGroup),

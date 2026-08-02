@@ -409,7 +409,7 @@ For full MCP configuration (stdio, SSE, HTTP transports, Tool Discovery), see [T
 | Command                   | Description                      |
 | ------------------------- | -------------------------------- |
 | `mintclaw onboard`        | Initialize config & workspace    |
-| `mintclaw auth weixin` | Connect WeChat account via QR |
+| `mintclaw auth weixin --allow-from USER_ID` | Connect WeChat account via QR with an explicit sender policy |
 | `mintclaw agent -m "..."` | Chat with the agent              |
 | `mintclaw agent`          | Interactive chat mode            |
 | `mintclaw agent --stateless -m "..."` | Run without loading or saving conversation history |

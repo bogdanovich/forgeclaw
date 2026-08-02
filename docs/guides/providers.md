@@ -650,7 +650,7 @@ mintclaw agent -m "Hello"
       "enabled": true,
       "type": "discord",
       "token": "",
-      "allow_from": [""]
+      "allow_from": ["TRUSTED_SENDER_ID"]
     },
     "whatsapp": {
       "enabled": false,
@@ -658,7 +658,7 @@ mintclaw agent -m "Hello"
       "bridge_url": "ws://localhost:3001",
       "use_native": false,
       "session_store_path": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     },
     "feishu": {
       "enabled": false,
@@ -667,14 +667,14 @@ mintclaw agent -m "Hello"
       "app_secret": "xxx",
       "encrypt_key": "",
       "verification_token": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     },
     "qq": {
       "enabled": false,
       "type": "qq",
       "app_id": "",
       "app_secret": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   },
   "tools": {

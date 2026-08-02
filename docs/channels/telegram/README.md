@@ -34,7 +34,7 @@ unrelated chats and topics still process concurrently.
 | ---------------- | ------ | -------- | ------------------------------------------------------------------ |
 | enabled          | bool   | Yes      | Whether to enable the Telegram channel                             |
 | token            | string | Yes      | Telegram Bot API Token                                             |
-| allow_from       | array  | No       | Allowlist of user IDs; empty means all users are allowed           |
+| allow_from       | array  | No       | Allowlist of user IDs; empty denies all users; use `["*"]` for public access           |
 | proxy            | string | No       | Proxy URL for connecting to the Telegram API (e.g. http://127.0.0.1:7890) |
 | use_markdown_v2 | bool   | No       | Enable Telegram MarkdownV2 formatting                              |
 | rich_messages.enabled | bool | No    | Enable Telegram Bot API rich messages. Defaults to `false`; plain text/HTML/MarkdownV2 delivery remains the fallback |

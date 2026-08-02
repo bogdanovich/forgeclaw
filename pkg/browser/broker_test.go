@@ -44,6 +44,7 @@ type fakeWorkerFactory struct {
 type failNextSessionUpdateStore struct {
 	*MemoryStore
 	failNext  bool
+	failAfter int
 	failState SessionState
 }
 
@@ -52,6 +53,12 @@ func (store *failNextSessionUpdateStore) UpdateSession(
 	expected uint64,
 	next Session,
 ) error {
+	if store.failAfter > 0 {
+		store.failAfter--
+		if store.failAfter == 0 {
+			return ErrStale
+		}
+	}
 	if store.failNext || (store.failState != "" && next.State == store.failState) {
 		store.failNext = false
 		store.failState = ""
@@ -113,6 +120,32 @@ func TestBrokerOpenAndCloseSession(t *testing.T) {
 	again, err := broker.Close(context.Background(), owner, session.ID)
 	if err != nil || again != closed || factory.workers[0].closed != 1 {
 		t.Fatalf("second Close() = %+v, %v; worker = %+v", again, err, factory.workers[0])
+	}
+}
+
+func TestBrokerProfileAvailabilityIsReadOnly(t *testing.T) {
+	store := NewMemoryStore()
+	broker := newTestBroker(t, admittedBrowserConfig(), store, &fakeWorkerFactory{})
+	ready, err := broker.ProfileAvailability(context.Background(), "gateway", "managed")
+	if err != nil || ready != (ProfileAvailability{Status: "ready"}) {
+		t.Fatalf("initial availability = %#v, %v", ready, err)
+	}
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: testOwner(), Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, err := broker.ProfileAvailability(context.Background(), "gateway", "managed")
+	if err != nil || busy != (ProfileAvailability{Status: "busy", Reason: "profile_busy"}) {
+		t.Fatalf("leased availability = %#v, %v", busy, err)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.Revision != session.Revision || stored.LastActivityAt != session.LastActivityAt {
+		t.Fatalf("availability changed session = %#v, %v; want %#v", stored, err, session)
+	}
+	if _, err = broker.ProfileAvailability(context.Background(), "unknown", "managed"); !errors.Is(err, ErrDenied) {
+		t.Fatalf("unknown target availability error = %v", err)
 	}
 }
 
@@ -775,6 +808,32 @@ func TestMemoryStoreRequiresCanonicalEntryStates(t *testing.T) {
 	}
 }
 
+func TestBrokerShutdownClosesLiveSessionsExactlyOnce(t *testing.T) {
+	store := NewMemoryStore()
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err = broker.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	closed, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || closed.State != SessionClosed {
+		t.Fatalf("session after Shutdown() = %+v, %v", closed, err)
+	}
+	if len(factory.workers) != 1 || factory.workers[0].closed != 1 {
+		t.Fatalf("workers after Shutdown() = %+v", factory.workers)
+	}
+	if err = broker.Shutdown(context.Background()); err != nil || factory.workers[0].closed != 1 {
+		t.Fatalf("second Shutdown() error = %v, closes = %d", err, factory.workers[0].closed)
+	}
+}
+
 func newTestBroker(
 	t *testing.T,
 	cfg *config.Config,
@@ -827,7 +886,7 @@ func admittedBrowserConfig() *config.Config {
 
 func testOwner() Owner {
 	return Owner{
-		ActorID: "actor_1", AgentID: "browser",
+		ActorID: "actor_1", AgentID: OpaqueAgentID("browser"),
 		SessionKey: "telegram_chat_1", ExecutionID: "execution_1",
 	}
 }
@@ -836,7 +895,7 @@ func testOpeningSession(owner Owner) Session {
 	return Session{
 		ID: "browser_session_1", Owner: owner, Target: "gateway", Profile: "managed",
 		State: SessionOpening, DryRun: true, PolicyRevision: "b1_v1",
-		ControllerGeneration: 1, Revision: 1, CreatedAt: 1,
+		ControllerGeneration: 1, TabID: "tab_primary", Revision: 1, CreatedAt: 1,
 		UpdatedAt: 1, LastActivityAt: 1, ExpiresAt: 1000,
 	}
 }
