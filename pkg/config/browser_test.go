@@ -34,6 +34,15 @@ func TestBrowserConfigAcceptsAdmittedB1Shape(t *testing.T) {
 	}
 }
 
+func TestBrowserConfigRequiresToolResultEnvelopeHeadroom(t *testing.T) {
+	cfg := browserConfigFixture(t)
+	cfg.Tools.Browser.Limits.ToolResultBytes = BrowserToolResultEnvelopeBytes - 1
+	if err := cfg.ValidateBrowserConfig(); err == nil ||
+		!strings.Contains(err.Error(), "tool_result_bytes must be 0 or at least") {
+		t.Fatalf("ValidateBrowserConfig() error = %v", err)
+	}
+}
+
 func TestBrowserConfigRequiresSessionScopedNoReplayDriver(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -23,12 +23,23 @@ import (
 
 const playwrightPrivateServerName = "browser_driver"
 
+// playwrightDriverResponseBytes is an inbound safety ceiling. It is
+// deliberately independent of the configured outbound tool-result limit so a
+// large, valid driver snapshot can reach the projection step and be truncated
+// to the caller's smaller delivery budget.
+const playwrightDriverResponseBytes = config.BrowserMaxSnapshotBytes + config.BrowserToolResultEnvelopeBytes
+
+const opaqueSnapshotReferenceBytes = len("ref_") + 32
+
+const playwrightTargetExpression = `(?:f[1-9][0-9]{0,9})?e[1-9][0-9]{0,9}`
+
 var (
-	playwrightTargetPattern     = regexp.MustCompile(`^e[1-9][0-9]{0,9}$`)
+	playwrightTargetPattern     = regexp.MustCompile(`^` + playwrightTargetExpression + `$`)
 	playwrightSnapshotRefToken  = regexp.MustCompile(`\[ref=`)
-	playwrightSnapshotTargetRef = regexp.MustCompile(`\[ref=(e[1-9][0-9]{0,9})\]`)
+	playwrightSnapshotTargetRef = regexp.MustCompile(`\[ref=(` + playwrightTargetExpression + `)\]`)
 	playwrightElementPattern    = regexp.MustCompile(
-		`(?m)^\s*-\s+([A-Za-z][A-Za-z0-9_-]*)(?:\s+"([^"]*)")?[^\n]*\[ref=(e[1-9][0-9]{0,9})\]`,
+		`(?m)^\s*-\s+([A-Za-z][A-Za-z0-9_-]*)(?:\s+"([^"]*)")?[^\n]*\[ref=(` +
+			playwrightTargetExpression + `)\]`,
 	)
 	playwrightDialogPattern = regexp.MustCompile(
 		`^- \["(alert|beforeunload|confirm|prompt)" dialog with message "(.*)"\]: can be handled by browser_handle_dialog$`,
@@ -68,6 +79,7 @@ type DriverObservation struct {
 	Snapshot      string
 	Elements      []DriverElement
 	PendingDialog *DialogObservation
+	Truncated     bool
 }
 
 type DriverElement struct {
@@ -328,6 +340,7 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 		text,
 		worker.limits.SnapshotBytes,
 		worker.limits.SnapshotRefs,
+		worker.limits.ToolResultBytes,
 	)
 	if err != nil {
 		return DriverObservation{}, err
@@ -349,7 +362,12 @@ func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (Dri
 	if err != nil {
 		return DriverElement{}, "", err
 	}
-	observation, err := parsePlaywrightObservation(text, worker.limits.SnapshotBytes, worker.limits.SnapshotRefs)
+	observation, err := parsePlaywrightObservation(
+		text,
+		worker.limits.SnapshotBytes,
+		worker.limits.SnapshotRefs,
+		worker.limits.ToolResultBytes,
+	)
 	if err != nil {
 		return DriverElement{}, "", err
 	}
@@ -447,7 +465,7 @@ func (worker *playwrightWorker) callAndConsume(
 	if result.IsError {
 		driverErr = ErrDriverRejected
 	}
-	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
+	text, err := boundedPlaywrightText(result, playwrightDriverResponseBytes)
 	if err != nil {
 		worker.lost = true
 		return "", errors.Join(driverErr, err)
@@ -622,6 +640,7 @@ func parsePlaywrightObservation(
 	text string,
 	maximumSnapshotBytes int,
 	maximumSnapshotRefs int,
+	maximumToolResultBytes int,
 ) (DriverObservation, error) {
 	pageURL := extractPlaywrightLine(text, "- Page URL: ")
 	title := extractPlaywrightLine(text, "- Page Title: ")
@@ -636,28 +655,96 @@ func parsePlaywrightObservation(
 		return DriverObservation{}, ErrDriverIncompatible
 	}
 	snapshot := text[start : start+end]
-	referenceTokens := playwrightSnapshotRefToken.FindAllStringIndex(snapshot, maximumSnapshotRefs+1)
-	targetReferences := playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, maximumSnapshotRefs+1)
+	referenceTokens := playwrightSnapshotRefToken.FindAllStringIndex(snapshot, -1)
+	targetReferences := playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, -1)
 	if pageURL == initialBlankOrigin {
-		if maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 || title != "" || snapshot != "" ||
+		if maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 ||
+			maximumToolResultBytes < config.BrowserToolResultEnvelopeBytes || title != "" || snapshot != "" ||
 			len(referenceTokens) != 0 || len(targetReferences) != 0 {
 			return DriverObservation{}, ErrDriverIncompatible
 		}
 		return DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin}, nil
 	}
-	if snapshot == "" || len(snapshot) > maximumSnapshotBytes || len(title) > 1024 ||
-		maximumSnapshotRefs <= 0 ||
-		len(referenceTokens) > maximumSnapshotRefs || len(referenceTokens) != len(targetReferences) {
+	if snapshot == "" || len(title) > 1024 || maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 ||
+		maximumToolResultBytes < config.BrowserToolResultEnvelopeBytes ||
+		len(referenceTokens) != len(targetReferences) {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
 	safeURL, origin, err := sanitizeObservedURL(pageURL)
 	if err != nil {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
-	elements := parsePlaywrightElements(snapshot)
+	projected, truncated, err := projectPlaywrightSnapshot(
+		snapshot,
+		maximumSnapshotBytes,
+		maximumSnapshotRefs,
+		maximumToolResultBytes-config.BrowserToolResultEnvelopeBytes,
+	)
+	if err != nil {
+		return DriverObservation{}, err
+	}
+	elements := parsePlaywrightElements(projected)
 	return DriverObservation{
-		URL: safeURL, Origin: origin, Title: title, Snapshot: snapshot, Elements: elements,
+		URL: safeURL, Origin: origin, Title: title, Snapshot: projected, Elements: elements,
+		Truncated: truncated,
 	}, nil
+}
+
+func projectPlaywrightSnapshot(
+	snapshot string,
+	maximumBytes int,
+	maximumRefs int,
+	maximumEncodedBytes int,
+) (string, bool, error) {
+	if snapshot == "" || maximumBytes <= 0 || maximumRefs <= 0 || maximumEncodedBytes < 0 {
+		return "", false, ErrDriverIncompatible
+	}
+	if visiblePlaywrightSnapshotBytes(snapshot) <= maximumBytes &&
+		encodedVisiblePlaywrightSnapshotBytes(snapshot) <= maximumEncodedBytes &&
+		len(playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, -1)) <= maximumRefs {
+		return snapshot, false, nil
+	}
+	var projected strings.Builder
+	retainedRefs := 0
+	projectedVisibleBytes := 0
+	projectedEncodedBytes := 0
+	for _, line := range strings.SplitAfter(snapshot, "\n") {
+		lineTargets := playwrightSnapshotTargetRef.FindAllStringSubmatch(line, -1)
+		lineVisibleBytes := visiblePlaywrightSnapshotBytes(line)
+		lineEncodedBytes := encodedVisiblePlaywrightSnapshotBytes(line)
+		if projectedVisibleBytes+lineVisibleBytes > maximumBytes ||
+			projectedEncodedBytes+lineEncodedBytes > maximumEncodedBytes ||
+			retainedRefs+len(lineTargets) > maximumRefs {
+			break
+		}
+		projected.WriteString(line)
+		retainedRefs += len(lineTargets)
+		projectedVisibleBytes += lineVisibleBytes
+		projectedEncodedBytes += lineEncodedBytes
+	}
+	result := strings.TrimSuffix(projected.String(), "\n")
+	return result, true, nil
+}
+
+func visiblePlaywrightSnapshotBytes(snapshot string) int {
+	visibleBytes := len(snapshot)
+	for _, target := range playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, -1) {
+		visibleBytes += opaqueSnapshotReferenceBytes - len(target[1])
+	}
+	return visibleBytes
+}
+
+func encodedVisiblePlaywrightSnapshotBytes(snapshot string) int {
+	visible := playwrightSnapshotTargetRef.ReplaceAllString(
+		snapshot,
+		"[ref=ref_00000000000000000000000000000000]",
+	)
+	return encodedJSONStringBytes(visible)
+}
+
+func encodedJSONStringBytes(value string) int {
+	encoded, _ := json.Marshal(value)
+	return len(encoded) - len(`""`)
 }
 
 func parsePlaywrightPendingDialog(
@@ -766,6 +853,9 @@ func extractPlaywrightLine(text, prefix string) string {
 }
 
 func sanitizeObservedURL(raw string) (string, string, error) {
+	if len(raw) > MaxURLBytes {
+		return "", "", ErrInvalid
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
 		return "", "", ErrInvalid
@@ -790,7 +880,11 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 	parsed.ForceQuery = false
 	parsed.Fragment = ""
 	origin := parsed.Scheme + "://" + host
-	return parsed.String(), origin, nil
+	safeURL := parsed.String()
+	if len(safeURL) > MaxURLBytes || len(origin) > MaxURLBytes {
+		return "", "", ErrInvalid
+	}
+	return safeURL, origin, nil
 }
 
 var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
