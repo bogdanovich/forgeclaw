@@ -15,15 +15,17 @@ const (
 )
 
 var (
-	ErrBusy              = errors.New("browser profile is busy")
-	ErrConflict          = errors.New("browser state conflicts with durable state")
-	ErrDenied            = errors.New("browser authority denied")
-	ErrInvalid           = errors.New("invalid browser state")
-	ErrNotFound          = errors.New("browser state not found")
-	ErrStale             = errors.New("browser state revision is stale")
-	ErrWorkerUnavailable = errors.New("browser worker is unavailable")
-	identifierRegexp     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
-	safeFailureRegexp    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	ErrBusy               = errors.New("browser profile is busy")
+	ErrConflict           = errors.New("browser state conflicts with durable state")
+	ErrDenied             = errors.New("browser authority denied")
+	ErrDriverIncompatible = errors.New("browser driver is incompatible")
+	ErrDriverRejected     = errors.New("browser driver rejected the operation")
+	ErrInvalid            = errors.New("invalid browser state")
+	ErrNotFound           = errors.New("browser state not found")
+	ErrStale              = errors.New("browser state revision is stale")
+	ErrWorkerUnavailable  = errors.New("browser worker is unavailable")
+	identifierRegexp      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	safeFailureRegexp     = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 type SessionState string
