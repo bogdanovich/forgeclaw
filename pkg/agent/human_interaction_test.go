@@ -1444,7 +1444,10 @@ func TestApprovalAnswerOutcomeIsChannelIndependent(t *testing.T) {
 		}
 	}
 	question := interactions.Record{Kind: interactions.KindQuestion}
-	if got := interactionAnswerOutcome(question, interactions.Answer{Text: "allow_once"}); got != interactions.OutcomeAnswered {
+	if got := interactionAnswerOutcome(
+		question,
+		interactions.Answer{Text: "allow_once"},
+	); got != interactions.OutcomeAnswered {
 		t.Fatalf("question outcome = %q, want answered", got)
 	}
 }
