@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -32,6 +33,14 @@ type WorkerOpenRequest struct {
 type Worker interface {
 	Status(context.Context) (WorkerStatus, error)
 	Close(context.Context) error
+}
+
+type ActionWorker interface {
+	Worker
+	Observe(context.Context) (DriverObservation, error)
+	Resolve(context.Context, string) (DriverElement, string, error)
+	Execute(context.Context, DriverAction) error
+	CatalogRevision() string
 }
 
 // WorkerOpenResult transfers exactly one lifecycle owner to the broker. Owner
@@ -61,6 +70,8 @@ type InvocationExecutor func(context.Context) (json.RawMessage, error)
 // requires Worker.Close to be idempotent.
 type workerSlot struct {
 	worker          Worker
+	refs            map[string]DriverElement
+	inputs          map[string]string
 	safeFailure     string
 	cleanupComplete bool
 }
@@ -72,6 +83,8 @@ type Broker struct {
 	factory        WorkerFactory
 	now            func() time.Time
 	newID          func() (string, error)
+	lookupIP       func(context.Context, string, string) ([]net.IP, error)
+	bindingKey     []byte
 
 	mu    sync.Mutex
 	slots map[string]*workerSlot
@@ -95,9 +108,14 @@ func NewBroker(rootConfig *config.Config, store Store, factory WorkerFactory) (*
 	if err != nil {
 		return nil, err
 	}
+	bindingKey := make([]byte, 32)
+	if _, err = rand.Read(bindingKey); err != nil {
+		return nil, fmt.Errorf("generate browser action binding key: %w", err)
+	}
 	return &Broker{
 		config: browserConfig, policyRevision: policyRevision, store: store, factory: factory,
-		now: time.Now, newID: randomID, slots: make(map[string]*workerSlot),
+		now: time.Now, newID: randomID, lookupIP: net.DefaultResolver.LookupIP,
+		bindingKey: bindingKey, slots: make(map[string]*workerSlot),
 	}, nil
 }
 
@@ -121,7 +139,7 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 	session := Session{
 		ID: id, Owner: request.Owner, Target: request.Target, Profile: request.Profile,
 		State: SessionOpening, DryRun: profile.DryRun, PolicyRevision: broker.policyRevision,
-		ControllerGeneration: 1, Revision: 1, CreatedAt: now.UnixNano(),
+		ControllerGeneration: 1, TabID: "tab_primary", Revision: 1, CreatedAt: now.UnixNano(),
 		UpdatedAt: now.UnixNano(), LastActivityAt: now.UnixNano(),
 		ExpiresAt: now.Add(time.Duration(limits.SessionSeconds) * time.Second).UnixNano(),
 	}
@@ -166,6 +184,7 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 			return session, errors.Join(persistReadyErr, ErrWorkerUnavailable)
 		}
 		session.State = SessionLost
+		clearSessionSnapshot(&session)
 		session.SafeFailure = slot.safeFailure
 		session.Revision++
 		session.UpdatedAt = broker.now().UTC().UnixNano()
@@ -196,6 +215,7 @@ func (broker *Broker) finishFailedOpen(
 ) (Session, error) {
 	if cleanup == nil {
 		session.State = SessionLost
+		clearSessionSnapshot(&session)
 		session.SafeFailure = "worker_unavailable"
 		session.Revision++
 		session.UpdatedAt = broker.now().UTC().UnixNano()
@@ -235,6 +255,7 @@ func (broker *Broker) finishFailedOpen(
 	}
 
 	session.State = SessionLost
+	clearSessionSnapshot(&session)
 	session.SafeFailure = slot.safeFailure
 	session.Revision++
 	session.UpdatedAt = broker.now().UTC().UnixNano()
@@ -330,6 +351,7 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 		return Session{}, err
 	}
 	session.State = SessionLost
+	clearSessionSnapshot(&session)
 	session.SafeFailure = safeFailure
 	session.Revision++
 	session.UpdatedAt = broker.now().UTC().UnixNano()
@@ -410,7 +432,10 @@ func (broker *Broker) Sweep(ctx context.Context) error {
 		}
 	}
 	retention := time.Duration(broker.config.Limits.Effective().RetentionSecs) * time.Second
-	return broker.store.PruneInvocations(ctx, now.Add(-retention).UnixNano())
+	if err = broker.store.PruneInvocations(ctx, now.Add(-retention).UnixNano()); err != nil {
+		return err
+	}
+	return broker.store.PrunePreparedActions(ctx, now.Add(-retention).UnixNano())
 }
 
 // Recover reconciles state after a gateway restart. B1 workers are
@@ -432,6 +457,7 @@ func (broker *Broker) Recover(ctx context.Context) error {
 		}
 		now := timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
 		session.State = SessionLost
+		clearSessionSnapshot(&session)
 		session.SafeFailure = "gateway_restarted"
 		session.Revision++
 		session.UpdatedAt = now
@@ -503,6 +529,7 @@ func (broker *Broker) finishSessionLocked(
 		safeFailure = slot.safeFailure
 	}
 	session.State = desired
+	clearSessionSnapshot(&session)
 	session.SafeFailure = safeFailure
 	if desired != SessionLost {
 		session.SafeFailure = ""
@@ -589,6 +616,16 @@ func (broker *Broker) ExecutePrepared(
 	}
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
+	return broker.executePreparedLocked(ctx, owner, invocationID, actionHash, execute)
+}
+
+func (broker *Broker) executePreparedLocked(
+	ctx context.Context,
+	owner Owner,
+	invocationID string,
+	actionHash string,
+	execute InvocationExecutor,
+) (Invocation, error) {
 	invocation, err := broker.store.GetInvocation(ctx, invocationID)
 	if err != nil {
 		return Invocation{}, err
@@ -731,6 +768,14 @@ func timestampAtLeast(value, minimum int64) int64 {
 	return value
 }
 
+func clearSessionSnapshot(session *Session) {
+	if session == nil {
+		return
+	}
+	session.SnapshotID = ""
+	session.SnapshotOrigin = ""
+}
+
 func (broker *Broker) cleanupSlot(ctx context.Context, slot *workerSlot) error {
 	if slot.cleanupComplete {
 		return nil
@@ -773,11 +818,18 @@ func contains(values []string, value string) bool {
 }
 
 func randomID() (string, error) {
+	return randomOpaqueID("session")
+}
+
+func randomOpaqueID(prefix string) (string, error) {
+	if !validIdentifier(prefix) {
+		return "", ErrInvalid
+	}
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
-	return "session_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+	return prefix + "_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func cloneBrowserConfig(source config.BrowserToolsConfig) config.BrowserToolsConfig {

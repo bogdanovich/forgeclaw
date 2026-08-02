@@ -83,15 +83,15 @@ func TestFileStoreRollsBackRejectedBoundedWrite(t *testing.T) {
 }
 
 func TestFileStoreRejectsUnsafeOrCorruptState(t *testing.T) {
-	validEmpty := `{"version":1,"sessions":{},"invocations":{}}`
+	validEmpty := `{"version":2,"sessions":{},"prepared_actions":{},"invocations":{}}`
 	for _, test := range []struct {
 		name    string
 		content string
 		mode    os.FileMode
 		bytes   int
 	}{
-		{name: "unknown field", content: `{"version":1,"sessions":{},"invocations":{},"secret":"x"}`, mode: 0o600},
-		{name: "duplicate field", content: `{"version":1,"version":1,"sessions":{},"invocations":{}}`, mode: 0o600},
+		{name: "unknown field", content: `{"version":2,"sessions":{},"prepared_actions":{},"invocations":{},"secret":"x"}`, mode: 0o600},
+		{name: "duplicate field", content: `{"version":2,"version":2,"sessions":{},"prepared_actions":{},"invocations":{}}`, mode: 0o600},
 		{name: "trailing value", content: validEmpty + `{}`, mode: 0o600},
 		{name: "insecure permissions", content: validEmpty, mode: 0o644},
 		{name: "oversized", content: validEmpty, mode: 0o600, bytes: 32},

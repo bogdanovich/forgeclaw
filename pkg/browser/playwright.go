@@ -24,8 +24,12 @@ import (
 const playwrightPrivateServerName = "browser_driver"
 
 var (
-	playwrightTargetPattern    = regexp.MustCompile(`^e[1-9][0-9]{0,9}$`)
-	playwrightSnapshotRefToken = regexp.MustCompile(`\[ref=`)
+	playwrightTargetPattern     = regexp.MustCompile(`^e[1-9][0-9]{0,9}$`)
+	playwrightSnapshotRefToken  = regexp.MustCompile(`\[ref=`)
+	playwrightSnapshotTargetRef = regexp.MustCompile(`\[ref=(e[1-9][0-9]{0,9})\]`)
+	playwrightElementPattern    = regexp.MustCompile(
+		`(?m)^\s*-\s+([A-Za-z][A-Za-z0-9_-]*)(?:\s+"([^"]*)")?[^\n]*\[ref=(e[1-9][0-9]{0,9})\]`,
+	)
 )
 
 type DriverActionKind string
@@ -49,6 +53,13 @@ type DriverObservation struct {
 	Origin   string
 	Title    string
 	Snapshot string
+	Elements []DriverElement
+}
+
+type DriverElement struct {
+	Target string
+	Role   string
+	Name   string
 }
 
 type playwrightMCPClient interface {
@@ -139,10 +150,67 @@ func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFac
 	if !ok {
 		return nil, ErrDenied
 	}
+	server, err := playwrightServerWithOriginPolicy(server, profile.AllowedOrigins)
+	if err != nil {
+		return nil, err
+	}
 	return &PlaywrightWorkerFactory{
 		target: config.BrowserDefaultTarget, profile: config.BrowserDefaultProfile,
-		serverConfig: cloneMCPServerConfig(server), clientFactory: newManagerPlaywrightClient,
+		serverConfig: server, clientFactory: newManagerPlaywrightClient,
 	}, nil
+}
+
+func playwrightServerWithOriginPolicy(
+	server config.MCPServerConfig,
+	rawOrigins []string,
+) (config.MCPServerConfig, error) {
+	server = cloneMCPServerConfig(server)
+	for _, argument := range server.Args {
+		if argument == "--allowed-origins" || strings.HasPrefix(argument, "--allowed-origins=") ||
+			argument == "--blocked-origins" || strings.HasPrefix(argument, "--blocked-origins=") ||
+			argument == "--config" || strings.HasPrefix(argument, "--config=") {
+			return config.MCPServerConfig{}, fmt.Errorf(
+				"browser driver origin control must come from the managed profile, not %q",
+				argument,
+			)
+		}
+	}
+	for _, variable := range []string{
+		"PLAYWRIGHT_MCP_ALLOWED_ORIGINS",
+		"PLAYWRIGHT_MCP_BLOCKED_ORIGINS",
+		"PLAYWRIGHT_MCP_CONFIG",
+	} {
+		if _, exists := server.Env[variable]; exists {
+			return config.MCPServerConfig{}, fmt.Errorf(
+				"browser driver origin control must come from the managed profile, not %s",
+				variable,
+			)
+		}
+	}
+	origins := make([]string, 0, len(rawOrigins))
+	for _, rawOrigin := range rawOrigins {
+		origin, err := config.NormalizeBrowserOrigin(rawOrigin)
+		if err != nil {
+			return config.MCPServerConfig{}, fmt.Errorf("normalize browser driver origin: %w", err)
+		}
+		origins = append(origins, origin)
+	}
+	if len(origins) == 0 {
+		return config.MCPServerConfig{}, errors.New("browser driver requires allowed origins")
+	}
+	sort.Strings(origins)
+	allowedOrigins := strings.Join(origins, ";")
+	if server.Env == nil {
+		server.Env = make(map[string]string)
+	}
+	// MCP process environment precedence is parent < env file < explicit Env.
+	// Set every policy input explicitly so neither inherited state nor an env
+	// file can independently merge a blocklist or config-file policy.
+	server.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] = allowedOrigins
+	server.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] = ""
+	server.Env["PLAYWRIGHT_MCP_CONFIG"] = ""
+	server.Args = append(server.Args, "--allowed-origins", allowedOrigins)
+	return server, nil
 }
 
 func (factory *PlaywrightWorkerFactory) Open(
@@ -240,6 +308,36 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 		worker.limits.SnapshotBytes,
 		worker.limits.SnapshotRefs,
 	)
+}
+
+func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (DriverElement, string, error) {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if worker.closing || worker.closed || worker.lost || !playwrightTargetPattern.MatchString(target) {
+		return DriverElement{}, "", ErrWorkerUnavailable
+	}
+	result, err := worker.call(ctx, "browser_snapshot", map[string]any{"boxes": false, "target": target})
+	if err != nil {
+		return DriverElement{}, "", err
+	}
+	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
+	if err != nil {
+		return DriverElement{}, "", err
+	}
+	observation, err := parsePlaywrightObservation(text, worker.limits.SnapshotBytes, worker.limits.SnapshotRefs)
+	if err != nil {
+		return DriverElement{}, "", err
+	}
+	for _, element := range observation.Elements {
+		if element.Target == target {
+			return element, observation.Origin, nil
+		}
+	}
+	return DriverElement{}, "", ErrStale
+}
+
+func (worker *playwrightWorker) CatalogRevision() string {
+	return worker.catalogRevision
 }
 
 func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction) error {
@@ -402,16 +500,46 @@ func parsePlaywrightObservation(
 		return DriverObservation{}, ErrDriverIncompatible
 	}
 	snapshot := text[start : start+end]
+	referenceTokens := playwrightSnapshotRefToken.FindAllStringIndex(snapshot, maximumSnapshotRefs+1)
+	targetReferences := playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, maximumSnapshotRefs+1)
 	if snapshot == "" || len(snapshot) > maximumSnapshotBytes || len(title) > 1024 ||
 		maximumSnapshotRefs <= 0 ||
-		len(playwrightSnapshotRefToken.FindAllStringIndex(snapshot, maximumSnapshotRefs+1)) > maximumSnapshotRefs {
+		len(referenceTokens) > maximumSnapshotRefs || len(referenceTokens) != len(targetReferences) {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
 	safeURL, origin, err := sanitizeObservedURL(pageURL)
 	if err != nil {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
-	return DriverObservation{URL: safeURL, Origin: origin, Title: title, Snapshot: snapshot}, nil
+	elements := parsePlaywrightElements(snapshot)
+	return DriverObservation{
+		URL: safeURL, Origin: origin, Title: title, Snapshot: snapshot, Elements: elements,
+	}, nil
+}
+
+func parsePlaywrightElements(snapshot string) []DriverElement {
+	semantics := make(map[string]DriverElement)
+	for _, match := range playwrightElementPattern.FindAllStringSubmatch(snapshot, -1) {
+		semantics[match[3]] = DriverElement{
+			Target: match[3], Role: strings.ToLower(match[1]), Name: match[2],
+		}
+	}
+	seen := make(map[string]struct{})
+	refs := playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, -1)
+	elements := make([]DriverElement, 0, len(refs))
+	for _, match := range refs {
+		target := match[1]
+		if _, exists := seen[target]; exists {
+			continue
+		}
+		seen[target] = struct{}{}
+		element, ok := semantics[target]
+		if !ok {
+			element = DriverElement{Target: target, Role: "unknown"}
+		}
+		elements = append(elements, element)
+	}
+	return elements
 }
 
 func extractPlaywrightLine(text, prefix string) string {

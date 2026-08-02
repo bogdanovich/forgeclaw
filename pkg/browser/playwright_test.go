@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -80,6 +82,11 @@ func (client *fakePlaywrightClient) Close() error {
 
 func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing.T) {
 	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.AllowedOrigins = []string{"https://Example.COM:443/", "http://b.example:80"}
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
 	factory, err := NewPlaywrightWorkerFactory(root)
 	if err != nil {
 		t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
@@ -121,7 +128,13 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	default:
 	}
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
-		client.connectCfg.Enabled {
+		client.connectCfg.Enabled || !reflect.DeepEqual(
+		client.connectCfg.Args,
+		[]string{"--allowed-origins", "http://b.example;https://example.com"},
+	) || client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
+		"http://b.example;https://example.com" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CONFIG"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
 	if status, statusErr := worker.Status(context.Background()); statusErr != nil || status != WorkerReady {
@@ -132,7 +145,9 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		t.Fatalf("Observe() error = %v", err)
 	}
 	if observation.URL != "https://example.com/items" || observation.Origin != "https://example.com" ||
-		observation.Title != "Fixture" || !strings.Contains(observation.Snapshot, "[ref=e3]") {
+		observation.Title != "Fixture" || !strings.Contains(observation.Snapshot, "[ref=e3]") ||
+		len(observation.Elements) != 1 ||
+		observation.Elements[0] != (DriverElement{Target: "e3", Role: "textbox", Name: "Name"}) {
 		t.Fatalf("Observe() = %+v", observation)
 	}
 	if err = worker.Execute(context.Background(), DriverAction{
@@ -182,6 +197,36 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	click := client.calls[3].arguments
 	if click["target"] != "e4" || click["doubleClick"] != false || click["button"] != "left" {
 		t.Fatalf("click arguments = %+v", click)
+	}
+}
+
+func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{name: "allowed argument", args: []string{"--allowed-origins", "https://other.example"}},
+		{name: "allowed equals argument", args: []string{"--allowed-origins=https://other.example"}},
+		{name: "blocked argument", args: []string{"--blocked-origins=*&!https://example.com"}},
+		{name: "config argument", args: []string{"--config", "browser-policy.json"}},
+		{name: "config equals argument", args: []string{"--config=browser-policy.json"}},
+		{name: "allowed environment", env: map[string]string{"PLAYWRIGHT_MCP_ALLOWED_ORIGINS": "*"}},
+		{name: "blocked environment", env: map[string]string{"PLAYWRIGHT_MCP_BLOCKED_ORIGINS": ""}},
+		{name: "config environment", env: map[string]string{"PLAYWRIGHT_MCP_CONFIG": "browser-policy.json"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := admittedBrowserConfig()
+			server := root.Tools.MCP.Servers["playwright"]
+			server.Args = test.args
+			server.Env = test.env
+			root.Tools.MCP.Servers["playwright"] = server
+			if _, err := NewPlaywrightWorkerFactory(root); err == nil ||
+				!strings.Contains(err.Error(), "origin control must come from the managed profile") {
+				t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -377,6 +422,10 @@ func TestPlaywrightObservationEnforcesReferenceLimit(t *testing.T) {
 	if _, err := parsePlaywrightObservation(observation, 1024, 1); !errors.Is(err, ErrDriverIncompatible) {
 		t.Fatalf("parsePlaywrightObservation() over-limit error = %v", err)
 	}
+	malformed := strings.Replace(observation, "[ref=e1]", "[ref=selector]", 1)
+	if _, err := parsePlaywrightObservation(malformed, 1024, 2); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("parsePlaywrightObservation() malformed ref error = %v", err)
+	}
 }
 
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
@@ -390,15 +439,25 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 <label>Name <input aria-label="Name"></label><button type="submit">Save</button></form><output></output>`)
 	}))
 	defer fixture.Close()
+	fixtureURL, err := url.Parse(fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureURL.Host = "127.0.0.1.nip.io:" + fixtureURL.Port()
+	fixtureOrigin := fixtureURL.String()
 
 	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.AllowedOrigins = []string{fixtureOrigin}
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
 	server := root.Tools.MCP.Servers["playwright"]
 	driverTemp := t.TempDir()
 	server.ExclusiveLockFile = filepath.Join(driverTemp, "playwright.lock")
 	server.Args = []string{
 		"-y", "@playwright/mcp@0.0.78", "--headless", "--browser=chrome", "--isolated",
 		"--output-mode=stdout", "--output-dir=" + filepath.Join(driverTemp, "output"),
-		"--allowed-origins=" + fixture.URL,
 	}
 	root.Tools.MCP.Servers["playwright"] = server
 	factory, err := NewPlaywrightWorkerFactory(root)
@@ -416,7 +475,7 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	worker := opened.Owner.(*playwrightWorker)
 	t.Cleanup(func() { _ = worker.Close(context.Background()) })
-	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixture.URL}); err != nil {
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
 		t.Fatalf("navigate error = %v", err)
 	}
 	observation, err := worker.Observe(ctx)
