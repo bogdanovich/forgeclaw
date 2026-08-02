@@ -103,7 +103,8 @@ func (broker *Broker) PrepareAction(ctx context.Context, request PrepareActionRe
 	if !validIdentifier(request.RequestID) || !validIdentifier(request.SessionID) ||
 		!validIdentifier(request.TabID) || !validIdentifier(request.SnapshotID) ||
 		request.SnapshotGeneration == 0 ||
-		request.Action.Validate(broker.config.Limits.Effective().TextInputBytes) != nil {
+		request.Action.Validate(broker.config.Limits.Effective().TextInputBytes) != nil ||
+		(request.Action.Kind == ActionSelect && request.Action.Value == "") {
 		return Preparation{}, fmt.Errorf("%w: malformed action preparation", ErrInvalid)
 	}
 	broker.mu.Lock()
@@ -306,7 +307,7 @@ func (broker *Broker) resolvePreparedActionLocked(
 		prepared.Action.URL = normalized
 		prepared.DestinationOrigin = destination
 		prepared.Effect = EffectNavigation
-	case ActionClick, ActionFill:
+	case ActionClick, ActionFill, ActionSelect:
 		element, ok := slot.refs[request.Action.Ref]
 		if !ok {
 			return PreparedAction{}, ErrStale
@@ -326,8 +327,29 @@ func (broker *Broker) resolvePreparedActionLocked(
 				return PreparedAction{}, ErrDenied
 			}
 			prepared.Effect = EffectLocalEdit
+		} else if request.Action.Kind == ActionSelect {
+			if element.Role != "combobox" {
+				return PreparedAction{}, ErrDenied
+			}
+			prepared.Effect = EffectLocalEdit
 		} else {
 			prepared.Effect = classifyClickEffect(element)
+		}
+	case ActionPress, ActionScroll:
+		observation, observeErr := worker.Observe(ctx)
+		if observeErr != nil {
+			return PreparedAction{}, observeErr
+		}
+		if observation.Origin != session.SnapshotOrigin {
+			return PreparedAction{}, ErrStale
+		}
+		if request.Action.Kind == ActionPress {
+			// A page-global key event can run arbitrary same-origin handlers. Until
+			// the driver can bind a press to a revalidated element, its effect is
+			// unknown even when the key itself is allowlisted.
+			prepared.Effect = EffectUnknown
+		} else {
+			prepared.Effect = EffectRead
 		}
 	default:
 		return PreparedAction{}, ErrInvalid
@@ -354,7 +376,8 @@ func (broker *Broker) revalidatePreparedLocked(
 			!broker.originNetworkAllowed(ctx, prepared.DestinationOrigin)) {
 		return broker.quarantineNetworkDeniedLocked(ctx, session)
 	}
-	if prepared.Action.Kind == ActionNavigate {
+	if prepared.Action.Kind == ActionNavigate || prepared.Action.Kind == ActionPress ||
+		prepared.Action.Kind == ActionScroll {
 		observation, err := worker.Observe(ctx)
 		if err != nil {
 			return err
@@ -478,15 +501,18 @@ func (broker *Broker) driverActionForPrepared(
 	switch prepared.Action.Kind {
 	case ActionNavigate:
 		return DriverAction{Kind: DriverNavigate, URL: prepared.Action.URL}, nil
-	case ActionClick, ActionFill:
+	case ActionClick, ActionFill, ActionSelect:
 		element, ok := slot.refs[prepared.Action.Ref]
 		if !ok {
 			return DriverAction{}, ErrStale
 		}
 		kind := DriverClick
 		value := ""
-		if prepared.Action.Kind == ActionFill {
+		if prepared.Action.Kind == ActionFill || prepared.Action.Kind == ActionSelect {
 			kind = DriverFill
+			if prepared.Action.Kind == ActionSelect {
+				kind = DriverSelect
+			}
 			var ok bool
 			value, ok = slot.inputs[prepared.ID]
 			if !ok || !broker.actionInputMatches(prepared, value) {
@@ -496,13 +522,19 @@ func (broker *Broker) driverActionForPrepared(
 		return DriverAction{
 			Kind: kind, Target: element.Target, Element: element.Name, Value: value,
 		}, nil
+	case ActionPress:
+		return DriverAction{Kind: DriverPress, Key: prepared.Action.Key}, nil
+	case ActionScroll:
+		return DriverAction{
+			Kind: DriverScroll, Direction: prepared.Action.Direction, Amount: prepared.Action.Amount,
+		}, nil
 	default:
 		return DriverAction{}, ErrInvalid
 	}
 }
 
 func (broker *Broker) bindActionInput(action Action) (Action, string, int, error) {
-	if action.Kind != ActionFill {
+	if !actionHasSensitiveInput(action.Kind) {
 		return action, "", 0, nil
 	}
 	if len(broker.bindingKey) != sha256.Size {
@@ -517,14 +549,14 @@ func (broker *Broker) bindActionInput(action Action) (Action, string, int, error
 }
 
 func (broker *Broker) actionInputMatches(prepared PreparedAction, value string) bool {
-	_, digest, size, err := broker.bindActionInput(Action{Kind: ActionFill, Value: value})
+	_, digest, size, err := broker.bindActionInput(Action{Kind: prepared.Action.Kind, Value: value})
 	return err == nil && size == prepared.InputBytes && hmac.Equal(
 		[]byte(digest), []byte(prepared.InputDigest),
 	)
 }
 
 func (broker *Broker) validateActionInput(slot *workerSlot, prepared PreparedAction) error {
-	if prepared.Action.Kind != ActionFill {
+	if !actionHasSensitiveInput(prepared.Action.Kind) {
 		return nil
 	}
 	value, ok := slot.inputs[prepared.ID]
@@ -539,13 +571,17 @@ func (broker *Broker) rememberActionInput(
 	prepared PreparedAction,
 	value string,
 ) {
-	if prepared.Action.Kind != ActionFill {
+	if !actionHasSensitiveInput(prepared.Action.Kind) {
 		return
 	}
 	if slot.inputs == nil {
 		slot.inputs = make(map[string]string)
 	}
 	slot.inputs[prepared.ID] = value
+}
+
+func actionHasSensitiveInput(kind ActionKind) bool {
+	return kind == ActionFill || kind == ActionSelect
 }
 
 func (broker *Broker) originAllowed(session Session, origin string) bool {

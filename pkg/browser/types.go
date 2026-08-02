@@ -16,6 +16,7 @@ const (
 	MaxTerminalBytes    = 320 * 1024
 	MaxURLBytes         = 2048
 	MaxElementNameBytes = 512
+	MaxScrollAmount     = 5
 )
 
 var (
@@ -134,11 +135,14 @@ const (
 	ActionNavigate ActionKind = "navigate"
 	ActionClick    ActionKind = "click"
 	ActionFill     ActionKind = "fill"
+	ActionSelect   ActionKind = "select"
+	ActionPress    ActionKind = "press"
+	ActionScroll   ActionKind = "scroll"
 )
 
 func (kind ActionKind) Valid() bool {
 	switch kind {
-	case ActionNavigate, ActionClick, ActionFill:
+	case ActionNavigate, ActionClick, ActionFill, ActionSelect, ActionPress, ActionScroll:
 		return true
 	default:
 		return false
@@ -146,10 +150,13 @@ func (kind ActionKind) Valid() bool {
 }
 
 type Action struct {
-	Kind  ActionKind `json:"kind"`
-	URL   string     `json:"url,omitempty"`
-	Ref   string     `json:"ref,omitempty"`
-	Value string     `json:"value,omitempty"`
+	Kind      ActionKind `json:"kind"`
+	URL       string     `json:"url,omitempty"`
+	Ref       string     `json:"ref,omitempty"`
+	Value     string     `json:"value,omitempty"`
+	Key       string     `json:"key,omitempty"`
+	Direction string     `json:"direction,omitempty"`
+	Amount    int        `json:"amount,omitempty"`
 }
 
 func (action Action) Validate(maxTextBytes int) error {
@@ -158,19 +165,49 @@ func (action Action) Validate(maxTextBytes int) error {
 	}
 	switch action.Kind {
 	case ActionNavigate:
-		if action.URL == "" || action.Ref != "" || action.Value != "" {
+		if action.URL == "" || action.Ref != "" || action.Value != "" || action.Key != "" || action.Direction != "" ||
+			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed navigate action", ErrInvalid)
 		}
 	case ActionClick:
-		if !validIdentifier(action.Ref) || action.URL != "" || action.Value != "" {
+		if !validIdentifier(action.Ref) || action.URL != "" || action.Value != "" || action.Key != "" ||
+			action.Direction != "" ||
+			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed click action", ErrInvalid)
 		}
 	case ActionFill:
-		if !validIdentifier(action.Ref) || action.URL != "" {
+		if !validIdentifier(action.Ref) || action.URL != "" || action.Key != "" || action.Direction != "" ||
+			action.Amount != 0 {
 			return fmt.Errorf("%w: malformed fill action", ErrInvalid)
+		}
+	case ActionSelect:
+		if !validIdentifier(action.Ref) || action.URL != "" || action.Key != "" || action.Direction != "" ||
+			action.Amount != 0 {
+			return fmt.Errorf("%w: malformed select action", ErrInvalid)
+		}
+	case ActionPress:
+		if action.URL != "" || action.Ref != "" || action.Value != "" || !validBrowserKey(action.Key) ||
+			action.Direction != "" ||
+			action.Amount != 0 {
+			return fmt.Errorf("%w: malformed press action", ErrInvalid)
+		}
+	case ActionScroll:
+		if action.URL != "" || action.Ref != "" || action.Value != "" || action.Key != "" ||
+			(action.Direction != "up" && action.Direction != "down") || action.Amount < 1 || action.Amount > MaxScrollAmount {
+			return fmt.Errorf("%w: malformed scroll action", ErrInvalid)
 		}
 	}
 	return nil
+}
+
+func validBrowserKey(key string) bool {
+	switch key {
+	case "Escape", "Tab", "Shift+Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown", "Backspace", "Delete":
+		return true
+	default:
+		return false
+	}
 }
 
 type Owner struct {
@@ -310,18 +347,31 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 			prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared navigation", ErrInvalid)
 		}
-	case ActionFill:
+	case ActionFill, ActionSelect:
 		if prepared.DestinationOrigin != "" || !editableElementRole(prepared.ElementRole) ||
 			prepared.Effect != EffectLocalEdit || prepared.Action.Value != "" ||
 			!validDigest(prepared.InputDigest) || prepared.InputBytes < 0 ||
 			prepared.InputBytes > maxTextBytes {
 			return fmt.Errorf("%w: malformed prepared local edit", ErrInvalid)
 		}
+		if prepared.Action.Kind == ActionSelect && prepared.ElementRole != "combobox" {
+			return fmt.Errorf("%w: malformed prepared selection", ErrInvalid)
+		}
 	case ActionClick:
 		if prepared.DestinationOrigin != "" || !elementRoleRegexp.MatchString(prepared.ElementRole) ||
 			prepared.Effect != classifyClickEffect(DriverElement{Role: prepared.ElementRole}) ||
 			prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared click", ErrInvalid)
+		}
+	case ActionPress:
+		if prepared.DestinationOrigin != "" || prepared.ElementRole != "" || prepared.ElementName != "" ||
+			prepared.Effect != EffectUnknown || prepared.InputDigest != "" || prepared.InputBytes != 0 {
+			return fmt.Errorf("%w: malformed prepared key press", ErrInvalid)
+		}
+	case ActionScroll:
+		if prepared.DestinationOrigin != "" || prepared.ElementRole != "" || prepared.ElementName != "" ||
+			prepared.Effect != EffectRead || prepared.InputDigest != "" || prepared.InputBytes != 0 {
+			return fmt.Errorf("%w: malformed prepared scroll", ErrInvalid)
 		}
 	}
 	expectedID := derivedIdentifier("prepared", prepared.Owner, prepared.SessionID, prepared.RequestID)

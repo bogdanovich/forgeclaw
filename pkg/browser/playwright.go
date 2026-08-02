@@ -38,14 +38,20 @@ const (
 	DriverNavigate DriverActionKind = "navigate"
 	DriverClick    DriverActionKind = "click"
 	DriverFill     DriverActionKind = "fill"
+	DriverSelect   DriverActionKind = "select"
+	DriverPress    DriverActionKind = "press"
+	DriverScroll   DriverActionKind = "scroll"
 )
 
 type DriverAction struct {
-	Kind    DriverActionKind
-	URL     string
-	Target  string
-	Element string
-	Value   string
+	Kind      DriverActionKind
+	URL       string
+	Target    string
+	Element   string
+	Value     string
+	Key       string
+	Direction string
+	Amount    int
 }
 
 type DriverObservation struct {
@@ -168,9 +174,10 @@ func playwrightServerWithOriginPolicy(
 	for _, argument := range server.Args {
 		if argument == "--allowed-origins" || strings.HasPrefix(argument, "--allowed-origins=") ||
 			argument == "--blocked-origins" || strings.HasPrefix(argument, "--blocked-origins=") ||
-			argument == "--config" || strings.HasPrefix(argument, "--config=") {
+			argument == "--config" || strings.HasPrefix(argument, "--config=") ||
+			argument == "--caps" || strings.HasPrefix(argument, "--caps=") {
 			return config.MCPServerConfig{}, fmt.Errorf(
-				"browser driver origin control must come from the managed profile, not %q",
+				"browser driver policy and capabilities must be managed, not %q",
 				argument,
 			)
 		}
@@ -182,7 +189,7 @@ func playwrightServerWithOriginPolicy(
 	} {
 		if _, exists := server.Env[variable]; exists {
 			return config.MCPServerConfig{}, fmt.Errorf(
-				"browser driver origin control must come from the managed profile, not %s",
+				"browser driver policy and capabilities must be managed, not %s",
 				variable,
 			)
 		}
@@ -209,7 +216,7 @@ func playwrightServerWithOriginPolicy(
 	server.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] = allowedOrigins
 	server.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] = ""
 	server.Env["PLAYWRIGHT_MCP_CONFIG"] = ""
-	server.Args = append(server.Args, "--allowed-origins", allowedOrigins)
+	server.Args = append(server.Args, "--caps", "vision", "--allowed-origins", allowedOrigins)
 	return server, nil
 }
 
@@ -409,13 +416,15 @@ func mapPlaywrightAction(
 	switch action.Kind {
 	case DriverNavigate:
 		normalized, err := normalizeDriverNavigationURL(action.URL)
-		if err != nil || action.Target != "" || action.Element != "" || action.Value != "" {
+		if err != nil || action.Target != "" || action.Element != "" || action.Value != "" ||
+			action.Key != "" || action.Direction != "" || action.Amount != 0 {
 			return "", nil, fmt.Errorf("%w: malformed navigate action", ErrInvalid)
 		}
 		return "browser_navigate", map[string]any{"url": normalized}, nil
 	case DriverClick:
 		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" ||
-			action.Value != "" || len(action.Element) > 512 {
+			action.Value != "" || action.Key != "" || action.Direction != "" || action.Amount != 0 ||
+			len(action.Element) > MaxElementNameBytes {
 			return "", nil, fmt.Errorf("%w: malformed click action", ErrInvalid)
 		}
 		arguments := map[string]any{
@@ -427,7 +436,8 @@ func mapPlaywrightAction(
 		return "browser_click", arguments, nil
 	case DriverFill:
 		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" ||
-			len(action.Element) > 512 || len(action.Value) > limits.TextInputBytes {
+			len(action.Element) > MaxElementNameBytes || len(action.Value) > limits.TextInputBytes ||
+			action.Key != "" || action.Direction != "" || action.Amount != 0 {
 			return "", nil, fmt.Errorf("%w: malformed fill action", ErrInvalid)
 		}
 		arguments := map[string]any{
@@ -437,6 +447,34 @@ func mapPlaywrightAction(
 			arguments["element"] = action.Element
 		}
 		return "browser_type", arguments, nil
+	case DriverSelect:
+		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" || action.Key != "" ||
+			action.Direction != "" || action.Amount != 0 || len(action.Element) > MaxElementNameBytes ||
+			action.Value == "" || len(action.Value) > limits.TextInputBytes {
+			return "", nil, fmt.Errorf("%w: malformed select action", ErrInvalid)
+		}
+		arguments := map[string]any{"target": action.Target, "values": []string{action.Value}}
+		if action.Element != "" {
+			arguments["element"] = action.Element
+		}
+		return "browser_select_option", arguments, nil
+	case DriverPress:
+		if !validBrowserKey(action.Key) || action.URL != "" || action.Target != "" ||
+			action.Element != "" || action.Value != "" || action.Direction != "" || action.Amount != 0 {
+			return "", nil, fmt.Errorf("%w: malformed press action", ErrInvalid)
+		}
+		return "browser_press_key", map[string]any{"key": action.Key}, nil
+	case DriverScroll:
+		if action.URL != "" || action.Target != "" || action.Element != "" || action.Value != "" ||
+			action.Key != "" || (action.Direction != "up" && action.Direction != "down") ||
+			action.Amount < 1 || action.Amount > MaxScrollAmount {
+			return "", nil, fmt.Errorf("%w: malformed scroll action", ErrInvalid)
+		}
+		delta := action.Amount * 500
+		if action.Direction == "up" {
+			delta = -delta
+		}
+		return "browser_mouse_wheel", map[string]any{"deltaX": 0, "deltaY": delta}, nil
 	default:
 		return "", nil, fmt.Errorf("%w: unsupported driver action", ErrInvalid)
 	}
@@ -628,6 +666,34 @@ var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
 			"text":{"description":"Text to type into the element","type":"string"}
 		},
 		"required":["target","text"],
+		"type":"object"
+	}`),
+	"browser_select_option": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"element":{"description":"Human-readable element description used to obtain permission to interact with the element","type":"string"},
+			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"},
+			"values":{"description":"Array of values to select in the dropdown. This can be a single value or multiple values.","items":{"type":"string"},"type":"array"}
+		},
+		"required":["target","values"],
+		"type":"object"
+	}`),
+	"browser_press_key": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{"key":{"description":"Name of the key to press or a character to generate, such as ` + "`ArrowLeft` or `a`" + `","type":"string"}},
+		"required":["key"],
+		"type":"object"
+	}`),
+	"browser_mouse_wheel": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"deltaX":{"default":0,"description":"X delta","type":"number"},
+			"deltaY":{"default":0,"description":"Y delta","type":"number"}
+		},
+		"required":["deltaX","deltaY"],
 		"type":"object"
 	}`),
 }
