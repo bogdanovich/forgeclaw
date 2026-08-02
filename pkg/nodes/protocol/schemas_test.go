@@ -175,6 +175,30 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 				Risk:         nodes.RiskRead,
 			},
 		},
+		{
+			name: "valid service descriptor",
+			descriptor: func() nodes.CommandDescriptor {
+				profiles := []nodes.ServiceProfileDescriptor{{
+					Alias:    "server-services",
+					Revision: "server-services-v1",
+					Manager:  "systemd",
+					Services: []nodes.ServiceDescriptor{{Alias: "vpn", Status: true}},
+					LogLimits: nodes.ServiceLogLimits{
+						EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+					},
+					ActionApproval: "required",
+				}}
+				return nodes.CommandDescriptor{
+					Name:            "service.status.v1",
+					InputSchema:     nodes.ServiceCommandInputSchema("service.status.v1", profiles),
+					OutputSchema:    json.RawMessage(`{"type":"object"}`),
+					Risk:            nodes.RiskRead,
+					ServiceProfiles: profiles,
+				}
+			}(),
+			schemaOK: true,
+			domainOK: true,
+		},
 	}
 
 	for _, test := range tests {
