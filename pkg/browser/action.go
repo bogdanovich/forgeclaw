@@ -220,6 +220,9 @@ func (broker *Broker) ExecuteAction(
 	if err != nil {
 		return Invocation{}, err
 	}
+	if err = broker.validateActionInput(slot, prepared); err != nil {
+		return Invocation{}, err
+	}
 	if err = broker.revalidatePreparedLocked(ctx, session, slot, worker, prepared); err != nil {
 		return Invocation{}, err
 	}
@@ -518,6 +521,17 @@ func (broker *Broker) actionInputMatches(prepared PreparedAction, value string) 
 	return err == nil && size == prepared.InputBytes && hmac.Equal(
 		[]byte(digest), []byte(prepared.InputDigest),
 	)
+}
+
+func (broker *Broker) validateActionInput(slot *workerSlot, prepared PreparedAction) error {
+	if prepared.Action.Kind != ActionFill {
+		return nil
+	}
+	value, ok := slot.inputs[prepared.ID]
+	if !ok || !broker.actionInputMatches(prepared, value) {
+		return ErrStale
+	}
+	return nil
 }
 
 func (broker *Broker) rememberActionInput(

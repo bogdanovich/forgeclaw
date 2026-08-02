@@ -150,10 +150,55 @@ func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFac
 	if !ok {
 		return nil, ErrDenied
 	}
+	server, err := playwrightServerWithOriginPolicy(server, profile.AllowedOrigins)
+	if err != nil {
+		return nil, err
+	}
 	return &PlaywrightWorkerFactory{
 		target: config.BrowserDefaultTarget, profile: config.BrowserDefaultProfile,
-		serverConfig: cloneMCPServerConfig(server), clientFactory: newManagerPlaywrightClient,
+		serverConfig: server, clientFactory: newManagerPlaywrightClient,
 	}, nil
+}
+
+func playwrightServerWithOriginPolicy(
+	server config.MCPServerConfig,
+	rawOrigins []string,
+) (config.MCPServerConfig, error) {
+	server = cloneMCPServerConfig(server)
+	for _, argument := range server.Args {
+		if argument == "--allowed-origins" || strings.HasPrefix(argument, "--allowed-origins=") ||
+			argument == "--blocked-origins" || strings.HasPrefix(argument, "--blocked-origins=") {
+			return config.MCPServerConfig{}, fmt.Errorf(
+				"browser driver origin control must come from the managed profile, not %q",
+				argument,
+			)
+		}
+	}
+	for _, variable := range []string{
+		"PLAYWRIGHT_MCP_ALLOWED_ORIGINS",
+		"PLAYWRIGHT_MCP_BLOCKED_ORIGINS",
+	} {
+		if _, exists := server.Env[variable]; exists {
+			return config.MCPServerConfig{}, fmt.Errorf(
+				"browser driver origin control must come from the managed profile, not %s",
+				variable,
+			)
+		}
+	}
+	origins := make([]string, 0, len(rawOrigins))
+	for _, rawOrigin := range rawOrigins {
+		origin, err := config.NormalizeBrowserOrigin(rawOrigin)
+		if err != nil {
+			return config.MCPServerConfig{}, fmt.Errorf("normalize browser driver origin: %w", err)
+		}
+		origins = append(origins, origin)
+	}
+	if len(origins) == 0 {
+		return config.MCPServerConfig{}, errors.New("browser driver requires allowed origins")
+	}
+	sort.Strings(origins)
+	server.Args = append(server.Args, "--allowed-origins", strings.Join(origins, ";"))
+	return server, nil
 }
 
 func (factory *PlaywrightWorkerFactory) Open(

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -80,6 +81,11 @@ func (client *fakePlaywrightClient) Close() error {
 
 func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing.T) {
 	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.AllowedOrigins = []string{"https://Example.COM:443/", "http://b.example:80"}
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
 	factory, err := NewPlaywrightWorkerFactory(root)
 	if err != nil {
 		t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
@@ -121,7 +127,10 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	default:
 	}
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
-		client.connectCfg.Enabled {
+		client.connectCfg.Enabled || !reflect.DeepEqual(
+		client.connectCfg.Args,
+		[]string{"--allowed-origins", "http://b.example;https://example.com"},
+	) {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
 	if status, statusErr := worker.Status(context.Background()); statusErr != nil || status != WorkerReady {
@@ -184,6 +193,33 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	click := client.calls[3].arguments
 	if click["target"] != "e4" || click["doubleClick"] != false || click["button"] != "left" {
 		t.Fatalf("click arguments = %+v", click)
+	}
+}
+
+func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{name: "allowed argument", args: []string{"--allowed-origins", "https://other.example"}},
+		{name: "allowed equals argument", args: []string{"--allowed-origins=https://other.example"}},
+		{name: "blocked argument", args: []string{"--blocked-origins=*&!https://example.com"}},
+		{name: "allowed environment", env: map[string]string{"PLAYWRIGHT_MCP_ALLOWED_ORIGINS": "*"}},
+		{name: "blocked environment", env: map[string]string{"PLAYWRIGHT_MCP_BLOCKED_ORIGINS": ""}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := admittedBrowserConfig()
+			server := root.Tools.MCP.Servers["playwright"]
+			server.Args = test.args
+			server.Env = test.env
+			root.Tools.MCP.Servers["playwright"] = server
+			if _, err := NewPlaywrightWorkerFactory(root); err == nil ||
+				!strings.Contains(err.Error(), "origin control must come from the managed profile") {
+				t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
+			}
+		})
 	}
 }
 

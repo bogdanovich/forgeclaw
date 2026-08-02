@@ -22,6 +22,7 @@ type actionTestWorker struct {
 	resolveElement DriverElement
 	resolveOrigin  string
 	resolveErr     error
+	resolveCalls   int
 	actions        []DriverAction
 	closed         int
 }
@@ -40,6 +41,7 @@ func (worker *actionTestWorker) Observe(context.Context) (DriverObservation, err
 }
 
 func (worker *actionTestWorker) Resolve(context.Context, string) (DriverElement, string, error) {
+	worker.resolveCalls++
 	if worker.resolveErr != nil {
 		return DriverElement{}, "", worker.resolveErr
 	}
@@ -351,30 +353,53 @@ func TestFileStorePersistsPreparedApprovalBinding(t *testing.T) {
 	}
 }
 
-func TestExecuteFillFailsClosedWithoutLiveInput(t *testing.T) {
-	store := NewMemoryStore()
-	broker, worker, session := openActionTestBroker(t, store)
-	owner := testOwner()
-	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
-	if err != nil {
-		t.Fatal(err)
+func TestExecuteFillFailsClosedBeforeDriverCallWithoutExactLiveInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input map[string]string
+	}{
+		{name: "missing"},
+		{name: "mismatched", input: map[string]string{"prepared": "different-secret"}},
 	}
-	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
-		Owner: owner, RequestID: "request_missing_input", SessionID: session.ID, TabID: session.TabID,
-		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
-		Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observation.Snapshot), Value: "secret"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker.slots[session.ID].inputs = nil
-	if _, err = broker.ExecuteAction(
-		context.Background(), owner, prepared.Action.ID, nil,
-	); !errors.Is(err, ErrStale) {
-		t.Fatalf("ExecuteAction() missing live input error = %v, want ErrStale", err)
-	}
-	if len(worker.actions) != 0 {
-		t.Fatalf("worker accepted action without live input: %+v", worker.actions)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryStore()
+			broker, worker, session := openActionTestBroker(t, store)
+			owner := testOwner()
+			observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+				Owner: owner, RequestID: "request_live_input", SessionID: session.ID, TabID: session.TabID,
+				SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+				Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observation.Snapshot), Value: "secret"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.input == nil {
+				broker.slots[session.ID].inputs = nil
+			} else {
+				broker.slots[session.ID].inputs = map[string]string{
+					prepared.Action.ID: test.input["prepared"],
+				}
+			}
+			resolveCalls := worker.resolveCalls
+			if _, err = broker.ExecuteAction(
+				context.Background(), owner, prepared.Action.ID, nil,
+			); !errors.Is(err, ErrStale) {
+				t.Fatalf("ExecuteAction() live input error = %v, want ErrStale", err)
+			}
+			if worker.resolveCalls != resolveCalls || len(worker.actions) != 0 {
+				t.Fatalf(
+					"driver reached with invalid live input: resolves %d -> %d, actions %+v",
+					resolveCalls,
+					worker.resolveCalls,
+					worker.actions,
+				)
+			}
+		})
 	}
 }
 
