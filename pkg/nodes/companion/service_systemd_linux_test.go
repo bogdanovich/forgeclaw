@@ -175,6 +175,10 @@ func TestSystemdServiceManagerReturnsEmptyLogsAtExactOutputBudget(t *testing.T) 
 	manager, err := newSystemdServiceManager(
 		policies,
 		systemdProcessRunner{
+			systemctl: commandExecutable{
+				path:   os.Args[0],
+				prefix: []string{"-test.run=^TestSystemdReadProcessHelper$", "--", "status"},
+			},
 			journal: commandExecutable{
 				path:   os.Args[0],
 				prefix: []string{"-test.run=^TestSystemdReadProcessHelper$", "--", "empty"},
