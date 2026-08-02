@@ -1598,7 +1598,7 @@ func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
 	agent.Tools.Register(tool)
 	pipeline := NewPipeline(al)
 	pipeline.Interaction.Hooks = afterToolHardAbortHook{}
-	opts := makeTestProcessOpts("post-tool-hard-abort")
+	opts := normalizeProcessOptions(makeTestProcessOpts("post-tool-hard-abort"))
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-post-tool-hard-abort",
 		context: newTurnContext(nil, nil, nil),
@@ -1611,7 +1611,7 @@ func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
 	if result.status != TurnEndStatusAborted || tool.executions != 1 {
 		t.Fatalf("result = %#v, tool executions = %d", result, tool.executions)
 	}
-	history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey)
+	history := agent.Sessions.GetHistory(ts.sessionKey)
 	if len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" ||
 		len(history[1].ToolCalls) != 1 {
 		t.Fatalf("history = %+v, want root plus unresolved durable tool intent", history)
