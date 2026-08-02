@@ -2,10 +2,15 @@
 
 ## Status
 
-Planned work after the node companion MVP defined in
+Active post-MVP roadmap after the node companion MVP defined in
 [`node-companion.md`](node-companion.md) is merged, validated from `main`, and
 deployed. This roadmap does not expand that MVP or authorize implementation of
 every item below.
+
+P0, P1, and P2 are complete. P2 deployment evidence is recorded in
+[`node-companion-p2-deployment-evidence.md`](../operations/node-companion-p2-deployment-evidence.md).
+P3 is the next candidate milestone, but remains unadmitted until a fresh
+operator scope decision.
 
 The roadmap is ordered by operator value and security dependencies rather than
 calendar dates. Each milestone requires a fresh scope decision based on
@@ -115,17 +120,14 @@ Priorities express ordering, not a commitment to implement every milestone.
 ## P0: Model-Visible Capability Contracts
 
 P0 is complete under the fixed scope and completion gates in
-[`node-companion-p0-contracts.md`](node-companion-p0-contracts.md). That
-contract controls its implementation scope. P1 implementation is admitted in
-dependency order by
-[`node-companion-p1-admission.md`](node-companion-p1-admission.md), while
-production owner-mode enablement remains deferred until its trusted approval
-prerequisite and separate operator decision are recorded. P2 implementation is
-admitted in dependency order by
-[`node-companion-p2-admission.md`](node-companion-p2-admission.md). Production
-administrator-file access remains deferred until that contract's trusted
-approval and deployment gates are satisfied. P3 and later work remain
-unadmitted.
+[`node-companion-p0-contracts.md`](node-companion-p0-contracts.md). P1 is
+complete under
+[`node-companion-p1-admission.md`](node-companion-p1-admission.md). P2 is
+complete under
+[`node-companion-p2-admission.md`](node-companion-p2-admission.md), with its
+merged and deployed proof recorded in
+[`node-companion-p2-deployment-evidence.md`](../operations/node-companion-p2-deployment-evidence.md).
+P3 and later work remain unadmitted.
 
 ### Current limitation
 
@@ -538,12 +540,14 @@ This follow-up is complete only when:
 
 ## P2: File Transfer And Administrator Filesystem Access
 
-P2 implementation is admitted with exact scope, authority decisions, delivery
-order, completion gates, and mandatory stop conditions in
-[`node-companion-p2-admission.md`](node-companion-p2-admission.md). This
-admission does not enable production file access. Production remains deny by
-default until the trusted approval and deployment gates in that contract are
-satisfied.
+P2 is complete under the exact scope, authority decisions, delivery order,
+completion gates, and mandatory stop conditions in
+[`node-companion-p2-admission.md`](node-companion-p2-admission.md). The
+authoritative merged-code, canary, deployment, redaction, retention, restart,
+rollback, and residual-limit evidence is recorded in
+[`node-companion-p2-deployment-evidence.md`](../operations/node-companion-p2-deployment-evidence.md).
+Fresh and delegated profiles remain deny-by-default; file authority exists
+only through explicit operator configuration.
 
 ### Operator outcome
 
