@@ -297,7 +297,7 @@ func (s *Store) transition(id string, next Status, outcome Outcome, allowed ...S
 	if err != nil {
 		return Intent{}, err
 	}
-	if intent.Status == next && next != StatusAttempting {
+	if intent.Status == next {
 		if err := s.write(intent); err != nil {
 			return Intent{}, err
 		}

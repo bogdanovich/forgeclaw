@@ -42,6 +42,17 @@ func TestDeliverWithRetryResumesKnownRemainder(t *testing.T) {
 	}
 }
 
+func TestFailedDeliveryUsesAdapterOutcomeMetadata(t *testing.T) {
+	err := NewTransportOutcomeError(ErrRateLimit, DeliveryRejected, 17*time.Second)
+	result := FailedDelivery[string](nil, nil, 0, err)
+	if result.Acceptance != DeliveryRejected || result.RetryAfter != 17*time.Second {
+		t.Fatalf("FailedDelivery() = %#v", result)
+	}
+	if !errors.Is(result.Err, ErrRateLimit) {
+		t.Fatalf("FailedDelivery() error = %v, want ErrRateLimit", result.Err)
+	}
+}
+
 func TestDeliverWithRetryStopsOnPartialResultWithoutRemainder(t *testing.T) {
 	t.Parallel()
 

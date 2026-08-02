@@ -9,6 +9,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 // Coordinator admits outbound intents and persists channel delivery outcomes
@@ -93,8 +94,8 @@ func (c *Coordinator) ReleaseAdmission(deliveryID string) error {
 	if err != nil {
 		return err
 	}
-	if intent.Status != StatusPending {
-		return fmt.Errorf("outbox intent %q is %q, not pending", deliveryID, intent.Status)
+	if intent.Status != StatusPending && intent.Status != StatusDefinitelyFailed {
+		return fmt.Errorf("outbox intent %q is %q, not dispatchable", deliveryID, intent.Status)
 	}
 	delete(c.dispatched, deliveryID)
 	return nil
@@ -109,6 +110,16 @@ func (c *Coordinator) BeginDelivery(deliveryID string) error {
 		return err
 	}
 	_, err = store.BeginAttempt(deliveryID)
+	if err == nil {
+		return nil
+	}
+	if fileutil.IsCommittedWriteError(err) {
+		_, err = store.BeginAttempt(deliveryID)
+		if err == nil {
+			return nil
+		}
+	}
+	delete(c.dispatched, deliveryID)
 	return err
 }
 
@@ -130,16 +141,19 @@ func (c *Coordinator) CompleteDelivery(
 	if result.RetryAfter > 0 {
 		outcome.RetryAfter = c.now().UTC().Add(result.RetryAfter)
 	}
+	transition := store.MarkDefinitelyFailed
 	switch {
 	case result.Err == nil:
-		_, err = store.MarkDelivered(deliveryID, outcome)
+		transition = store.MarkDelivered
 	case result.MayHaveDelivered:
-		_, err = store.MarkAmbiguous(deliveryID, outcome)
-	default:
-		_, err = store.MarkDefinitelyFailed(deliveryID, outcome)
-		if err == nil {
-			delete(c.dispatched, deliveryID)
-		}
+		transition = store.MarkAmbiguous
+	}
+	_, err = transition(deliveryID, outcome)
+	if fileutil.IsCommittedWriteError(err) {
+		_, err = transition(deliveryID, outcome)
+	}
+	if err == nil && result.Err != nil && !result.MayHaveDelivered {
+		delete(c.dispatched, deliveryID)
 	}
 	return err
 }

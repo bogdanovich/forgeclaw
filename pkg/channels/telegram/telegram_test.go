@@ -27,6 +27,51 @@ import (
 
 const testToken = "1234567890:aaaabbbbaaaabbbbaaaabbbbaaaabbbbccc"
 
+func TestClassifyTelegramSendError(t *testing.T) {
+	tests := []struct {
+		name           string
+		apiError       *ta.Error
+		wantSentinel   error
+		wantAcceptance channels.DeliveryAcceptance
+		wantRetryAfter time.Duration
+	}{
+		{
+			name: "rate limit",
+			apiError: &ta.Error{
+				ErrorCode:  http.StatusTooManyRequests,
+				Parameters: &ta.ResponseParameters{RetryAfter: 12},
+			},
+			wantSentinel:   channels.ErrRateLimit,
+			wantAcceptance: channels.DeliveryRejected,
+			wantRetryAfter: 12 * time.Second,
+		},
+		{
+			name:           "api rejection",
+			apiError:       &ta.Error{ErrorCode: http.StatusBadRequest},
+			wantSentinel:   channels.ErrSendFailed,
+			wantAcceptance: channels.DeliveryRejected,
+		},
+		{
+			name:           "server failure",
+			apiError:       &ta.Error{ErrorCode: http.StatusInternalServerError},
+			wantSentinel:   channels.ErrTemporary,
+			wantAcceptance: channels.DeliveryAcceptanceUnknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := classifyTelegramSendError(test.apiError)
+			if !errors.Is(err, test.wantSentinel) {
+				t.Fatalf("error = %v, want %v", err, test.wantSentinel)
+			}
+			acceptance, retryAfter, ok := channels.TransportOutcome(err)
+			if !ok || acceptance != test.wantAcceptance || retryAfter != test.wantRetryAfter {
+				t.Fatalf("outcome = %v, %v, %v", acceptance, retryAfter, ok)
+			}
+		})
+	}
+}
+
 // stubCaller implements ta.Caller for testing.
 type stubCaller struct {
 	calls  []stubCall

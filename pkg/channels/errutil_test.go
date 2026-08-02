@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestClassifySendError(t *testing.T) {
@@ -41,6 +42,27 @@ func TestClassifySendError(t *testing.T) {
 				if err != raw {
 					t.Errorf("expected raw error to be returned unchanged for status %d, got %v", tt.statusCode, err)
 				}
+			}
+		})
+	}
+}
+
+func TestClassifySendOutcome(t *testing.T) {
+	tests := []struct {
+		status         int
+		wantAcceptance DeliveryAcceptance
+		wantRetryAfter time.Duration
+	}{
+		{status: 429, wantAcceptance: DeliveryRejected, wantRetryAfter: 9 * time.Second},
+		{status: 400, wantAcceptance: DeliveryRejected},
+		{status: 500, wantAcceptance: DeliveryAcceptanceUnknown},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("status_%d", test.status), func(t *testing.T) {
+			err := ClassifySendOutcome(test.status, errors.New("api failure"), test.wantRetryAfter)
+			acceptance, retryAfter, ok := TransportOutcome(err)
+			if !ok || acceptance != test.wantAcceptance || retryAfter != test.wantRetryAfter {
+				t.Fatalf("TransportOutcome() = %v, %v, %v", acceptance, retryAfter, ok)
 			}
 		})
 	}

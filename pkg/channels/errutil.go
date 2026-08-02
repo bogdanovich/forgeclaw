@@ -3,6 +3,7 @@ package channels
 import (
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // ClassifySendError wraps a raw error with the appropriate sentinel based on
@@ -19,6 +20,16 @@ func ClassifySendError(statusCode int, rawErr error) error {
 	default:
 		return rawErr
 	}
+}
+
+// ClassifySendOutcome adds acceptance and retry metadata to an HTTP API error.
+func ClassifySendOutcome(statusCode int, rawErr error, retryAfter time.Duration) error {
+	classified := ClassifySendError(statusCode, rawErr)
+	acceptance := DeliveryAcceptanceUnknown
+	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 500) {
+		acceptance = DeliveryRejected
+	}
+	return NewTransportOutcomeError(classified, acceptance, retryAfter)
 }
 
 // ClassifyNetError wraps a network/timeout error as ErrTemporary.

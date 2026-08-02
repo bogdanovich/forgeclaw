@@ -14,10 +14,10 @@ func (al *AgentLoop) tryHandleStopCommand(
 	msg bus.InboundMessage,
 	scope runtimeSessionScope,
 	agentID string,
-) bool {
+) (bool, finalResponseAdmission) {
 	cmdName, ok := commands.CommandName(msg.Content)
 	if !ok || cmdName != "stop" {
-		return false
+		return false, finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	}
 
 	result, err := al.stopActiveTurnForScope(scope)
@@ -37,8 +37,7 @@ func (al *AgentLoop) tryHandleStopCommand(
 		}
 	}
 
-	al.publishStopReply(ctx, msg, scope, agentID, result, err)
-	return true
+	return true, al.publishStopReply(ctx, msg, scope, agentID, result, err)
 }
 
 func (al *AgentLoop) publishStopReply(
@@ -48,7 +47,7 @@ func (al *AgentLoop) publishStopReply(
 	agentID string,
 	result commands.StopResult,
 	stopErr error,
-) {
+) finalResponseAdmission {
 	reply := commands.FormatStopReply(result)
 	if stopErr != nil {
 		reply = "Failed to stop task: " + stopErr.Error()
@@ -58,8 +57,16 @@ func (al *AgentLoop) publishStopReply(
 		al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 	al.resetMessageToolRound(scope, agentID)
-	al.PublishResponseIfNeeded(
-		ctx, scope.workspace, agentID, msg.Channel, msg.ChatID, scope.sessionKey, reply,
+	return al.publishResponseWithContextIfNeeded(
+		ctx,
+		scope.workspace,
+		agentID,
+		msg.Channel,
+		msg.ChatID,
+		scope.sessionKey,
+		reply,
+		&msg.Context,
+		finalResponseSuppressIfMessageToolSent,
 	)
 }
 

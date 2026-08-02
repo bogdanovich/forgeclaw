@@ -99,7 +99,12 @@ func FailedDelivery[T any](
 		status = DeliveryPartial
 	}
 	acceptance := DeliveryAcceptanceUnknown
-	if deliveryFailureWasRejected(err) {
+	if adapterAcceptance, adapterRetryAfter, ok := TransportOutcome(err); ok {
+		acceptance = adapterAcceptance
+		if adapterRetryAfter > 0 {
+			retryAfter = adapterRetryAfter
+		}
+	} else if deliveryFailureWasRejected(err) {
 		acceptance = DeliveryRejected
 	}
 
@@ -141,6 +146,53 @@ type DeliveryAttempt struct {
 	Duration time.Duration
 	Status   DeliveryStatus
 	Err      error
+}
+
+// TransportOutcomeError attaches remote-acceptance and retry metadata to an
+// adapter error without changing the Channel.Send signature.
+type TransportOutcomeError struct {
+	cause      error
+	acceptance DeliveryAcceptance
+	retryAfter time.Duration
+}
+
+func (e *TransportOutcomeError) Error() string {
+	if e == nil || e.cause == nil {
+		return "channel transport failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *TransportOutcomeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// NewTransportOutcomeError records adapter knowledge about a failed send.
+func NewTransportOutcomeError(
+	cause error,
+	acceptance DeliveryAcceptance,
+	retryAfter time.Duration,
+) error {
+	if cause == nil {
+		cause = errors.New("channel transport failed")
+	}
+	return &TransportOutcomeError{
+		cause:      cause,
+		acceptance: acceptance,
+		retryAfter: max(retryAfter, 0),
+	}
+}
+
+// TransportOutcome returns metadata attached by a channel adapter.
+func TransportOutcome(err error) (DeliveryAcceptance, time.Duration, bool) {
+	var outcomeErr *TransportOutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr == nil {
+		return DeliveryAcceptanceUnknown, 0, false
+	}
+	return outcomeErr.acceptance, outcomeErr.retryAfter, true
 }
 
 // DeliverWithRetry retries a logical payload while preserving confirmed IDs

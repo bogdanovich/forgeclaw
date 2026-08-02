@@ -567,7 +567,7 @@ func (c *TelegramChannel) sendRichChunk(
 			"reply_to":  fallbackParams.replyToID,
 			"error":     err.Error(),
 		})
-		return "", fmt.Errorf("telegram send rich message: %w: %w", channels.ErrTemporary, err)
+		return "", fmt.Errorf("telegram send rich message: %w", classifyTelegramSendError(err))
 	}
 
 	return strconv.Itoa(pMsg.MessageID), nil
@@ -607,7 +607,7 @@ func (c *TelegramChannel) sendChunk(
 			tgMsg.ParseMode = ""
 			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 			if err != nil {
-				return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
+				return "", fmt.Errorf("telegram send: %w", classifyTelegramSendError(err))
 			}
 		} else {
 			logger.WarnCF("telegram", "sendMessage failed", map[string]any{
@@ -617,7 +617,7 @@ func (c *TelegramChannel) sendChunk(
 				"parse_mode": telegramParseModeName(params.useMarkdownV2),
 				"error":      err.Error(),
 			})
-			return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
+			return "", fmt.Errorf("telegram send: %w", classifyTelegramSendError(err))
 		}
 	}
 
@@ -2095,6 +2095,18 @@ func telegramRetryDelayFor(err error) time.Duration {
 		return time.Duration(apiErr.Parameters.RetryAfter) * time.Second
 	}
 	return 0
+}
+
+func classifyTelegramSendError(err error) error {
+	var apiErr *ta.Error
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return channels.ClassifySendOutcome(apiErr.ErrorCode, err, telegramRetryDelayFor(err))
+	}
+	return channels.NewTransportOutcomeError(
+		channels.ClassifyNetError(err),
+		channels.DeliveryAcceptanceUnknown,
+		0,
+	)
 }
 
 func parseContent(text string, useMarkdownV2 bool) string {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/commands"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
@@ -136,6 +137,59 @@ func TestFinalResponseAdmissionPersistsOutboxBeforeBusPublish(t *testing.T) {
 		}
 	default:
 		t.Fatal("durable final response was not published")
+	}
+}
+
+func TestControlReplyFailureReleasesInbound(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	al.SetOutboundOutbox(outbox.NewCoordinator())
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: msgBus,
+		publishErr: errors.New("bus unavailable"),
+	}
+	al.bus = trackingBus
+	msg := finalResponseAdmissionInboundMessage("spool-control")
+	ctx := withOutboundSource(t.Context(), msg.SpoolID)
+	agent := al.registry.GetDefaultAgent()
+	admission := al.publishStopReply(
+		ctx,
+		msg,
+		newRuntimeSessionScope(agent.Workspace, msg.SessionKey),
+		agent.ID,
+		commands.StopResult{Stopped: true},
+		nil,
+	)
+	al.settleInboundAdmission(ctx, msg, admission)
+
+	acked, released, cause := trackingBus.ownership()
+	if len(acked) != 0 || len(released) != 1 || released[0] != msg.SpoolID || cause == nil {
+		t.Fatalf("ownership = acked %v released %v cause %v", acked, released, cause)
+	}
+}
+
+func TestInteractionNoticeFailureReleasesInbound(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	al.SetOutboundOutbox(outbox.NewCoordinator())
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: msgBus,
+		publishErr: errors.New("bus unavailable"),
+	}
+	al.bus = trackingBus
+	msg := finalResponseAdmissionInboundMessage("spool-interaction-notice")
+	ctx := withOutboundSource(t.Context(), msg.SpoolID)
+	admission := al.publishInteractionNoticeAdmission(
+		ctx,
+		msg,
+		msg.SessionKey,
+		"The pending interaction could not be canceled; please retry.",
+	)
+	al.settleInboundAdmission(ctx, msg, admission)
+
+	acked, released, cause := trackingBus.ownership()
+	if len(acked) != 0 || len(released) != 1 || released[0] != msg.SpoolID || cause == nil {
+		t.Fatalf("ownership = acked %v released %v cause %v", acked, released, cause)
 	}
 }
 

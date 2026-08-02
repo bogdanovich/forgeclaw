@@ -39,20 +39,17 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 	}
 	cancellation, err := al.cancelInteractionForControlMessage(ctx, msg, target)
 	if err != nil {
-		if noticeErr := al.publishInteractionNotice(
+		admission := al.publishInteractionNoticeAdmission(
 			ctx,
 			msg,
 			target.SessionKey,
 			"The pending interaction could not be canceled; please retry.",
-		); noticeErr != nil {
-			al.releaseInboundMessage(context.Background(), msg, err)
-		} else {
-			al.ackInboundMessage(ctx, msg)
-		}
+		)
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 	if cancellation.CommandHandled {
-		al.publishStopReply(
+		admission := al.publishStopReply(
 			ctx,
 			msg,
 			target.runtimeSessionScope(),
@@ -60,7 +57,7 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 			commands.StopResult{Stopped: cancellation.Canceled},
 			nil,
 		)
-		al.ackInboundMessage(ctx, msg)
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 	if c.routeExplicitInteractionAnswer(ctx, msg, target) {
@@ -134,8 +131,8 @@ func (c *inboundTurnCoordinator) handleBusySession(
 		return
 	}
 	scope := target.runtimeSessionScope()
-	if al.tryHandleStopCommand(ctx, msg, scope, target.Agent.ID) {
-		al.ackInboundMessage(ctx, msg)
+	if handled, admission := al.tryHandleStopCommand(ctx, msg, scope, target.Agent.ID); handled {
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 
@@ -155,6 +152,18 @@ func (c *inboundTurnCoordinator) handleBusySession(
 			})
 		al.releaseInboundMessage(ctx, msg, err)
 	}
+}
+
+func (al *AgentLoop) settleInboundAdmission(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	admission finalResponseAdmission,
+) {
+	if admission.permitsInboundAck() {
+		al.ackInboundMessage(ctx, msg)
+		return
+	}
+	al.releaseInboundMessage(context.Background(), msg, admission.err)
 }
 
 func (c *inboundTurnCoordinator) startWorker(
