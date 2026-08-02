@@ -243,9 +243,11 @@ Rules:
   it is not configurable, contains no title, snapshot content, references, or
   dialog, and its snapshot can authorize only navigation to an allowed HTTP(S)
   origin;
-- exact allowed origins are also applied at the driver request boundary;
-  redirects and every resulting document origin are rechecked before further
-  page interaction;
+- exact allowed origins are passed to the initial Playwright driver as defense
+  in depth and every resulting document origin is rechecked before further
+  page interaction; the package allowlist is not itself a redirect-safe
+  security boundary, which is addressed by the separately admitted N1
+  enforcing proxy;
 - loopback, link-local, private, multicast, unspecified, and cloud-metadata
   destinations are denied by default, including DNS resolutions to them;
 - deterministic tests may use an explicit test-only loopback policy that
