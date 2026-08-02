@@ -731,6 +731,9 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		result.Catalog.Commands[index].OutputSchema = append(
 			json.RawMessage(nil), snapshot.Catalog.Commands[index].OutputSchema...,
 		)
+		result.Catalog.Commands[index].ServiceProfiles = CloneServiceProfileDescriptors(
+			snapshot.Catalog.Commands[index].ServiceProfiles,
+		)
 		if snapshot.Catalog.Commands[index].ModelContract != nil {
 			contract := cloneCommandModelContract(
 				*snapshot.Catalog.Commands[index].ModelContract,

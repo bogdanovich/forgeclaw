@@ -1123,7 +1123,7 @@ func serviceStatusTestDescriptor() nodes.CommandDescriptor {
 	return nodes.CommandDescriptor{
 		Name:         "service.status.v1",
 		InputSchema:  nodes.ServiceCommandInputSchema("service.status.v1", profiles),
-		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		OutputSchema: nodes.ServiceCommandOutputSchema("service.status.v1"),
 		Risk:         nodes.RiskRead,
 		ModelContract: &nodes.CommandModelContract{
 			Availability:      nodes.ModelUnavailable,

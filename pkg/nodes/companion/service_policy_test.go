@@ -158,6 +158,32 @@ func TestServiceCapabilitiesRequireEnforcementAndUseExactActionPairs(t *testing.
 	prepareServicePlan(t, descriptor, `{"service":"app","action":"restart"}`, false)
 }
 
+func TestCloneCatalogIsolatesNestedServiceAuthority(t *testing.T) {
+	policies, err := normalizeServicePolicies(ServicePolicies{
+		"server-services": servicePolicyFixture(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptors, err := serviceCapabilityDescriptors(
+		policies,
+		serviceEnforcement{actions: true},
+		"linux",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := nodes.CapabilityCatalog{Commands: descriptors}
+	cloned := cloneCatalog(original)
+	cloned.Commands[0].ServiceProfiles[0].Services[0].Alias = "database"
+	cloned.Commands[0].ServiceProfiles[0].Services[0].Actions[0] = nodes.ServiceActionStop
+
+	service := original.Commands[0].ServiceProfiles[0].Services[0]
+	if service.Alias != "vpn" || service.Actions[0] != nodes.ServiceActionRestart {
+		t.Fatalf("clone mutated retained runtime authority: %#v", service)
+	}
+}
+
 func servicePolicyFixture() ServicePolicyProfile {
 	return ServicePolicyProfile{
 		Enabled:  true,

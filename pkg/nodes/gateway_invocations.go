@@ -762,27 +762,12 @@ func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
 	descriptor.InputSchema = bytes.Clone(descriptor.InputSchema)
 	descriptor.OutputSchema = bytes.Clone(descriptor.OutputSchema)
 	descriptor.FileProfiles = cloneNodeFileProfileDescriptors(descriptor.FileProfiles)
-	descriptor.ServiceProfiles = cloneNodeServiceProfileDescriptors(descriptor.ServiceProfiles)
+	descriptor.ServiceProfiles = CloneServiceProfileDescriptors(descriptor.ServiceProfiles)
 	if descriptor.ModelContract != nil {
 		contract := cloneCommandModelContract(*descriptor.ModelContract)
 		descriptor.ModelContract = &contract
 	}
 	return descriptor
-}
-
-func cloneNodeServiceProfileDescriptors(
-	profiles []ServiceProfileDescriptor,
-) []ServiceProfileDescriptor {
-	cloned := make([]ServiceProfileDescriptor, len(profiles))
-	for index, profile := range profiles {
-		cloned[index] = profile
-		cloned[index].Services = make([]ServiceDescriptor, len(profile.Services))
-		for serviceIndex, service := range profile.Services {
-			cloned[index].Services[serviceIndex] = service
-			cloned[index].Services[serviceIndex].Actions = append([]ServiceAction(nil), service.Actions...)
-		}
-	}
-	return cloned
 }
 
 func cloneNodeFileProfileDescriptors(

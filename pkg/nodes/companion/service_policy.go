@@ -332,21 +332,6 @@ func serviceCapabilityDescriptor(
 			Guidance:          []string{},
 			Examples:          []json.RawMessage{},
 		},
-		ServiceProfiles: cloneServiceProfileDescriptors(profiles),
+		ServiceProfiles: nodes.CloneServiceProfileDescriptors(profiles),
 	}
-}
-
-func cloneServiceProfileDescriptors(
-	profiles []nodes.ServiceProfileDescriptor,
-) []nodes.ServiceProfileDescriptor {
-	result := make([]nodes.ServiceProfileDescriptor, len(profiles))
-	for index, profile := range profiles {
-		result[index] = profile
-		result[index].Services = make([]nodes.ServiceDescriptor, len(profile.Services))
-		for serviceIndex, service := range profile.Services {
-			result[index].Services[serviceIndex] = service
-			result[index].Services[serviceIndex].Actions = append([]nodes.ServiceAction(nil), service.Actions...)
-		}
-	}
-	return result
 }

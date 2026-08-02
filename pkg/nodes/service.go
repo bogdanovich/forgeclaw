@@ -100,6 +100,24 @@ type ServiceProfileDescriptor struct {
 	ActionApproval string              `json:"action_approval"`
 }
 
+func CloneServiceProfileDescriptors(
+	profiles []ServiceProfileDescriptor,
+) []ServiceProfileDescriptor {
+	result := make([]ServiceProfileDescriptor, len(profiles))
+	for index, profile := range profiles {
+		result[index] = profile
+		result[index].Services = make([]ServiceDescriptor, len(profile.Services))
+		for serviceIndex, service := range profile.Services {
+			result[index].Services[serviceIndex] = service
+			result[index].Services[serviceIndex].Actions = append(
+				[]ServiceAction(nil),
+				service.Actions...,
+			)
+		}
+	}
+	return result
+}
+
 func (profile ServiceProfileDescriptor) Validate() error {
 	if err := (Alias(profile.Alias)).Validate(); err != nil ||
 		!validInvocationIdentifier(profile.Revision) ||

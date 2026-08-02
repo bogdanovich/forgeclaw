@@ -451,6 +451,22 @@ func (descriptor CommandDescriptor) validateServiceProfiles() error {
 	if descriptor.Name != "service.action.v1" && descriptor.Risk != RiskRead {
 		return fmt.Errorf("%w: service observation requires read risk", ErrInvalidCapability)
 	}
+	expectedInput, err := canonicalJSON(ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles))
+	if err != nil {
+		return err
+	}
+	actualInput, err := canonicalJSON(descriptor.InputSchema)
+	if err != nil || !bytes.Equal(actualInput, expectedInput) {
+		return fmt.Errorf("%w: service input schema does not match profile authority", ErrInvalidCapability)
+	}
+	expectedOutput, err := canonicalJSON(ServiceCommandOutputSchema(descriptor.Name))
+	if err != nil {
+		return err
+	}
+	actualOutput, err := canonicalJSON(descriptor.OutputSchema)
+	if err != nil || !bytes.Equal(actualOutput, expectedOutput) {
+		return fmt.Errorf("%w: service output schema does not match typed contract", ErrInvalidCapability)
+	}
 	return nil
 }
 

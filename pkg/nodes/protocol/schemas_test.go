@@ -191,7 +191,7 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 				return nodes.CommandDescriptor{
 					Name:            "service.status.v1",
 					InputSchema:     nodes.ServiceCommandInputSchema("service.status.v1", profiles),
-					OutputSchema:    json.RawMessage(`{"type":"object"}`),
+					OutputSchema:    nodes.ServiceCommandOutputSchema("service.status.v1"),
 					Risk:            nodes.RiskRead,
 					ServiceProfiles: profiles,
 				}
