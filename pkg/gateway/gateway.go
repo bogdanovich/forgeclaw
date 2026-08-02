@@ -74,6 +74,7 @@ type services struct {
 	ChannelManager   *channels.Manager
 	DeviceService    *devices.Service
 	NodeAdmission    *nodeAdmissionRuntime
+	Browser          *browserRuntime
 	HealthServer     *health.Server
 	VoiceAgentCancel context.CancelFunc
 	manualReloadChan chan struct{}
@@ -873,12 +874,21 @@ func setupAndStartServices(
 	if err = setupNodeTools(cfg, agentLoop, runningServices.NodeAdmission); err != nil {
 		return nil, fmt.Errorf("error setting up node tools: %w", err)
 	}
+	if err = setupBrowserRuntime(ctx, cfg, runningServices); err != nil {
+		return nil, fmt.Errorf("error setting up browser runtime: %w", err)
+	}
 
 	// Capture durable work before channel ingress starts, then replay the exact
 	// snapshot after outbound dispatch is live.
 	inboundReplaySnapshot := snapshotGatewayInboundSpool(ctx, msgBus)
 
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
+		if rollbackBrowserRuntime(runningServices) != nil {
+			return nil, errors.Join(
+				fmt.Errorf("error starting channels: %w", err),
+				errors.New("browser runtime rollback failed"),
+			)
+		}
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
 	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
@@ -917,6 +927,11 @@ func setupAndStartServices(
 func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Duration, isReload bool) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
+	if err := closeBrowserRuntime(shutdownCtx, runningServices); err != nil {
+		logger.WarnCF("browser", "Browser sessions did not close cleanly", map[string]any{
+			"reason": "worker_unavailable",
+		})
+	}
 
 	// Reload should not stop channels or node admission. Full shutdown drains
 	// both concurrently so either side retains the complete bounded budget.
@@ -959,6 +974,23 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 			fms.Stop()
 		}
 	}
+}
+
+func closeBrowserRuntime(ctx context.Context, runningServices *services) error {
+	if runningServices == nil || runningServices.Browser == nil {
+		return nil
+	}
+	if err := runningServices.Browser.Close(ctx); err != nil {
+		return err
+	}
+	runningServices.Browser = nil
+	return nil
+}
+
+func rollbackBrowserRuntime(runningServices *services) error {
+	ctx, cancel := context.WithTimeout(context.Background(), serviceShutdownTimeout)
+	defer cancel()
+	return closeBrowserRuntime(ctx, runningServices)
 }
 
 func shutdownGateway(
@@ -1127,6 +1159,9 @@ func restartServices(
 	}
 	if err = setupNodeTools(cfg, al, runningServices.NodeAdmission); err != nil {
 		return fmt.Errorf("error reloading node tools: %w", err)
+	}
+	if err = setupBrowserRuntime(context.Background(), cfg, runningServices); err != nil {
+		return fmt.Errorf("error reloading browser runtime: %w", err)
 	}
 	fmt.Println("  ✓ Channels restarted.")
 

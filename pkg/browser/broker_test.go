@@ -775,6 +775,32 @@ func TestMemoryStoreRequiresCanonicalEntryStates(t *testing.T) {
 	}
 }
 
+func TestBrokerShutdownClosesLiveSessionsExactlyOnce(t *testing.T) {
+	store := NewMemoryStore()
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err = broker.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	closed, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || closed.State != SessionClosed {
+		t.Fatalf("session after Shutdown() = %+v, %v", closed, err)
+	}
+	if len(factory.workers) != 1 || factory.workers[0].closed != 1 {
+		t.Fatalf("workers after Shutdown() = %+v", factory.workers)
+	}
+	if err = broker.Shutdown(context.Background()); err != nil || factory.workers[0].closed != 1 {
+		t.Fatalf("second Shutdown() error = %v, closes = %d", err, factory.workers[0].closed)
+	}
+}
+
 func newTestBroker(
 	t *testing.T,
 	cfg *config.Config,

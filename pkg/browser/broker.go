@@ -469,6 +469,32 @@ func (broker *Broker) Recover(ctx context.Context) error {
 	return nil
 }
 
+// Shutdown closes every live browser session before the gateway releases the
+// durable store. It is intentionally separate from Recover: a clean gateway
+// stop proves that no worker survived, while restart recovery handles the
+// opposite case after an unclean exit.
+func (broker *Broker) Shutdown(ctx context.Context) error {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	sessions, err := broker.store.ListSessions(ctx)
+	if err != nil {
+		return err
+	}
+	var shutdownErr error
+	for _, session := range sessions {
+		if ctx.Err() != nil {
+			return errors.Join(shutdownErr, ctx.Err())
+		}
+		if session.State.Terminal() {
+			continue
+		}
+		if _, err = broker.finishSessionLocked(ctx, session, SessionClosed, ""); err != nil {
+			shutdownErr = errors.Join(shutdownErr, err)
+		}
+	}
+	return shutdownErr
+}
+
 func (broker *Broker) Close(ctx context.Context, owner Owner, sessionID string) (Session, error) {
 	if err := owner.Validate(); err != nil {
 		return Session{}, err
@@ -523,6 +549,12 @@ func (broker *Broker) finishSessionLocked(
 			safeFailure = "worker_lost"
 		}
 	} else if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Session{}, errors.Join(
+				fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable),
+				ctxErr,
+			)
+		}
 		return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
 	} else if slot.safeFailure != "" {
 		desired = SessionLost
@@ -781,7 +813,7 @@ func (broker *Broker) cleanupSlot(ctx context.Context, slot *workerSlot) error {
 		return nil
 	}
 	cleanupTimeout := time.Duration(broker.config.Limits.Effective().ActionSeconds) * time.Second
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	cleanupCtx, cancelCleanup := context.WithTimeout(ctx, cleanupTimeout)
 	defer cancelCleanup()
 	if err := slot.worker.Close(cleanupCtx); err != nil {
 		return err
