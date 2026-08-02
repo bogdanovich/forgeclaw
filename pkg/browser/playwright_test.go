@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -130,7 +131,10 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		client.connectCfg.Enabled || !reflect.DeepEqual(
 		client.connectCfg.Args,
 		[]string{"--allowed-origins", "http://b.example;https://example.com"},
-	) {
+	) || client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
+		"http://b.example;https://example.com" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_CONFIG"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
 	if status, statusErr := worker.Status(context.Background()); statusErr != nil || status != WorkerReady {
@@ -205,8 +209,11 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 		{name: "allowed argument", args: []string{"--allowed-origins", "https://other.example"}},
 		{name: "allowed equals argument", args: []string{"--allowed-origins=https://other.example"}},
 		{name: "blocked argument", args: []string{"--blocked-origins=*&!https://example.com"}},
+		{name: "config argument", args: []string{"--config", "browser-policy.json"}},
+		{name: "config equals argument", args: []string{"--config=browser-policy.json"}},
 		{name: "allowed environment", env: map[string]string{"PLAYWRIGHT_MCP_ALLOWED_ORIGINS": "*"}},
 		{name: "blocked environment", env: map[string]string{"PLAYWRIGHT_MCP_BLOCKED_ORIGINS": ""}},
+		{name: "config environment", env: map[string]string{"PLAYWRIGHT_MCP_CONFIG": "browser-policy.json"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -432,15 +439,25 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 <label>Name <input aria-label="Name"></label><button type="submit">Save</button></form><output></output>`)
 	}))
 	defer fixture.Close()
+	fixtureURL, err := url.Parse(fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureURL.Host = "127.0.0.1.nip.io:" + fixtureURL.Port()
+	fixtureOrigin := fixtureURL.String()
 
 	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.AllowedOrigins = []string{fixtureOrigin}
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
 	server := root.Tools.MCP.Servers["playwright"]
 	driverTemp := t.TempDir()
 	server.ExclusiveLockFile = filepath.Join(driverTemp, "playwright.lock")
 	server.Args = []string{
 		"-y", "@playwright/mcp@0.0.78", "--headless", "--browser=chrome", "--isolated",
 		"--output-mode=stdout", "--output-dir=" + filepath.Join(driverTemp, "output"),
-		"--allowed-origins=" + fixture.URL,
 	}
 	root.Tools.MCP.Servers["playwright"] = server
 	factory, err := NewPlaywrightWorkerFactory(root)
@@ -458,7 +475,7 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	worker := opened.Owner.(*playwrightWorker)
 	t.Cleanup(func() { _ = worker.Close(context.Background()) })
-	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixture.URL}); err != nil {
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
 		t.Fatalf("navigate error = %v", err)
 	}
 	observation, err := worker.Observe(ctx)

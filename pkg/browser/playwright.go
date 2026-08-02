@@ -167,7 +167,8 @@ func playwrightServerWithOriginPolicy(
 	server = cloneMCPServerConfig(server)
 	for _, argument := range server.Args {
 		if argument == "--allowed-origins" || strings.HasPrefix(argument, "--allowed-origins=") ||
-			argument == "--blocked-origins" || strings.HasPrefix(argument, "--blocked-origins=") {
+			argument == "--blocked-origins" || strings.HasPrefix(argument, "--blocked-origins=") ||
+			argument == "--config" || strings.HasPrefix(argument, "--config=") {
 			return config.MCPServerConfig{}, fmt.Errorf(
 				"browser driver origin control must come from the managed profile, not %q",
 				argument,
@@ -177,6 +178,7 @@ func playwrightServerWithOriginPolicy(
 	for _, variable := range []string{
 		"PLAYWRIGHT_MCP_ALLOWED_ORIGINS",
 		"PLAYWRIGHT_MCP_BLOCKED_ORIGINS",
+		"PLAYWRIGHT_MCP_CONFIG",
 	} {
 		if _, exists := server.Env[variable]; exists {
 			return config.MCPServerConfig{}, fmt.Errorf(
@@ -197,7 +199,17 @@ func playwrightServerWithOriginPolicy(
 		return config.MCPServerConfig{}, errors.New("browser driver requires allowed origins")
 	}
 	sort.Strings(origins)
-	server.Args = append(server.Args, "--allowed-origins", strings.Join(origins, ";"))
+	allowedOrigins := strings.Join(origins, ";")
+	if server.Env == nil {
+		server.Env = make(map[string]string)
+	}
+	// MCP process environment precedence is parent < env file < explicit Env.
+	// Set every policy input explicitly so neither inherited state nor an env
+	// file can independently merge a blocklist or config-file policy.
+	server.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] = allowedOrigins
+	server.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] = ""
+	server.Env["PLAYWRIGHT_MCP_CONFIG"] = ""
+	server.Args = append(server.Args, "--allowed-origins", allowedOrigins)
 	return server, nil
 }
 
