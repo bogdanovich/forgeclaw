@@ -430,7 +430,7 @@ func (broker *Broker) Recover(ctx context.Context) error {
 		if err = broker.terminateInvocationsLocked(ctx, session.ID, "gateway_restarted"); err != nil {
 			return err
 		}
-		now := broker.now().UTC().UnixNano()
+		now := timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
 		session.State = SessionLost
 		session.SafeFailure = "gateway_restarted"
 		session.Revision++
@@ -554,7 +554,7 @@ func (broker *Broker) terminateInvocationsLocked(ctx context.Context, sessionID,
 		if invocation.State.Terminal() {
 			continue
 		}
-		now := broker.now().UTC().UnixNano()
+		now := timestampAtLeast(broker.now().UTC().UnixNano(), invocation.UpdatedAt)
 		if invocation.State == InvocationPrepared {
 			invocation.State = InvocationCanceled
 		} else {
@@ -638,7 +638,7 @@ func (broker *Broker) ExecutePrepared(
 		return Invocation{}, ErrWorkerUnavailable
 	}
 	invocation.State = InvocationAccepted
-	invocation.AcceptedAt = now.UnixNano()
+	invocation.AcceptedAt = timestampAtLeast(now.UnixNano(), invocation.UpdatedAt)
 	invocation.UpdatedAt = invocation.AcceptedAt
 	invocation.Revision++
 	if err = broker.store.UpdateInvocation(ctx, invocation.Revision-1, invocation); err != nil {
@@ -693,7 +693,7 @@ func (broker *Broker) ExecutePrepared(
 	}
 	// A completed action is activity, but never extends the absolute lifetime.
 	session.Revision++
-	session.UpdatedAt = broker.now().UTC().UnixNano()
+	session.UpdatedAt = timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
 	session.LastActivityAt = session.UpdatedAt
 	if err = broker.store.UpdateSession(completionCtx, session.Revision-1, session); err != nil {
 		return completed, err
@@ -708,7 +708,7 @@ func (broker *Broker) completeInvocationLocked(
 	result json.RawMessage,
 	failure string,
 ) (Invocation, error) {
-	now := broker.now().UTC().UnixNano()
+	now := timestampAtLeast(broker.now().UTC().UnixNano(), invocation.UpdatedAt)
 	invocation.State = state
 	invocation.Revision++
 	invocation.UpdatedAt = now
@@ -722,6 +722,13 @@ func (broker *Broker) completeInvocationLocked(
 		return invocation, err
 	}
 	return invocation, nil
+}
+
+func timestampAtLeast(value, minimum int64) int64 {
+	if value < minimum {
+		return minimum
+	}
+	return value
 }
 
 func (broker *Broker) cleanupSlot(ctx context.Context, slot *workerSlot) error {

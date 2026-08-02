@@ -82,7 +82,7 @@ func secureWindowsStorePath(path string, directory bool) error {
 	}
 	handle, err := windows.CreateFile(
 		pathPtr,
-		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
@@ -97,26 +97,16 @@ func secureWindowsStorePath(path string, directory bool) error {
 }
 
 func secureWindowsStoreHandle(handle windows.Handle, owner *windows.SID) error {
-	descriptor, err := windows.GetSecurityInfo(
-		handle,
-		windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION,
-	)
-	if err != nil {
-		return fmt.Errorf("read Windows browser-store owner: %w", err)
-	}
-	actualOwner, _, err := descriptor.Owner()
-	if err != nil || !actualOwner.Equals(owner) {
-		return errors.New("Windows browser-store owner validation failed")
-	}
 	_, dacl, err := ownerOnlyWindowsStoreDescriptor(owner)
 	if err != nil {
 		return err
 	}
 	information := windows.SECURITY_INFORMATION(
-		windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		windows.OWNER_SECURITY_INFORMATION |
+			windows.DACL_SECURITY_INFORMATION |
+			windows.PROTECTED_DACL_SECURITY_INFORMATION,
 	)
-	if err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, information, nil, nil, dacl, nil); err != nil {
+	if err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, information, owner, nil, dacl, nil); err != nil {
 		return fmt.Errorf("apply owner-only Windows browser-store DACL: %w", err)
 	}
 	return validateOwnerOnlyWindowsStoreDACL(handle, owner)

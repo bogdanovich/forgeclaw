@@ -30,7 +30,7 @@ func acquireStoreLock(path string) (func(), error) {
 	}
 	handle, err := windows.CreateFile(
 		pathPtr,
-		windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		attributes,
 		windows.OPEN_ALWAYS,
