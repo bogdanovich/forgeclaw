@@ -23,6 +23,12 @@ import (
 
 const playwrightPrivateServerName = "browser_driver"
 
+// playwrightDriverResponseBytes is an inbound safety ceiling. It is
+// deliberately independent of the configured outbound tool-result limit so a
+// large, valid driver snapshot can reach the projection step and be truncated
+// to the caller's smaller delivery budget.
+const playwrightDriverResponseBytes = config.BrowserMaxSnapshotBytes + config.BrowserToolResultEnvelopeBytes
+
 const opaqueSnapshotReferenceBytes = len("ref_") + 32
 
 const playwrightTargetExpression = `(?:f[1-9][0-9]{0,9})?e[1-9][0-9]{0,9}`
@@ -459,7 +465,7 @@ func (worker *playwrightWorker) callAndConsume(
 	if result.IsError {
 		driverErr = ErrDriverRejected
 	}
-	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
+	text, err := boundedPlaywrightText(result, playwrightDriverResponseBytes)
 	if err != nil {
 		worker.lost = true
 		return "", errors.Join(driverErr, err)

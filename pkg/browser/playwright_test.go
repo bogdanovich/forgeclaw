@@ -689,6 +689,43 @@ func TestPlaywrightWorkerBoundsObservationAndRedactsDriverError(t *testing.T) {
 	}
 }
 
+func TestPlaywrightWorkerProjectsResponseLargerThanOutboundLimit(t *testing.T) {
+	const projectedLine = "- button \"Keep\" [ref=e1]\n"
+	toolResultBytes := config.BrowserToolResultEnvelopeBytes + encodedVisiblePlaywrightSnapshotBytes(projectedLine)
+	rawSnapshot := projectedLine + strings.Repeat("- paragraph: overflow\n", 4000)
+	rawObservation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n" + rawSnapshot + "```"
+	if len(rawObservation) <= toolResultBytes || len(rawObservation) > playwrightDriverResponseBytes {
+		t.Fatalf(
+			"raw observation bytes = %d, outbound = %d, inbound = %d",
+			len(rawObservation),
+			toolResultBytes,
+			playwrightDriverResponseBytes,
+		)
+	}
+	client := &fakePlaywrightClient{
+		callResults: map[string]*sdkmcp.CallToolResult{
+			"browser_snapshot": playwrightTextResult(rawObservation),
+		},
+	}
+	worker := &playwrightWorker{
+		client: client,
+		limits: config.BrowserLimitsConfig{
+			SnapshotBytes:   config.BrowserMaxSnapshotBytes,
+			SnapshotRefs:    config.BrowserMaxSnapshotRefs,
+			ToolResultBytes: toolResultBytes,
+		}.Effective(),
+	}
+	observation, err := worker.Observe(context.Background())
+	if err != nil || !observation.Truncated || observation.Snapshot != strings.TrimSuffix(projectedLine, "\n") {
+		t.Fatalf("Observe() = %+v, %v", observation, err)
+	}
+	status, statusErr := worker.Status(context.Background())
+	if statusErr != nil || status != WorkerReady {
+		t.Fatalf("Status() = %q, %v", status, statusErr)
+	}
+}
+
 const testPlaywrightToolResultBytes = config.BrowserToolResultEnvelopeBytes + 4096
 
 func TestPlaywrightObservationProjectsReferenceLimit(t *testing.T) {
