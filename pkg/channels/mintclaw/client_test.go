@@ -18,7 +18,11 @@ import (
 )
 
 func TestNewMintClawClientChannel_MissingURL(t *testing.T) {
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	_, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{}, bus.NewMessageBus())
 	if err == nil {
 		t.Fatal("expected error for missing URL")
@@ -29,7 +33,11 @@ func TestNewMintClawClientChannel_MissingURL(t *testing.T) {
 }
 
 func TestNewMintClawClientChannel_OK(t *testing.T) {
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:9999/ws",
 	}, bus.NewMessageBus())
@@ -42,7 +50,11 @@ func TestNewMintClawClientChannel_OK(t *testing.T) {
 }
 
 func TestSend_NotRunning(t *testing.T) {
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:9999/ws",
 	}, bus.NewMessageBus())
@@ -107,7 +119,11 @@ func TestClientChannel_ConnectAndSend(t *testing.T) {
 	defer srv.Close()
 
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL:          wsURL(srv.URL),
 		Token:        *config.NewSecureString("test-token"),
@@ -141,7 +157,11 @@ func TestClientChannel_AuthFailure(t *testing.T) {
 	srv := testServer(t, "correct-token")
 	defer srv.Close()
 
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL:   wsURL(srv.URL),
 		Token: *config.NewSecureString("wrong-token"),
@@ -166,7 +186,11 @@ func TestClientChannel_ReceivesServerMessage(t *testing.T) {
 
 	mb := bus.NewMessageBus()
 
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL:         wsURL(srv.URL),
 		SessionID:   "sess-echo",
@@ -209,7 +233,11 @@ func TestClientChannel_StartTyping(t *testing.T) {
 	srv := testServer(t, "")
 	defer srv.Close()
 
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL:         wsURL(srv.URL),
 		SessionID:   "sess-type",
@@ -238,7 +266,11 @@ func TestSend_ClosedConnection(t *testing.T) {
 	srv := testServer(t, "")
 	defer srv.Close()
 
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL:         wsURL(srv.URL),
 		SessionID:   "sess-close",
@@ -305,7 +337,7 @@ func TestParseInlineImageMedia_Attachments(t *testing.T) {
 
 func TestMintClawChannel_HandleMessageSend_AllowsMediaOnly(t *testing.T) {
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: "mintclaw", Enabled: true}
+	bc := &config.Channel{Type: "mintclaw", Enabled: true, AllowFrom: config.FlexibleStringSlice{"mintclaw-user"}}
 	ch, err := NewMintClawChannel(bc, &config.MintClawSettings{
 		Token: *config.NewSecureString("test-token"),
 	}, mb)
@@ -348,7 +380,11 @@ func newTestMintClawClientChannel(t *testing.T) (*MintClawClientChannel, *bus.Me
 	t.Helper()
 
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:8080/ws",
 	}, mb)
@@ -443,7 +479,11 @@ func TestMintClawClientChannel_HandleInbound_ForwardsMediaCreate(t *testing.T) {
 
 func TestMintClawClientChannel_HandleServerMessage_ForwardsTextWithDownloadAttachment(t *testing.T) {
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:8080/ws",
 	}, mb)
@@ -484,7 +524,11 @@ func TestMintClawClientChannel_HandleServerMessage_ForwardsTextWithDownloadAttac
 
 func TestMintClawClientChannel_HandleServerMessage_ForwardsTextWithInvalidMediaPayload(t *testing.T) {
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:8080/ws",
 	}, mb)
@@ -570,7 +614,11 @@ func TestIsThoughtPayload(t *testing.T) {
 
 func TestMintClawClientChannel_HandleServerMessage_IgnoresThought(t *testing.T) {
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:8080/ws",
 	}, mb)
@@ -598,7 +646,11 @@ func TestMintClawClientChannel_HandleServerMessage_IgnoresThought(t *testing.T) 
 
 func TestMintClawClientChannel_HandleServerMessage_IgnoresLegacyThoughtBool(t *testing.T) {
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{Type: config.ChannelMintClawClient, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelMintClawClient,
+		Enabled:   true,
+		AllowFrom: config.FlexibleStringSlice{"mintclaw-remote"},
+	}
 	ch, err := NewMintClawClientChannel(bc, &config.MintClawClientSettings{
 		URL: "ws://localhost:8080/ws",
 	}, mb)

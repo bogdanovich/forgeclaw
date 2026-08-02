@@ -299,14 +299,25 @@ func waitForSlackRunning(t *testing.T, ch *SlackChannel, want bool) {
 func TestSlackChannelIsAllowed(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 
-	t.Run("empty allowlist allows all", func(t *testing.T) {
+	t.Run("empty allowlist denies all", func(t *testing.T) {
 		bc := &config.Channel{Type: config.ChannelSlack, Enabled: true, AllowFrom: []string{}}
 		cfg := &config.SlackSettings{}
 		cfg.BotToken = *config.NewSecureString("xoxb-test")
 		cfg.AppToken = *config.NewSecureString("xapp-test")
 		ch, _ := NewSlackChannel(bc, cfg, msgBus)
+		if ch.IsAllowed("U_ANYONE") {
+			t.Error("empty allowlist should deny all users")
+		}
+	})
+
+	t.Run("wildcard explicitly allows all", func(t *testing.T) {
+		bc := &config.Channel{Type: config.ChannelSlack, Enabled: true, AllowFrom: []string{"*"}}
+		cfg := &config.SlackSettings{}
+		cfg.BotToken = *config.NewSecureString("xoxb-test")
+		cfg.AppToken = *config.NewSecureString("xapp-test")
+		ch, _ := NewSlackChannel(bc, cfg, msgBus)
 		if !ch.IsAllowed("U_ANYONE") {
-			t.Error("empty allowlist should allow all users")
+			t.Error("wildcard allowlist should allow all users")
 		}
 	})
 

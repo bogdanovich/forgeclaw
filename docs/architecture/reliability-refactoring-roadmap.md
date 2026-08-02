@@ -130,18 +130,18 @@ the in-memory bus. A durable outbound outbox is needed to survive the process bo
 - Documentation promises at-least-once delivery with explicit ambiguity, not universal exactly-once delivery that
   arbitrary chat APIs cannot provide.
 
-### R3: Empty Channel Allowlists Are Open
+### R3: Empty Channel Allowlists Deny by Default
 
-`BaseChannel` currently treats an empty `allow_from` list as allow-all. Documentation examples repeat that behavior,
-while startup emits only a warning. This is an intentional compatibility rule, but it conflicts with secure defaults
-for a personal agent runtime.
+Status: implemented. `BaseChannel` treats omitted, empty, and blank-only `allow_from` lists as deny-all. Explicit
+`["*"]` configuration remains available for intentionally public channels, and doctor distinguishes blocked channels
+from public ones.
 
 #### Direction
 
 - Make omitted or empty `allow_from` deny all senders.
 - Require `allow_from: ["*"]` for a public channel.
-- Add a migration mode or one-release compatibility warning if existing installations cannot be changed atomically.
-- Make onboarding capture an owner identity before enabling an inbound channel.
+- Audit and update deployed configurations before rolling out the new runtime.
+- Make onboarding require an owner identity or explicit public policy before enabling an inbound channel.
 
 #### Acceptance Criteria
 

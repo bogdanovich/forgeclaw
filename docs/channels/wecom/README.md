@@ -29,7 +29,7 @@ Open the Web UI, navigate to **Channels → WeCom**, and click the QR binding bu
 Run:
 
 ```bash
-mintclaw auth wecom
+mintclaw auth wecom --allow-from YOUR_USER_ID
 ```
 
 The command:
@@ -38,10 +38,12 @@ The command:
 3. Polls for confirmation — after scanning, you must also **confirm the login inside the WeCom app**
 4. On success, writes `bot_id` and `secret` into `channels.wecom` and saves the config
 
+Use `--allow-from` more than once for multiple trusted senders. Use `--public` instead only when every sender should be accepted. The Web UI QR flow likewise requires `allow_from` to be configured before binding.
+
 The default timeout is **5 minutes**. Use `--timeout` to extend it:
 
 ```bash
-mintclaw auth wecom --timeout 10m
+mintclaw auth wecom --allow-from YOUR_USER_ID --timeout 10m
 ```
 
 > ⚠️ Scanning the QR code is not enough — you must also tap **Confirm** inside the WeCom app, otherwise the command will time out.
@@ -60,7 +62,7 @@ If you already have a `bot_id` and `secret` from the WeCom AI Bot platform, conf
       "secret": "YOUR_SECRET",
       "websocket_url": "wss://openws.work.weixin.qq.com",
       "send_thinking_message": true,
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": ""
     }
   }
@@ -78,7 +80,7 @@ If you already have a `bot_id` and `secret` from the WeCom AI Bot platform, conf
 | `secret` | string | — | WeCom AI Bot secret. Stored encrypted in `.security.yml`. Required when enabled. |
 | `websocket_url` | string | `wss://openws.work.weixin.qq.com` | WeCom WebSocket endpoint. |
 | `send_thinking_message` | bool | `true` | Send a `Processing...` message before the streamed reply begins. |
-| `allow_from` | array | `[]` | Sender allowlist. Empty means allow all senders. |
+| `allow_from` | array | `[]` | Sender allowlist. Empty denies all senders; use `["*"]` for public access. |
 | `reasoning_channel_id` | string | `""` | Optional chat ID to route reasoning/thinking output to a separate conversation. |
 
 ### Environment Variables
@@ -127,12 +129,12 @@ All fields can be overridden via environment variables with the prefix `MINTCLAW
 ### QR binding times out
 
 - After scanning the QR code, you must also **confirm the login inside the WeCom app**. Scanning alone is not enough.
-- Re-run with a larger `--timeout`: `mintclaw auth wecom --timeout 10m`
+- Re-run with a larger `--timeout`: `mintclaw auth wecom --allow-from YOUR_USER_ID --timeout 10m`
 - If the QR code in the terminal is hard to scan, use the **QR Code Link** printed below it to open in a browser.
 
 ### QR code expired
 
-- The QR code has a limited validity. Re-run `mintclaw auth wecom` to get a fresh one.
+- The QR code has a limited validity. Re-run `mintclaw auth wecom --allow-from YOUR_USER_ID` to get a fresh one.
 
 ### WebSocket connection fails
 

@@ -16,6 +16,7 @@ import (
 
 const (
 	CheckGatewayPublicExposure    = "gateway.public_exposure"
+	CheckChannelEmptyAllowFrom    = "channels.empty_allow_from"
 	CheckChannelOpenAllowFrom     = "channels.open_allow_from"
 	CheckChannelPermissiveTrigger = "channels.permissive_group_trigger"
 	CheckToolApprovalAllowAll     = "tools.approval_allow_all"
@@ -76,16 +77,31 @@ func checkChannels(cfg *config.Config) []Finding {
 		if ch == nil || !ch.Enabled {
 			continue
 		}
-		if len(ch.AllowFrom) == 0 || sliceHasWildcard(ch.AllowFrom) {
+		if !channelSupportsInbound(name, ch) {
+			continue
+		}
+		if len(config.NormalizeAllowFrom(ch.AllowFrom)) == 0 {
+			findings = append(findings, newFinding(
+				CheckChannelEmptyAllowFrom,
+				SeverityFail,
+				"Enabled channel denies all senders",
+				"An empty allow_from blocks every inbound sender under the secure default.",
+				"Set allow_from to trusted sender IDs, or use [\"*\"] for intentional public access.",
+				Evidence{
+					Path:    fmt.Sprintf("channel_list.%s.allow_from", name),
+					Summary: "enabled channel has empty allow_from and cannot receive messages",
+				},
+			))
+		} else if config.IsPublicAllowFrom(ch.AllowFrom) {
 			findings = append(findings, newFinding(
 				CheckChannelOpenAllowFrom,
 				SeverityWarning,
-				"Enabled remote channel allows all senders",
-				"An empty or wildcard allow_from permits any sender accepted by the channel transport.",
+				"Enabled channel intentionally allows all senders",
+				"A wildcard allow_from permits any sender accepted by the channel transport.",
 				"Set allow_from to explicit user, chat, or account identifiers where the channel supports it.",
 				Evidence{
 					Path:    fmt.Sprintf("channel_list.%s.allow_from", name),
-					Summary: "enabled channel has empty or wildcard allow_from",
+					Summary: "enabled channel has wildcard allow_from",
 				},
 			))
 		}
@@ -104,6 +120,14 @@ func checkChannels(cfg *config.Config) []Finding {
 		}
 	}
 	return findings
+}
+
+func channelSupportsInbound(name string, ch *config.Channel) bool {
+	channelType := strings.TrimSpace(ch.Type)
+	if channelType == "" {
+		channelType = strings.TrimSpace(name)
+	}
+	return channelType != config.ChannelSlackWebHook && channelType != config.ChannelTeamsWebHook
 }
 
 func checkToolRisks(cfg *config.Config) []Finding {
@@ -486,15 +510,6 @@ func isLoopbackURL(raw string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-func sliceHasWildcard(values []string) bool {
-	for _, value := range values {
-		if strings.TrimSpace(value) == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 func groupTriggerPermissive(trigger config.GroupTriggerConfig) bool {

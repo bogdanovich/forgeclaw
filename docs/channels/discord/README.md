@@ -39,7 +39,7 @@ Discord is a free voice, video, and text chat application designed for communiti
 | -------------------- | ------ | -------- | --------------------------------------------------------------------------- |
 | enabled              | bool   | Yes      | Whether to enable the Discord channel                                       |
 | token                | string | Yes      | Discord Bot Token                                                           |
-| allow_from           | array  | No       | Allowlist of user IDs; empty means all users are allowed                    |
+| allow_from           | array  | No       | Allowlist of user IDs; empty denies all users; use `["*"]` for public access                    |
 | placeholder          | object | No       | Placeholder message config shown while the agent is working                 |
 | group_trigger        | object | No       | Group trigger settings (example: { "mention_only": false })                 |
 | reasoning_channel_id | string | No       | Optional target channel ID for reasoning/thinking output                    |

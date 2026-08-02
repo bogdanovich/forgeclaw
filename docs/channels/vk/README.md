@@ -27,7 +27,7 @@ The VK channel uses Bots Long Poll API for bot-based communication with VK socia
 | enabled          | bool   | Yes      | Whether to enable the VK channel                                   |
 | token            | string | Yes      | Set to `NOT_HERE` - token is stored securely (see Token Storage)   |
 | group_id         | int    | Yes      | VK Community ID (Group ID)                                         |
-| allow_from       | array  | No       | Allowlist of user IDs; empty means all users are allowed           |
+| allow_from       | array  | No       | Allowlist of user IDs; empty denies all users; use `["*"]` for public access           |
 | group_trigger    | object | No       | Configuration for group chat triggers                              |
 
 ### Token Storage

@@ -166,7 +166,7 @@
     "discord": {
       "enabled": false,
       "type": "discord",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "group_trigger": {
         "mention_only": false
       },
@@ -179,7 +179,7 @@
     "qq": {
       "enabled": false,
       "type": "qq",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "app_id": "YOUR_QQ_APP_ID",
@@ -189,7 +189,7 @@
     "maixcam": {
       "enabled": false,
       "type": "maixcam",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "host": "0.0.0.0",
@@ -199,7 +199,7 @@
     "whatsapp": {
       "enabled": false,
       "type": "whatsapp",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "bridge_url": "ws://localhost:3001",
@@ -210,7 +210,7 @@
     "feishu": {
       "enabled": false,
       "type": "feishu",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "placeholder": {
         "enabled": true,
@@ -228,7 +228,7 @@
     "dingtalk": {
       "enabled": false,
       "type": "dingtalk",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "client_id": "YOUR_CLIENT_ID",
@@ -238,7 +238,7 @@
     "slack": {
       "enabled": false,
       "type": "slack",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "bot_token": "xoxb-YOUR-BOT-TOKEN",
@@ -248,7 +248,7 @@
     "matrix": {
       "enabled": false,
       "type": "matrix",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "group_trigger": {
         "mention_only": true
       },
@@ -270,7 +270,7 @@
     "line": {
       "enabled": false,
       "type": "line",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "channel_secret": "YOUR_LINE_CHANNEL_SECRET",
@@ -281,7 +281,7 @@
     "onebot": {
       "enabled": false,
       "type": "onebot",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "group_trigger": {
         "prefixes": []
@@ -296,7 +296,7 @@
       "_comment": "WeCom AI Bot over WebSocket.",
       "enabled": false,
       "type": "wecom",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": "",
       "settings": {
         "bot_id": "YOUR_BOT_ID",
@@ -308,7 +308,7 @@
     "mintclaw": {
       "enabled": false,
       "type": "mintclaw",
-      "allow_from": [],
+      "allow_from": ["mintclaw-user"],
       "settings": {
         "token": "YOUR_MINTCLAW_TOKEN",
         "allow_token_query": false,
@@ -321,7 +321,7 @@
     "mintclaw_client": {
       "enabled": false,
       "type": "mintclaw_client",
-      "allow_from": [],
+      "allow_from": ["mintclaw-remote"],
       "settings": {
         "url": "wss://remote-mintclaw-server/mintclaw/ws",
         "token": "YOUR_MINTCLAW_TOKEN",
@@ -333,7 +333,7 @@
     "irc": {
       "enabled": false,
       "type": "irc",
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "group_trigger": {
         "mention_only": true
       },

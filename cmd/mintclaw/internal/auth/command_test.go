@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,5 +54,34 @@ func TestNewAuthCommand(t *testing.T) {
 
 		assert.Nil(t, subcmd.PersistentPreRun)
 		assert.Nil(t, subcmd.PersistentPostRun)
+	}
+}
+
+func TestExplicitChannelAllowFrom(t *testing.T) {
+	t.Run("requires explicit policy", func(t *testing.T) {
+		_, err := explicitChannelAllowFrom(nil, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--allow-from")
+	})
+
+	t.Run("normalizes sender IDs", func(t *testing.T) {
+		allowFrom, err := explicitChannelAllowFrom([]string{" owner-1 ", ""}, false)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"owner-1"}, []string(allowFrom))
+	})
+
+	t.Run("public uses wildcard", func(t *testing.T) {
+		allowFrom, err := explicitChannelAllowFrom(nil, true)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"*"}, []string(allowFrom))
+	})
+}
+
+func TestChannelAuthCommandsRequireExplicitAllowPolicy(t *testing.T) {
+	commands := []*cobra.Command{newWeixinCommand(), newWeComCommand()}
+	for _, command := range commands {
+		err := command.RunE(command, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--allow-from")
 	}
 }

@@ -13,7 +13,7 @@ import (
 func TestHandleMessage_DoesNotConsumeGenericCommandsLocally(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &TelegramChannel{
-		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, []string{"*"}),
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}

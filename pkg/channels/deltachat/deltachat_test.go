@@ -194,6 +194,7 @@ func TestHandleMessageMarksSeenOnlyAfterDispatch(t *testing.T) {
 
 			ch := newTestChannelWithBus(t, msgBus, func(bc *config.Channel) {
 				bc.GroupTrigger.MentionOnly = tt.mentionOnly
+				bc.AllowFrom = config.FlexibleStringSlice{"alice@example.org"}
 			})
 			ch.ctx = context.Background()
 			ch.accountID = 7

@@ -161,3 +161,62 @@ func TestToolApprovalAllowAllIsFailFinding(t *testing.T) {
 	}
 	t.Fatalf("missing allow-all approval finding: %+v", findings)
 }
+
+func TestChannelAllowFromFindingsDistinguishEmptyAndWildcard(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channels = config.ChannelsConfig{
+		"blocked": {
+			Type:      config.ChannelTelegram,
+			Enabled:   true,
+			AllowFrom: config.FlexibleStringSlice{"", "  "},
+		},
+		"public": {
+			Type:      config.ChannelSlack,
+			Enabled:   true,
+			AllowFrom: config.FlexibleStringSlice{"*"},
+		},
+		"private": {
+			Type:      config.ChannelDiscord,
+			Enabled:   true,
+			AllowFrom: config.FlexibleStringSlice{"owner-1"},
+		},
+	}
+
+	findings := checkChannels(cfg)
+	assertChannelFinding(t, findings, CheckChannelEmptyAllowFrom, SeverityFail, "channel_list.blocked.allow_from")
+	assertChannelFinding(t, findings, CheckChannelOpenAllowFrom, SeverityWarning, "channel_list.public.allow_from")
+	for _, finding := range findings {
+		if len(finding.Evidence) > 0 && finding.Evidence[0].Path == "channel_list.private.allow_from" {
+			t.Fatalf("private allowlist produced finding: %+v", finding)
+		}
+	}
+}
+
+func TestChannelAllowFromFindingsSkipOutputOnlyChannels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channels = config.ChannelsConfig{
+		"slack-output": {
+			Type:    config.ChannelSlackWebHook,
+			Enabled: true,
+		},
+		"teams-output": {
+			Type:    config.ChannelTeamsWebHook,
+			Enabled: true,
+		},
+	}
+
+	if findings := checkChannels(cfg); len(findings) != 0 {
+		t.Fatalf("output-only channels produced findings: %+v", findings)
+	}
+}
+
+func assertChannelFinding(t *testing.T, findings []Finding, id string, severity Severity, path string) {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.ID == id && finding.Severity == severity &&
+			len(finding.Evidence) > 0 && finding.Evidence[0].Path == path {
+			return
+		}
+	}
+	t.Fatalf("missing %s %s finding for %s: %+v", severity, id, path, findings)
+}

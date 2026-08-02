@@ -496,6 +496,9 @@ func (c *WeComChannel) dispatchIncoming(reqID string, msg wecomIncomingMessage) 
 		CanonicalID: identity.BuildCanonicalID("wecom", senderID),
 		DisplayName: senderID,
 	}
+	if !c.IsAllowedSender(sender) {
+		return nil
+	}
 
 	var (
 		content   string

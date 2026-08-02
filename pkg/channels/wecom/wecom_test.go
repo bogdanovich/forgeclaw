@@ -87,6 +87,49 @@ func TestDispatchIncoming_UsesActualChatIDAndStoresReqIDRoute(t *testing.T) {
 	}
 }
 
+func TestDispatchIncoming_DeniesBeforeSideEffects(t *testing.T) {
+	t.Parallel()
+
+	messageBus := bus.NewMessageBus()
+	ch := newTestWeComChannelWithAllowFrom(t, messageBus, config.FlexibleStringSlice{"trusted-user"})
+
+	var commands []wecomCommand
+	ch.commandSend = func(cmd wecomCommand, _ time.Duration) (wecomEnvelope, error) {
+		commands = append(commands, cmd)
+		return wecomTestAck(nil), nil
+	}
+
+	msg := wecomIncomingMessage{
+		MsgID:    "msg-denied",
+		ChatID:   "chat-denied",
+		ChatType: "direct",
+		MsgType:  "image",
+		Image: &struct {
+			URL    string `json:"url"`
+			AESKey string `json:"aeskey,omitempty"`
+		}{URL: "https://example.com/blocked.jpg"},
+	}
+	msg.From.UserID = "blocked-user"
+
+	if err := ch.dispatchIncoming("req-denied", msg); err != nil {
+		t.Fatalf("dispatchIncoming() error = %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("blocked sender produced %d outbound commands", len(commands))
+	}
+	if _, ok := ch.getTurn("chat-denied"); ok {
+		t.Fatal("blocked sender queued a turn")
+	}
+	if _, ok := ch.routes.Get("chat-denied"); ok {
+		t.Fatal("blocked sender persisted a reply route")
+	}
+	select {
+	case inbound := <-messageBus.InboundChan():
+		t.Fatalf("blocked sender published inbound message: %+v", inbound)
+	default:
+	}
+}
+
 func TestNewChannel_DoesNotRegisterMessageSplitLimit(t *testing.T) {
 	t.Parallel()
 
@@ -622,11 +665,23 @@ func TestSendMedia_SendsActiveFile(t *testing.T) {
 }
 
 func newTestWeComChannel(t *testing.T, messageBus *bus.MessageBus) *WeComChannel {
+	return newTestWeComChannelWithAllowFrom(t, messageBus, config.FlexibleStringSlice{"*"})
+}
+
+func newTestWeComChannelWithAllowFrom(
+	t *testing.T,
+	messageBus *bus.MessageBus,
+	allowFrom config.FlexibleStringSlice,
+) *WeComChannel {
 	t.Helper()
 
 	cfg := &config.WeComSettings{BotID: "bot-1"}
 	cfg.SetSecret("secret-1")
-	bc := &config.Channel{Type: config.ChannelWeCom, Enabled: true}
+	bc := &config.Channel{
+		Type:      config.ChannelWeCom,
+		Enabled:   true,
+		AllowFrom: allowFrom,
+	}
 	ch, err := NewChannel(bc, cfg, messageBus)
 	if err != nil {
 		t.Fatalf("NewChannel() error = %v", err)
