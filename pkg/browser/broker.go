@@ -32,8 +32,15 @@ type Worker interface {
 	Close(context.Context) error
 }
 
+// WorkerOpenResult transfers exactly one lifecycle owner to the broker. Owner
+// is admitted as a worker only when Open succeeds; after a failed startup it is
+// retained solely so cleanup can be retried.
+type WorkerOpenResult struct {
+	Owner Worker
+}
+
 type WorkerFactory interface {
-	Open(context.Context, WorkerOpenRequest) (Worker, error)
+	Open(context.Context, WorkerOpenRequest) (WorkerOpenResult, error)
 }
 
 type OpenRequest struct {
@@ -114,21 +121,17 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 	if err = broker.store.CreateSession(ctx, session); err != nil {
 		return Session{}, err
 	}
-	worker, openErr := broker.factory.Open(ctx, WorkerOpenRequest{
+	opened, openErr := broker.factory.Open(ctx, WorkerOpenRequest{
 		SessionID: session.ID, Target: session.Target, Profile: session.Profile,
 		DryRun: session.DryRun, Limits: limits,
 	})
 	if openErr != nil {
-		session.State = SessionLost
-		session.SafeFailure = "worker_unavailable"
-		session.Revision++
-		session.UpdatedAt = broker.now().UTC().UnixNano()
-		if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
-			return Session{}, errors.Join(ErrWorkerUnavailable, updateErr)
-		}
-		return session, ErrWorkerUnavailable
+		return broker.finishFailedOpen(ctx, session, opened.Owner)
 	}
-	slot := &workerSlot{worker: worker}
+	if opened.Owner == nil {
+		return broker.finishFailedOpen(ctx, session, nil)
+	}
+	slot := &workerSlot{worker: opened.Owner}
 	broker.slots[session.ID] = slot
 	ready := session
 	ready.State = SessionReady
@@ -153,6 +156,51 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 		return session, errors.Join(persistReadyErr, ErrWorkerUnavailable)
 	}
 	return ready, nil
+}
+
+func (broker *Broker) finishFailedOpen(
+	ctx context.Context,
+	session Session,
+	cleanup Worker,
+) (Session, error) {
+	if cleanup == nil {
+		session.State = SessionLost
+		session.SafeFailure = "worker_unavailable"
+		session.Revision++
+		session.UpdatedAt = broker.now().UTC().UnixNano()
+		if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
+			return Session{}, errors.Join(ErrWorkerUnavailable, updateErr)
+		}
+		return session, ErrWorkerUnavailable
+	}
+
+	slot := &workerSlot{worker: cleanup, safeFailure: "worker_unavailable"}
+	broker.slots[session.ID] = slot
+	closing := session
+	closing.State = SessionClosing
+	closing.Revision++
+	closing.UpdatedAt = broker.now().UTC().UnixNano()
+	if updateErr := broker.store.UpdateSession(ctx, closing.Revision-1, closing); updateErr != nil {
+		if closeErr := broker.cleanupSlot(ctx, slot); closeErr == nil {
+			delete(broker.slots, session.ID)
+		}
+		return session, errors.Join(ErrWorkerUnavailable, updateErr)
+	}
+	session = closing
+	if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
+		return session, ErrWorkerUnavailable
+	}
+
+	session.State = SessionLost
+	session.SafeFailure = slot.safeFailure
+	session.Revision++
+	session.UpdatedAt = broker.now().UTC().UnixNano()
+	session.LastActivityAt = session.UpdatedAt
+	if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
+		return session, errors.Join(ErrWorkerUnavailable, updateErr)
+	}
+	delete(broker.slots, session.ID)
+	return session, ErrWorkerUnavailable
 }
 
 func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string) (Session, error) {
