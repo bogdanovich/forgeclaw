@@ -96,5 +96,5 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run browser lifecycle tests
-        run: go test -tags goolm,stdjson ./pkg/browser
+      - name: Run Windows platform tests
+        run: go test -tags goolm,stdjson ./pkg/browser ./pkg/fileutil
