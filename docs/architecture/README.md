@@ -43,4 +43,5 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Passive Diagnostics](passive-diagnostics.md): bounded redacted execution traces for direct human and Codex debugging without runtime coupling.
 - [Current Refactoring Audit](current-refactoring-audit.md): near-term architecture risks around metadata, delivery, turn state, context manager migration, and provider contracts.
 - [Reliability and Refactoring Roadmap](reliability-refactoring-roadmap.md): prioritized durability, security, ownership, provider-contract, and cross-platform verification work with explicit completion criteria.
+- [Test Suite Performance Roadmap](test-suite-performance-roadmap.md): measured test-runtime bottlenecks, coverage-preserving remediation phases, and explicit completion criteria.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
