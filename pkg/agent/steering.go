@@ -787,7 +787,7 @@ func (al *AgentLoop) hardAbortScope(scope runtimeSessionScope) error {
 	// Before tool execution, restore the complete pre-turn snapshot. Once a tool
 	// has started, preserve the durable unresolved intent for side-effect recovery.
 	if ts.session != nil && !ts.opts.NoHistory {
-		_, err := ts.restoreSessionBeforeToolExecution(ts.agent)
+		_, err := ts.restoreSessionBeforeToolExecution()
 		if err != nil {
 			return fmt.Errorf("restore aborted turn: %w", err)
 		}

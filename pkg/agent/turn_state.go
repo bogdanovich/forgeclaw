@@ -642,7 +642,7 @@ func (ts *turnState) tryMarkToolExecutionStarted() bool {
 	return true
 }
 
-func (ts *turnState) restoreSessionBeforeToolExecution(agent *AgentInstance) (bool, error) {
+func (ts *turnState) restoreSessionBeforeToolExecution() (bool, error) {
 	if ts == nil {
 		return false, nil
 	}
@@ -651,7 +651,7 @@ func (ts *turnState) restoreSessionBeforeToolExecution(agent *AgentInstance) (bo
 	if ts.toolExecutionStarted {
 		return false, nil
 	}
-	return true, ts.restoreSession(agent)
+	return true, ts.restoreSession()
 }
 
 func (ts *turnState) toolExecutionsSnapshot() []ToolExecutionRecord {
@@ -911,13 +911,16 @@ func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
 	ts.captureRestorePoint(history, summary)
 }
 
-func (ts *turnState) restoreSession(agent *AgentInstance) error {
+func (ts *turnState) restoreSession() error {
+	if ts == nil || ts.session == nil {
+		return nil
+	}
 	ts.mu.RLock()
 	history := append([]providers.Message(nil), ts.restorePointHistory...)
 	summary := ts.restorePointSummary
 	ts.mu.RUnlock()
 
-	return agent.Sessions.RestoreTurnSnapshot(context.Background(), ts.sessionKey, history, summary)
+	return ts.session.RestoreTurnSnapshot(context.Background(), ts.sessionKey, history, summary)
 }
 
 func matchingTurnMessageTail(history, persisted []providers.Message) int {
