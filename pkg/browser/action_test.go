@@ -192,6 +192,10 @@ func TestBrokerRejectsNonEmptyBlankDriverObservation(t *testing.T) {
 			name:        "dialog",
 			observation: DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin, PendingDialog: dialog},
 		},
+		{
+			name:        "truncated",
+			observation: DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin, Truncated: true},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -247,6 +247,30 @@ func TestBrowserObserveResolvesDefaultTabAndReturnsBoundedProjection(t *testing.
 	}
 }
 
+func TestBrowserObserveDeliversEscapedTruncatedSnapshotWithinToolLimit(t *testing.T) {
+	cfg := browserToolTestConfig()
+	cfg.Tools.Browser.Limits.ToolResultBytes = config.BrowserToolResultEnvelopeBytes + 512
+	snapshot := `- text "` + strings.Repeat(`quoted\\path"`, 12)
+	source := &fakeBrowserToolSource{
+		available: true,
+		status:    browser.Session{ID: "browser_session_1", State: browser.SessionReady, TabID: "tab_primary"},
+		observe: browser.Observation{
+			SessionID: "browser_session_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+			SnapshotGeneration: 3, URL: "https://example.com/listing", Origin: "https://example.com",
+			Title: "Listing", Snapshot: snapshot, Truncated: true,
+		},
+	}
+	result := NewBrowserObserveTool(cfg, source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1",
+	})
+	var observation browserObservationView
+	decodeBrowserToolResult(t, result, &observation)
+	if !observation.Truncated || observation.Snapshot != snapshot ||
+		len(result.ContentForLLM()) > cfg.Tools.Browser.Limits.ToolResultBytes {
+		t.Fatalf("escaped observation = %#v; encoded bytes = %d", observation, len(result.ContentForLLM()))
+	}
+}
+
 func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 	binding := browser.ApprovalBinding{
 		PreparedActionID: "prepared_1", ActionHash: strings.Repeat("a", 64),
@@ -269,7 +293,7 @@ func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 		observe: browser.Observation{
 			SessionID: "browser_session_1", TabID: "tab_primary", SnapshotID: "snapshot_2",
 			SnapshotGeneration: 4, URL: "https://example.com/done", Origin: "https://example.com",
-			Snapshot: "- status Published",
+			Snapshot: "- status Published", Truncated: true,
 		},
 	}
 	tool := NewBrowserActTool(browserToolTestConfig(), source)
@@ -292,6 +316,7 @@ func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 	var result browserActionResult
 	decodeBrowserToolResult(t, tool.Execute(resumeCtx, args), &result)
 	if result.InvocationID != "invocation_1" || result.Observation == nil ||
+		!result.Observation.Truncated ||
 		source.executePrepared != "prepared_1" || source.executeApproval == nil ||
 		*source.executeApproval != binding || source.prepareRequest.RequestID == "" ||
 		source.prepareRequest.Owner != source.executeOwner {

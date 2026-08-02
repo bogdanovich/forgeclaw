@@ -316,6 +316,16 @@ The tool accepts `browser_session_id` and an optional `tab_id`. It returns:
 - bounded tab summaries and pending dialog metadata; and
 - truncation and limit metadata.
 
+When a syntactically valid driver snapshot exceeds the configured byte or
+reference limit, the adapter returns a deterministic line-bounded prefix and
+sets `truncated` to `true`. Only references retained in that prefix receive
+broker authority; omitted references cannot be resolved or used by an action.
+The projection budgets JSON-encoded snapshot growth plus fixed tool-envelope
+headroom, so an accepted observation remains deliverable through the
+first-party tool result limit. If even the first line does not fit, the adapter
+returns an empty snapshot with `truncated` set. Malformed reference syntax still
+fails closed instead of being truncated.
+
 B1 does not return screenshot bytes or screenshot artifact references.
 Screenshots belong to B2. It also omits page HTML, cookies, storage state,
 response bodies, arbitrary console output, and raw driver objects.

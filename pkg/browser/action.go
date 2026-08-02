@@ -27,6 +27,7 @@ type Observation struct {
 	Title              string             `json:"title,omitempty"`
 	Snapshot           string             `json:"snapshot"`
 	PendingDialog      *DialogObservation `json:"pending_dialog,omitempty"`
+	Truncated          bool               `json:"truncated"`
 }
 
 type DialogObservation struct {
@@ -104,6 +105,7 @@ func (broker *Broker) Observe(ctx context.Context, owner Owner, sessionID, tabID
 		SnapshotGeneration: session.SnapshotGeneration, URL: driverObservation.URL,
 		Origin: driverObservation.Origin, Title: driverObservation.Title, Snapshot: visibleSnapshot,
 		PendingDialog: cloneDialogObservation(driverObservation.PendingDialog),
+		Truncated:     driverObservation.Truncated,
 	}, nil
 }
 
@@ -757,7 +759,7 @@ func (broker *Broker) originNetworkAllowed(ctx context.Context, origin string) b
 func validInitialBlankObservation(observation DriverObservation) bool {
 	return observation.URL == initialBlankOrigin && observation.Origin == initialBlankOrigin &&
 		observation.Title == "" && observation.Snapshot == "" && len(observation.Elements) == 0 &&
-		observation.PendingDialog == nil
+		observation.PendingDialog == nil && !observation.Truncated
 }
 
 func validateBlankObservation(observation DriverObservation, expectedOrigin string) error {
