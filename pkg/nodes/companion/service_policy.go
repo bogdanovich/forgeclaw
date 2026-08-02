@@ -106,6 +106,13 @@ func normalizeServicePolicies(policies ServicePolicies) (ServicePolicies, error)
 		revisions[profile.Revision] = alias
 		normalized[alias] = profile
 	}
+	if _, err := serviceCapabilityDescriptors(
+		normalized,
+		serviceEnforcement{status: true, logs: true, actions: true},
+		"linux",
+	); err != nil {
+		return nil, fmt.Errorf("service policy authority cannot form a bounded descriptor: %w", err)
+	}
 	return normalized, nil
 }
 

@@ -2,6 +2,7 @@ package companion
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,40 @@ func TestNormalizeServicePoliciesRejectsUnsafeAuthority(t *testing.T) {
 				t.Fatalf("normalizeServicePolicies() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeServicePoliciesRejectsAggregateSchemaBeyondCeiling(t *testing.T) {
+	policies := make(ServicePolicies, 8)
+	actions := []nodes.ServiceAction{
+		nodes.ServiceActionDisable,
+		nodes.ServiceActionEnable,
+		nodes.ServiceActionReload,
+		nodes.ServiceActionRestart,
+		nodes.ServiceActionStart,
+		nodes.ServiceActionStop,
+	}
+	for profileIndex := 0; profileIndex < 8; profileIndex++ {
+		services := make(map[string]ServicePolicyEntry, nodes.MaxServicesPerProfile)
+		for serviceIndex := 0; serviceIndex < nodes.MaxServicesPerProfile; serviceIndex++ {
+			alias := fmt.Sprintf("service_%02d_%02d", profileIndex, serviceIndex)
+			services[alias] = ServicePolicyEntry{
+				Unit:                alias + ".service",
+				Actions:             append([]nodes.ServiceAction(nil), actions...),
+				ExpectedActiveState: "active",
+			}
+		}
+		alias := fmt.Sprintf("profile-%02d", profileIndex)
+		policies[alias] = ServicePolicyProfile{
+			Enabled:  true,
+			Revision: alias + "-v1",
+			Manager:  "systemd-system",
+			Services: services,
+		}
+	}
+	_, err := normalizeServicePolicies(policies)
+	if err == nil || !strings.Contains(err.Error(), "bounded descriptor") {
+		t.Fatalf("aggregate service authority error = %v", err)
 	}
 }
 

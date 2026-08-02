@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,46 @@ func TestServiceActionSchemaDeduplicatesAuthorityAcrossProfiles(t *testing.T) {
 	}, descriptor, "local", "policy-v1", time.Unix(1, 0), time.Minute)
 	if err != nil {
 		t.Fatalf("authorized duplicate pair was unusable: %v", err)
+	}
+}
+
+func TestServiceActionSchemaFitsMaximumSingleProfileAuthority(t *testing.T) {
+	actions := []ServiceAction{
+		ServiceActionDisable,
+		ServiceActionEnable,
+		ServiceActionReload,
+		ServiceActionRestart,
+		ServiceActionStart,
+		ServiceActionStop,
+	}
+	services := make([]ServiceDescriptor, MaxServicesPerProfile)
+	for index := range services {
+		prefix := fmt.Sprintf("service_%02d_", index)
+		services[index] = ServiceDescriptor{
+			Alias:   prefix + strings.Repeat("x", MaxAliasLength-len(prefix)),
+			Actions: append([]ServiceAction(nil), actions...),
+		}
+	}
+	profiles := []ServiceProfileDescriptor{{
+		Alias:          "maximum-services",
+		Revision:       "maximum-services-v1",
+		Manager:        "systemd",
+		Services:       services,
+		LogLimits:      ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1},
+		ActionApproval: "required",
+	}}
+	descriptor := CommandDescriptor{
+		Name:            "service.action.v1",
+		InputSchema:     ServiceCommandInputSchema("service.action.v1", profiles),
+		OutputSchema:    ServiceCommandOutputSchema("service.action.v1"),
+		Risk:            RiskPrivileged,
+		ServiceProfiles: profiles,
+	}
+	if len(descriptor.InputSchema) > MaxSchemaBytes {
+		t.Fatalf("maximum action schema = %d bytes, limit %d", len(descriptor.InputSchema), MaxSchemaBytes)
+	}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("maximum single-profile authority: %v", err)
 	}
 }
 

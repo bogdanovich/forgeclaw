@@ -160,12 +160,8 @@ func ServiceCommandInputSchema(
 	command string,
 	profiles []ServiceProfileDescriptor,
 ) json.RawMessage {
-	type actionPair struct {
-		service string
-		action  ServiceAction
-	}
 	aliasSet := make(map[string]struct{})
-	pairSet := make(map[actionPair]struct{})
+	actionsByAlias := make(map[string]map[ServiceAction]struct{})
 	entriesMax := 0
 	ageSecondsMax := 0
 	for _, profile := range profiles {
@@ -174,7 +170,10 @@ func ServiceCommandInputSchema(
 		for _, service := range profile.Services {
 			aliasSet[service.Alias] = struct{}{}
 			for _, action := range service.Actions {
-				pairSet[actionPair{service: service.Alias, action: action}] = struct{}{}
+				if actionsByAlias[service.Alias] == nil {
+					actionsByAlias[service.Alias] = make(map[ServiceAction]struct{})
+				}
+				actionsByAlias[service.Alias][action] = struct{}{}
 			}
 		}
 	}
@@ -183,25 +182,24 @@ func ServiceCommandInputSchema(
 		aliases = append(aliases, alias)
 	}
 	sort.Strings(aliases)
-	pairKeys := make([]actionPair, 0, len(pairSet))
-	for pair := range pairSet {
-		pairKeys = append(pairKeys, pair)
-	}
-	sort.Slice(pairKeys, func(i, j int) bool {
-		if pairKeys[i].service == pairKeys[j].service {
-			return pairKeys[i].action < pairKeys[j].action
+	actionBranches := make([]any, 0, len(actionsByAlias))
+	for _, alias := range aliases {
+		actionSet := actionsByAlias[alias]
+		if len(actionSet) == 0 {
+			continue
 		}
-		return pairKeys[i].service < pairKeys[j].service
-	})
-	pairs := make([]any, 0, len(pairKeys))
-	for _, pair := range pairKeys {
-		pairs = append(pairs, map[string]any{
+		actions := make([]ServiceAction, 0, len(actionSet))
+		for action := range actionSet {
+			actions = append(actions, action)
+		}
+		sort.Slice(actions, func(i, j int) bool { return actions[i] < actions[j] })
+		actionBranches = append(actionBranches, map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"required":             []string{"service", "action"},
 			"properties": map[string]any{
-				"service": map[string]any{"const": pair.service},
-				"action":  map[string]any{"const": pair.action},
+				"service": map[string]any{"const": alias},
+				"action":  map[string]any{"enum": actions},
 			},
 		})
 	}
@@ -222,7 +220,7 @@ func ServiceCommandInputSchema(
 			"type": "integer", "minimum": 1, "maximum": ageSecondsMax,
 		}
 	case "service.action.v1":
-		schema = map[string]any{"oneOf": pairs}
+		schema = map[string]any{"oneOf": actionBranches}
 	default:
 		return json.RawMessage("false")
 	}
