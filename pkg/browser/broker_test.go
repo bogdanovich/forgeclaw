@@ -34,10 +34,11 @@ func (worker *fakeWorker) Close(context.Context) error {
 }
 
 type fakeWorkerFactory struct {
-	mu       sync.Mutex
-	openErr  error
-	requests []WorkerOpenRequest
-	workers  []*fakeWorker
+	mu            sync.Mutex
+	openErr       error
+	cleanupWorker *fakeWorker
+	requests      []WorkerOpenRequest
+	workers       []*fakeWorker
 }
 
 type failNextSessionUpdateStore struct {
@@ -62,16 +63,20 @@ func (store *failNextSessionUpdateStore) UpdateSession(
 func (factory *fakeWorkerFactory) Open(
 	_ context.Context,
 	request WorkerOpenRequest,
-) (Worker, error) {
+) (WorkerOpenResult, error) {
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
 	factory.requests = append(factory.requests, request)
 	if factory.openErr != nil {
-		return nil, factory.openErr
+		var cleanup Worker
+		if factory.cleanupWorker != nil {
+			cleanup = factory.cleanupWorker
+		}
+		return WorkerOpenResult{Owner: cleanup}, factory.openErr
 	}
 	worker := &fakeWorker{status: WorkerReady}
 	factory.workers = append(factory.workers, worker)
-	return worker, nil
+	return WorkerOpenResult{Owner: worker}, nil
 }
 
 func TestBrokerOpenAndCloseSession(t *testing.T) {
@@ -258,6 +263,101 @@ func TestBrokerPersistsSafeLostStateWhenWorkerOpenFails(t *testing.T) {
 	}
 	if strings.Contains(stored.SafeFailure, "secret") {
 		t.Fatalf("stored safe failure leaked worker error: %q", stored.SafeFailure)
+	}
+}
+
+func TestBrokerRetainsFailedOpenCleanupUntilCloseRetrySucceeds(t *testing.T) {
+	store := NewMemoryStore()
+	cleanup := &fakeWorker{closeErr: errors.New("secret cleanup failure")}
+	factory := &fakeWorkerFactory{
+		openErr: errors.New("secret startup failure"), cleanupWorker: cleanup,
+	}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Open() error = %v, want bounded ErrWorkerUnavailable", err)
+	}
+	if session.State != SessionClosing || session.SafeFailure != "" || cleanup.closed != 1 {
+		t.Fatalf("Open() session = %+v, cleanup closes = %d", session, cleanup.closed)
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored != session {
+		t.Fatalf("stored session = %+v, %v; want %+v", stored, getErr, session)
+	}
+
+	owner.ExecutionID = "execution_2"
+	if _, err = broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Open() while startup cleanup is pending error = %v, want ErrBusy", err)
+	}
+	if len(factory.requests) != 1 {
+		t.Fatalf("worker opens = %d, want 1", len(factory.requests))
+	}
+
+	cleanup.closeErr = nil
+	owner.ExecutionID = "execution_1"
+	lost, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || lost.State != SessionLost || lost.SafeFailure != "worker_unavailable" ||
+		cleanup.closed != 2 {
+		t.Fatalf("Close() retry = %+v, %v; cleanup closes = %d", lost, err, cleanup.closed)
+	}
+}
+
+func TestBrokerRetainsFailedOpenCleanupWhenClosingPersistenceFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore(), failState: SessionClosing}
+	cleanup := &fakeWorker{closeErr: errors.New("secret cleanup failure")}
+	factory := &fakeWorkerFactory{
+		openErr: errors.New("secret startup failure"), cleanupWorker: cleanup,
+	}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || !errors.Is(err, ErrStale) || session.ID == "" ||
+		session.State != SessionOpening || cleanup.closed != 1 {
+		t.Fatalf("Open() = %+v, %v; cleanup closes = %d", session, err, cleanup.closed)
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored != session {
+		t.Fatalf("stored session = %+v, %v; want %+v", stored, getErr, session)
+	}
+
+	cleanup.closeErr = nil
+	lost, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || lost.State != SessionLost || lost.SafeFailure != "worker_unavailable" ||
+		cleanup.closed != 2 {
+		t.Fatalf("Close() retry = %+v, %v; cleanup closes = %d", lost, err, cleanup.closed)
+	}
+}
+
+func TestBrokerRetainsCleanupCompleteSlotWhenClosingPersistenceFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore(), failState: SessionClosing}
+	cleanup := &fakeWorker{}
+	factory := &fakeWorkerFactory{
+		openErr: errors.New("secret startup failure"), cleanupWorker: cleanup,
+	}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || !errors.Is(err, ErrStale) || session.ID == "" ||
+		session.State != SessionOpening || cleanup.closed != 1 {
+		t.Fatalf("Open() = %+v, %v; cleanup closes = %d", session, err, cleanup.closed)
+	}
+
+	lost, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || lost.State != SessionLost || lost.SafeFailure != "worker_unavailable" ||
+		cleanup.closed != 1 {
+		t.Fatalf("Close() transition retry = %+v, %v; cleanup closes = %d", lost, err, cleanup.closed)
 	}
 }
 
