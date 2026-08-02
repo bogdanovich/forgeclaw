@@ -111,6 +111,15 @@ func TestSystemdServiceManagerRequiresCompleteReadEnforcement(t *testing.T) {
 	}
 }
 
+func TestNewSystemdServiceManagerRejectsUnusableLogOutputBudget(t *testing.T) {
+	profile := servicePolicyFixture()
+	profile.LogLimits = nodes.ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1}
+	_, err := NewSystemdServiceManager(ServicePolicies{"server-services": profile})
+	if err == nil || !strings.Contains(err.Error(), "mandatory result") {
+		t.Fatalf("unusable systemd log constructor error = %v", err)
+	}
+}
+
 func TestSystemdServiceManagerBoundsAndNormalizesLogs(t *testing.T) {
 	manager := testSystemdServiceManager(t, "status", "logs")
 	logs, err := manager.Logs(t.Context(), ServiceLogRequest{

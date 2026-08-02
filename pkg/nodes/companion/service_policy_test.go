@@ -103,6 +103,33 @@ func TestNormalizeServicePoliciesRejectsUnsafeAuthority(t *testing.T) {
 	}
 }
 
+func TestNormalizeServicePoliciesRequiresLogResultEnvelopeBudget(t *testing.T) {
+	profile := servicePolicyFixture()
+	profile.Services["maximum_length_service_alias"] = ServicePolicyEntry{
+		Unit: "maximum-length.service",
+		Logs: true,
+	}
+	minimum, err := json.Marshal(ServiceLogs{
+		Service:   "maximum_length_service_alias",
+		Records:   []ServiceLogRecord{},
+		Truncated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.LogLimits = nodes.ServiceLogLimits{
+		EntriesMax: 1, BytesMax: len(minimum) - 1, AgeSecondsMax: 1,
+	}
+	if _, err = normalizeServicePolicies(ServicePolicies{"server-services": profile}); err == nil ||
+		!strings.Contains(err.Error(), "mandatory result") {
+		t.Fatalf("undersized log result budget error = %v", err)
+	}
+	profile.LogLimits.BytesMax = len(minimum)
+	if _, err = normalizeServicePolicies(ServicePolicies{"server-services": profile}); err != nil {
+		t.Fatalf("exact log result budget rejected: %v", err)
+	}
+}
+
 func TestNormalizeServicePoliciesRejectsDescriptionProjectionBeyondBudget(t *testing.T) {
 	services := make(map[string]ServicePolicyEntry, nodes.MaxServicesPerProfile)
 	for index := 0; index < nodes.MaxServicesPerProfile; index++ {
