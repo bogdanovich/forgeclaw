@@ -47,6 +47,7 @@ func channelEventAttrs(payload any) map[string]any {
 		return attrs
 	case ChannelOutboundPayload:
 		attrs := map[string]any{}
+		setAttrString(attrs, "delivery_id", payload.DeliveryID)
 		if len(payload.TraceScopes) > 0 {
 			attrs["trace_scopes_count"] = len(payload.TraceScopes)
 		}
@@ -90,6 +91,7 @@ func (m *Manager) publishOutboundSent(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			DeliveryID:       msg.DeliveryID,
 			TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			TraceSettlement:  msg.TraceSettlement,
 			ContentLen:       len([]rune(msg.Content)),
@@ -109,6 +111,7 @@ func (m *Manager) publishOutboundQueued(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			DeliveryID:       msg.DeliveryID,
 			TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			TraceSettlement:  msg.TraceSettlement,
 			ContentLen:       len([]rune(msg.Content)),
@@ -124,6 +127,7 @@ func (m *Manager) publishOutboundFailed(
 	media bool,
 ) {
 	payload := ChannelOutboundPayload{
+		DeliveryID:       msg.DeliveryID,
 		TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 		TraceSettlement:  msg.TraceSettlement,
 		Media:            media,
@@ -154,6 +158,7 @@ func (m *Manager) publishOutboundMediaSent(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			DeliveryID:      msg.DeliveryID,
 			TraceScopes:     append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			TraceSettlement: msg.TraceSettlement,
 			Media:           true,
@@ -172,6 +177,7 @@ func (m *Manager) publishOutboundMediaQueued(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			DeliveryID:      msg.DeliveryID,
 			TraceScopes:     append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			TraceSettlement: msg.TraceSettlement,
 			Media:           true,
@@ -185,6 +191,7 @@ func (m *Manager) publishOutboundMediaFailed(
 	err error,
 ) {
 	payload := ChannelOutboundPayload{
+		DeliveryID:      msg.DeliveryID,
 		TraceScopes:     append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 		TraceSettlement: msg.TraceSettlement,
 		Media:           true,
