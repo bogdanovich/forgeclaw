@@ -940,6 +940,9 @@ func (client *Client) handleInvoke(
 		case errors.Is(err, nodes.ErrCommandDenied), errors.Is(err, nodes.ErrInvalidInvocation):
 			code = "COMMAND_DENIED"
 			message = "node command denied"
+		case errors.Is(err, ErrCommandUnavailable):
+			code = "COMMAND_UNAVAILABLE"
+			message = "node command unavailable"
 		case errors.Is(err, ErrInvocationConflict):
 			code = "IDEMPOTENCY_CONFLICT"
 			message = "invocation idempotency conflict"
@@ -950,6 +953,13 @@ func (client *Client) handleInvoke(
 			code = "INVOCATION_CANCELED"
 			message = "node command canceled"
 		}
+		client.logger.Warn(
+			"node invocation rejected",
+			"invocation_id", plan.InvocationID,
+			"command", plan.Command,
+			"code", code,
+			"reason", invocationRejectionReason(err),
+		)
 		return client.writeCommandError(writer, envelope.ID, code, message)
 	}
 	ok := true
@@ -959,6 +969,28 @@ func (client *Client) handleInvoke(
 		OK:     &ok,
 		Result: result,
 	})
+}
+
+func invocationRejectionReason(err error) string {
+	var inputDenied *commandInputDeniedError
+	switch {
+	case errors.As(err, &inputDenied):
+		return "command_input_denied"
+	case errors.Is(err, nodes.ErrCommandDenied):
+		return "plan_authorization_denied"
+	case errors.Is(err, nodes.ErrInvalidInvocation):
+		return "invalid_invocation"
+	case errors.Is(err, ErrCommandUnavailable):
+		return "command_unavailable"
+	case errors.Is(err, ErrInvocationConflict):
+		return "idempotency_conflict"
+	case errors.Is(err, ErrInvocationOutcomeUnknown):
+		return "outcome_unknown"
+	case errors.Is(err, ErrInvocationCanceled):
+		return "canceled"
+	default:
+		return "execution_failed"
+	}
 }
 
 func (client *Client) handleInvocationQuery(

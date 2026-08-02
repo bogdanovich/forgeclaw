@@ -388,10 +388,12 @@ func (handler *AdmissionHandler) Invoke(
 		return nil, true, errors.New("node returned a malformed invocation response")
 	}
 	if !*response.OK {
-		return nil, true, fmt.Errorf(
-			"node invocation failed (%s): %s",
+		if response.Error == nil {
+			return nil, true, errors.New("node returned a malformed invocation rejection")
+		}
+		return nil, true, nodes.NewInvocationDispatchError(
 			response.Error.Code,
-			response.Error.Message,
+			errors.New(response.Error.Message),
 		)
 	}
 	result, err := validateInvocationResult(approval.Descriptor, plan, response.Result)
