@@ -157,6 +157,22 @@ func TestBrowserRuntimeCloseHonorsCallerDeadlineAndRetainsOwnership(t *testing.T
 	reopened.Close()
 }
 
+func TestBrowserRuntimeCloseDeadlineBoundsActiveToolLeaseWait(t *testing.T) {
+	services := &services{Browser: &browserRuntime{}}
+	services.browserMu.RLock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	started := time.Now()
+	err := closeBrowserRuntime(ctx, services)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("close while tool is active error = %v, elapsed = %v", err, time.Since(started))
+	}
+	if services.Browser == nil {
+		t.Fatal("close while tool is active discarded runtime ownership")
+	}
+	services.browserMu.RUnlock()
+}
+
 func TestBrowserRuntimeCloseDeadlineBoundsSweepWait(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state", "browser", browserStateFile)

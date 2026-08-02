@@ -74,6 +74,7 @@ type services struct {
 	ChannelManager   *channels.Manager
 	DeviceService    *devices.Service
 	NodeAdmission    *nodeAdmissionRuntime
+	browserMu        sync.RWMutex
 	Browser          *browserRuntime
 	HealthServer     *health.Server
 	VoiceAgentCancel context.CancelFunc
@@ -874,6 +875,9 @@ func setupAndStartServices(
 	if err = setupNodeTools(cfg, agentLoop, runningServices.NodeAdmission); err != nil {
 		return nil, fmt.Errorf("error setting up node tools: %w", err)
 	}
+	if err = setupBrowserTools(cfg, agentLoop, runningServices); err != nil {
+		return nil, fmt.Errorf("error setting up browser tools: %w", err)
+	}
 	if err = setupBrowserRuntime(ctx, cfg, runningServices); err != nil {
 		return nil, fmt.Errorf("error setting up browser runtime: %w", err)
 	}
@@ -977,13 +981,39 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 }
 
 func closeBrowserRuntime(ctx context.Context, runningServices *services) error {
-	if runningServices == nil || runningServices.Browser == nil {
+	if runningServices == nil {
+		return nil
+	}
+	if err := lockBrowserRuntime(ctx, &runningServices.browserMu); err != nil {
+		return err
+	}
+	defer runningServices.browserMu.Unlock()
+	if runningServices.Browser == nil {
 		return nil
 	}
 	if err := runningServices.Browser.Close(ctx); err != nil {
 		return err
 	}
 	runningServices.Browser = nil
+	return nil
+}
+
+func lockBrowserRuntime(ctx context.Context, lock *sync.RWMutex) error {
+	if lock == nil {
+		return errors.New("browser runtime lock is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !lock.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 	return nil
 }
 

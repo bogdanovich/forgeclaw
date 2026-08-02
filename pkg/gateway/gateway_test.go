@@ -250,6 +250,41 @@ func TestNodeToolsTrackNodeEnablementAcrossReload(t *testing.T) {
 	}
 }
 
+func TestBrowserToolsTrackAgentGrantAcrossReload(t *testing.T) {
+	cfg := gatewayBrowserConfig(t.TempDir())
+	cfg.Agents.Defaults.ContextManager = "none"
+	cfg.Tools.Browser.Agents = []string{"main"}
+	al := agent.NewAgentLoop(cfg, bus.NewMessageBus(), &startupBlockedProvider{reason: "not used"})
+	defer al.Close()
+	services := &services{}
+	if err := setupBrowserTools(cfg, al, services); err != nil {
+		t.Fatalf("setupBrowserTools() error = %v", err)
+	}
+	toolNames := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	for _, name := range []string{"browser_targets", "browser_session", "browser_observe", "browser_act"} {
+		if !slices.Contains(toolNames, name) {
+			t.Fatalf("registered tools = %#v, want %s", toolNames, name)
+		}
+	}
+
+	reloadCfg := config.DefaultConfig()
+	reloadCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloadCfg.Agents.Defaults.ContextManager = "none"
+	if err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		reloadCfg,
+	); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+	toolNames = al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	for _, name := range []string{"browser_targets", "browser_session", "browser_observe", "browser_act"} {
+		if slices.Contains(toolNames, name) {
+			t.Fatalf("registered tools = %#v, %s should be disabled", toolNames, name)
+		}
+	}
+}
+
 func TestNodeFileToolsRequireConfiguredTargetGrant(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()

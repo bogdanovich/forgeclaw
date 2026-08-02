@@ -116,6 +116,32 @@ func TestBrokerOpenAndCloseSession(t *testing.T) {
 	}
 }
 
+func TestBrokerProfileAvailabilityIsReadOnly(t *testing.T) {
+	store := NewMemoryStore()
+	broker := newTestBroker(t, admittedBrowserConfig(), store, &fakeWorkerFactory{})
+	ready, err := broker.ProfileAvailability(context.Background(), "gateway", "managed")
+	if err != nil || ready != (ProfileAvailability{Status: "ready"}) {
+		t.Fatalf("initial availability = %#v, %v", ready, err)
+	}
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: testOwner(), Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, err := broker.ProfileAvailability(context.Background(), "gateway", "managed")
+	if err != nil || busy != (ProfileAvailability{Status: "busy", Reason: "profile_busy"}) {
+		t.Fatalf("leased availability = %#v, %v", busy, err)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.Revision != session.Revision || stored.LastActivityAt != session.LastActivityAt {
+		t.Fatalf("availability changed session = %#v, %v; want %#v", stored, err, session)
+	}
+	if _, err = broker.ProfileAvailability(context.Background(), "unknown", "managed"); !errors.Is(err, ErrDenied) {
+		t.Fatalf("unknown target availability error = %v", err)
+	}
+}
+
 func TestRandomIDAlwaysUsesValidUniqueSessionIdentifiers(t *testing.T) {
 	seen := make(map[string]struct{}, 10_000)
 	for range 10_000 {

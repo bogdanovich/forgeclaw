@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/agent"
 	"github.com/bogdanovich/mintclaw/pkg/browser"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const browserStateFile = "browser.json"
@@ -161,6 +163,8 @@ func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningService
 	if runningServices == nil {
 		return errors.New("browser runtime requires gateway services")
 	}
+	runningServices.browserMu.Lock()
+	defer runningServices.browserMu.Unlock()
 	if runningServices.Browser != nil {
 		return errors.New("previous browser runtime still owns resources")
 	}
@@ -169,5 +173,159 @@ func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningService
 		return err
 	}
 	runningServices.Browser = runtime
+	return nil
+}
+
+type gatewayBrowserToolSource struct{ services *services }
+
+func (source *gatewayBrowserToolSource) Available() bool {
+	if source == nil || source.services == nil {
+		return false
+	}
+	source.services.browserMu.RLock()
+	defer source.services.browserMu.RUnlock()
+	return source.services.Browser != nil && source.services.Browser.Broker() != nil
+}
+
+func (source *gatewayBrowserToolSource) ProfileAvailability(
+	ctx context.Context,
+	target string,
+	profile string,
+) (browser.ProfileAvailability, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.ProfileAvailability, error) {
+			return broker.ProfileAvailability(ctx, target, profile)
+		},
+	)
+}
+
+func withGatewayBrowserBroker[T any](
+	ctx context.Context,
+	source *gatewayBrowserToolSource,
+	operation func(context.Context, *browser.Broker) (T, error),
+) (T, error) {
+	var zero T
+	if source == nil || source.services == nil || operation == nil {
+		return zero, browser.ErrWorkerUnavailable
+	}
+	source.services.browserMu.RLock()
+	defer source.services.browserMu.RUnlock()
+	runtime := source.services.Browser
+	if runtime == nil || runtime.Broker() == nil {
+		return zero, browser.ErrWorkerUnavailable
+	}
+	return operation(ctx, runtime.Broker())
+}
+
+func (source *gatewayBrowserToolSource) Open(
+	ctx context.Context,
+	request browser.OpenRequest,
+) (browser.Session, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Session, error) {
+			return broker.Open(ctx, request)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) Status(
+	ctx context.Context,
+	owner browser.Owner,
+	sessionID string,
+) (browser.Session, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Session, error) {
+			return broker.Status(ctx, owner, sessionID)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) Close(
+	ctx context.Context,
+	owner browser.Owner,
+	sessionID string,
+) (browser.Session, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Session, error) {
+			return broker.Close(ctx, owner, sessionID)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) Observe(
+	ctx context.Context,
+	owner browser.Owner,
+	sessionID string,
+	tabID string,
+) (browser.Observation, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Observation, error) {
+			return broker.Observe(ctx, owner, sessionID, tabID)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) PrepareAction(
+	ctx context.Context,
+	request browser.PrepareActionRequest,
+) (browser.Preparation, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Preparation, error) {
+			return broker.PrepareAction(ctx, request)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) ExecuteAction(
+	ctx context.Context,
+	owner browser.Owner,
+	preparedID string,
+	approval *browser.ApprovalBinding,
+) (browser.Invocation, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Invocation, error) {
+			return broker.ExecuteAction(ctx, owner, preparedID, approval)
+		},
+	)
+}
+
+func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningServices *services) error {
+	if cfg == nil || agentLoop == nil || runningServices == nil {
+		return nil
+	}
+	source := &gatewayBrowserToolSource{services: runningServices}
+	factories := map[string]agent.RuntimeToolFactory{
+		"browser_targets": func(reloadCfg *config.Config) (tools.Tool, error) {
+			return tools.NewBrowserTargetsTool(reloadCfg, source), nil
+		},
+		"browser_session": func(reloadCfg *config.Config) (tools.Tool, error) {
+			return tools.NewBrowserSessionTool(reloadCfg, source), nil
+		},
+		"browser_observe": func(reloadCfg *config.Config) (tools.Tool, error) {
+			return tools.NewBrowserObserveTool(reloadCfg, source), nil
+		},
+		"browser_act": func(reloadCfg *config.Config) (tools.Tool, error) {
+			return tools.NewBrowserActTool(reloadCfg, source), nil
+		},
+	}
+	for _, name := range []string{"browser_targets", "browser_session", "browser_observe", "browser_act"} {
+		if err := agentLoop.RegisterRuntimeTool(name, factories[name]); err != nil {
+			return err
+		}
+	}
 	return nil
 }
