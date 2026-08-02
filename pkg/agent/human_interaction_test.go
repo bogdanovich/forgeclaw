@@ -405,7 +405,7 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 	}
 }
 
-func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
+func TestNonTelegramApprovalPromptCarriesGenericControlsWithoutReplyThread(t *testing.T) {
 	manager := newInteractionChannelManager()
 	al := &AgentLoop{cfg: config.DefaultConfig(), channelManager: manager}
 	record := interactions.Record{
@@ -423,7 +423,9 @@ func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := <-manager.sent
-	if prompt.ReplyToMessageID != "" || bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
+	if prompt.ReplyToMessageID != "" ||
+		prompt.Context.Raw[bus.OutboundMetadataKeyRequestID] != "origin-message" ||
+		!bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
 		t.Fatalf("non-Telegram approval prompt = %#v", prompt)
 	}
 }
@@ -1661,6 +1663,9 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 					strings.Contains(prompt.Content, "Approval needed") ||
 					strings.Contains(prompt.Content, "secret-value") ||
 					prompt.ReplyToMessageID != "origin-message" ||
+					prompt.Context.Raw[bus.OutboundMetadataKeyRequestID] != "origin-message" ||
+					len(prompt.TraceScopes) != 1 ||
+					prompt.TraceScopes[0] != runtimeevents.NewTraceScope(agent.Workspace, record.Origin.TurnID) ||
 					!bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
 					t.Fatalf("approval prompt = %#v", prompt)
 				}

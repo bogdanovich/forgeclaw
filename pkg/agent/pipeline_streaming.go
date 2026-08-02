@@ -43,6 +43,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		ts.channel,
 		ts.chatID,
 		ts.sessionKey,
+		ts.opts.Dispatch.MessageID(),
 		runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
 	)
 	if !ok || streamer == nil {
@@ -54,6 +55,9 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 			"reason":   "streamer_unavailable",
 		})
 		return nil, false, nil
+	}
+	if setter, ok := streamer.(interface{ SetAgentID(agentID string) }); ok {
+		setter.SetAgentID(ts.agent.ID)
 	}
 
 	publisher := &streamingChunkPublisher{

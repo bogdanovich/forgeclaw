@@ -69,7 +69,7 @@ type StreamDelegate interface {
 	// supports streaming. Returns nil, false if streaming is unavailable.
 	GetStreamer(
 		ctx context.Context,
-		channel, chatID, sessionKey string,
+		channel, chatID, sessionKey, requestID string,
 		traceScope runtimeevents.TraceScope,
 	) (Streamer, bool)
 }
@@ -438,11 +438,11 @@ func (mb *MessageBus) SetEventPublisher(p EventPublisher) {
 // GetStreamer returns a Streamer for the given channel+chatID+session via the delegate.
 func (mb *MessageBus) GetStreamer(
 	ctx context.Context,
-	channel, chatID, sessionKey string,
+	channel, chatID, sessionKey, requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (Streamer, bool) {
 	if d, ok := mb.streamDelegate.Load().(StreamDelegate); ok && d != nil {
-		return d.GetStreamer(ctx, channel, chatID, sessionKey, traceScope)
+		return d.GetStreamer(ctx, channel, chatID, sessionKey, requestID, traceScope)
 	}
 	return nil, false
 }

@@ -16,8 +16,9 @@ milestones remain unadmitted.
 The local interactive client slice of the Future P1 follow-up is complete and
 deployed, with evidence in
 [`node-terminal-client-deployment-evidence.md`](../operations/node-terminal-client-deployment-evidence.md).
-Browser terminal UI and agent-operated PTY control remain separate future
-work. Exact target-scoped approval bypass is also complete and deployed under
+Browser terminal UI remains separate future work. Agent-operated PTY control
+is not planned; agents use structured `shell.exec.v1` instead. Exact
+target-scoped approval bypass is also complete and deployed under
 [`node-target-approval-deployment-evidence.md`](../operations/node-target-approval-deployment-evidence.md);
 it is shared approval infrastructure, not completion evidence for P3.
 
@@ -121,14 +122,13 @@ execution or an isolated shell without inheriting an owner's root profile.
 | P7 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
 | P8 | Remote workspace routing | Route an explicitly selected set of workspace-aware tools through one node execution context | P2, P5, and remote-capable P7 tools |
 | P9 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
-| Future P1 follow-up | Terminal clients and agent-operated PTY | Use the existing attached PTY from a browser, a local CLI, or a bounded agent loop without exposing a node port through NAT | Deployed P1 terminal core and trusted owner approval |
+| Future P1 follow-up | Browser terminal client | Use the existing attached PTY from a browser without exposing a node port through NAT | Deployed P1 terminal core and trusted owner approval |
 | Future operations follow-up | Authenticated live-agent and invocation smoke | Exercise the running gateway agent and durable node invocation path without Telegram or a second disconnected AgentLoop | Stable gateway operator authentication and deployed node execution |
 
 Priorities express ordering, not a commitment to implement every milestone.
 
-The local CLI portion of the Future P1 follow-up is complete. The browser and
-bounded agent-loop portions remain pending and are not implied by the CLI
-deployment.
+The local CLI portion of the Future P1 follow-up is complete. The browser
+portion remains pending and is not implied by the CLI deployment.
 
 ## P0: Model-Visible Capability Contracts
 
@@ -419,55 +419,28 @@ P1 is complete only when:
   model;
 - delegated/product profiles and fresh installations remain deny-by-default.
 
-## Deferred P1 Follow-Up: Terminal Clients And Agent-Operated PTY
+## Deferred P1 Follow-Up: Browser Terminal Client
 
 This is a future usability milestone, not a prerequisite for P2 and not part
 of the completed P1 production-code gate. The P1 backend already owns the PTY,
 process tree, ordered control stream, output cursor, limits, and authenticated
-operator attachment. It does not yet provide a terminal emulator in Launcher,
-a local interactive CLI, or model-facing terminal input and output.
+operator attachment. The local interactive CLI is complete; Launcher does not
+yet provide a browser terminal emulator.
 
 ### Operator outcome
 
 An authorized owner can reach a paired companion behind NAT without exposing
 SSH or another inbound node port and can:
 
+- run the deployed local `mintclaw nodes terminal` client; or
 - open an attached terminal in MintClaw Launcher and use it through a browser
-  terminal emulator;
-- run a local command such as `mintclaw nodes terminal`, select a visible
-  target, profile, and working scope, approve the session, and attach the
-  current console in raw mode; and
-- ask an authorized agent, including one reached through an approved Telegram
-  route, to operate the same bounded PTY when a task genuinely requires an
-  interactive program.
+  terminal emulator once that future client is admitted.
 
 The browser and CLI connect to the gateway, while the companion continues to
 initiate the outbound node connection. Neither client connects directly to
 the node or receives node connection details.
 
-### Shell-first selection policy
-
-`shell.exec.v1` remains the agent's default for package installation,
-configuration, diagnostics, service management, and other automation that has
-a non-interactive form. It is reproducible, has an explicit script and exit
-status, produces a bounded result, is easier to approve, and avoids fragile
-keystroke emulation.
-
-The agent uses a PTY only when at least one of these is true:
-
-- the user explicitly requests an interactive terminal workflow;
-- the program requires a TTY and has no suitable non-interactive mode;
-- state must remain live across multiple inputs, as with a REPL or debugger;
-  or
-- a TUI or interactive recovery workflow is itself the admitted task.
-
-The agent must not choose a terminal merely because it can. It must prefer
-non-interactive flags, configuration files, typed capabilities, or
-`shell.exec.v1` when they express the same operation. Selection tests must
-prove both directions: ordinary administration stays on the shell path, while
-an interactive fixture selects the PTY path.
-
-### Client and model surfaces
+### Client surface
 
 The Launcher client should use a terminal-emulator boundary such as xterm.js,
 reuse the authenticated MintClaw session identity, and proxy the terminal
@@ -476,58 +449,32 @@ handles binary output, input, resize, signals, attach deadline, connection
 state, and explicit close. Closing or losing the attached client preserves the
 existing fail-closed process-tree termination behavior.
 
-The CLI client should provide an interactive selector when target, profile, or
-scope is omitted, support explicit flags for scripts and automation, enter
-local raw terminal mode only after approval, forward resize and signals, and
-always restore the local console on exit or error.
-
-The model surface may extend `nodes_terminal` with bounded `read`, `write`, and
-`resize` actions over the same terminal session state. Reads use cursors,
-bounded waits, byte ceilings, truncation markers, and terminal-control
-sanitization. Writes retain monotonic sequence numbers and idempotency keys;
-ambiguous or unacknowledged input is never replayed. Telegram carries the
-user's request and final summary, not the raw PTY byte stream.
-
-Giving terminal output to the model deliberately changes the P1 visibility
-contract: bounded output necessarily enters the authorized model session and
-may influence subsequent reasoning. A future admission must therefore define
-prompt-injection handling, secret exposure, session-history and compaction
-behavior, and the difference between transient model-visible output and
-passive audit retention. Raw terminal content remains excluded from ordinary
-logs, passive events, diagnostic traces, approval records, and operational
-evidence.
+The deployed CLI accepts explicit target, profile, and scope flags, enters
+local raw terminal mode only after approval, forwards resize and signals, and
+always restores the local console on exit or error.
 
 ### Security and scope boundaries
 
 - Session start still requires the trusted operator-owned approval mode.
-- Actor, agent, route, routed session, workspace, target, profile, and
+- Actor, authenticated operator session, workspace, target, profile, and
   terminal identity remain bound on every action.
 - A Telegram chat message is not approval; a separately authenticated,
   plan-bound approval callback may be.
-- The model cannot send passwords, approval secrets, broker credentials, or
-  hidden authority fields through terminal input.
-- Another browser, CLI, route, or agent cannot attach, observe, take over, or
-  close a session without a separately admitted handoff contract.
+- Another browser, CLI, or operator session cannot attach, observe, take over,
+  or close a session without a separately admitted handoff contract.
 - Browser control sequences are rendered only inside the terminal emulator;
-  model reads receive a bounded safe projection rather than unsanitized UI
-  escape handling.
+  passive logs never receive the raw byte stream.
 - Attached-only behavior remains the default. Detach, reconnect, transcript
   retention, terminal sharing, file transfer, port forwarding, and SSH-agent
   forwarding remain separate future decisions.
 
 ### Suggested delivery sequence
 
-1. Admit the revised model-visibility, prompt-injection, retention, routing,
-   and approval contract.
+1. Admit the browser authentication, retention, routing, and approval contract.
 2. Add a Launcher terminal WebSocket proxy and browser terminal emulator with
    authenticated session reuse.
-3. Add `mintclaw nodes terminal` with raw-mode cleanup, selectors, resize,
-   signals, and exact-session attachment.
-4. Add bounded model `read`, `write`, and `resize` actions and permit them only
-   on explicitly authorized routes.
-5. Add shell-versus-terminal selection guidance and regression tests.
-6. Validate browser, CLI, and agent flows against a real companion behind NAT,
-   then deploy with terminal profiles still disabled by default.
+3. Validate browser and existing CLI flows against a real companion behind
+   NAT, then deploy with terminal profiles still disabled by default.
 
 ### Completion criteria
 
@@ -537,17 +484,12 @@ This follow-up is complete only when:
   disconnect, and local cleanup against the same real PTY implementation;
 - neither client needs an inbound node port, node address, SSH key, or direct
   broker access;
-- an authorized agent completes a deterministic interactive fixture through
-  bounded terminal reads and writes, while a Telegram user receives only a
-  summary;
-- another actor, agent, route, session, target, or profile is denied before
+- another actor, operator session, target, or profile is denied before
   attachment or terminal content exposure;
-- ordinary administration demonstrably prefers `shell.exec.v1`, and the agent
-  selects a PTY only for an admitted interactive requirement;
 - input remains ordered and at most once, output cursors and limits are
   enforced, and disconnect leaves no process tree behind;
-- terminal content may enter only the authorized live client or model session
-  defined by the revised contract and never appears in passive logs, traces,
+- terminal content may enter only the authorized live client defined by the
+  revised contract and never appears in passive logs, traces,
   approvals, or operational evidence;
 - fresh installs and deployed profiles remain disabled by default; and
 - merged-main validation, canary rollback, health checks, and redacted
@@ -748,6 +690,13 @@ Downloaded binaries require release-signature verification and cannot be
 authorized solely by a model-generated URL or digest.
 
 ### Future operations follow-up: authenticated live-agent and invocation smoke
+
+Status: the authenticated live-agent slice is implemented by
+`mintclaw agent live`; see the
+[operations guide](../operations/live-agent-smoke.md). It can exercise durable
+node invocation through the live agent without Telegram. A future direct
+low-level invocation fixture remains separate work if provider-independent
+testing is still needed.
 
 Add a deterministic operator-facing smoke path for the already running gateway.
 The existing `mintclaw agent` command creates a separate `AgentLoop`, so it

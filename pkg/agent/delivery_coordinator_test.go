@@ -607,6 +607,7 @@ func (failingMessageBus) GetStreamer(
 	string,
 	string,
 	string,
+	string,
 	runtimeevents.TraceScope,
 ) (bus.Streamer, bool) {
 	return nil, false

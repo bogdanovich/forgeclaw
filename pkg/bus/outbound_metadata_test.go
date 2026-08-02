@@ -56,6 +56,9 @@ func TestOutboundMetadataInteractionControls(t *testing.T) {
 	if !metadata.IsApprovalPrompt() || metadata.RemovesInteractionControls() {
 		t.Fatalf("approval prompt metadata = %#v", metadata)
 	}
+	if !metadata.BypassesPlaceholderEdit() {
+		t.Fatal("approval prompt must bypass metadata-loss placeholder edits")
+	}
 
 	ctx = InboundContext{}
 	OutboundMetadata{

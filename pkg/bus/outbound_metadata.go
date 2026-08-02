@@ -16,6 +16,7 @@ const (
 	OutboundMetadataKeyUsageTotal   = "usage_total_tokens"
 	OutboundMetadataKeyInteraction  = "interaction_kind"
 	OutboundMetadataKeyControls     = "interaction_controls"
+	OutboundMetadataKeyRequestID    = "request_id"
 
 	OutboundMessageKindThought      = "thought"
 	OutboundMessageKindToolFeedback = "tool_feedback"
@@ -149,7 +150,7 @@ func (m OutboundMetadata) IsFinal() bool {
 }
 
 func (m OutboundMetadata) BypassesPlaceholderEdit() bool {
-	return m.IsThought() || m.IsToolCalls() || m.IsFinalReply()
+	return m.IsThought() || m.IsToolCalls() || m.IsFinalReply() || m.IsApprovalPrompt()
 }
 
 func (m OutboundMetadata) IsApprovalPrompt() bool {

@@ -794,8 +794,9 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 			Dispatch: DispatchRequest{
 				SessionKey: "session-1",
 				InboundContext: &bus.InboundContext{
-					Channel: "telegram",
-					ChatID:  "-100123",
+					Channel:   "mintclaw",
+					ChatID:    "mintclaw:live-session",
+					MessageID: "live-request-1",
 				},
 			},
 		},
@@ -811,6 +812,9 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
+		if outbound.Context.MessageID != "live-request-1" {
+			t.Fatalf("final outbound request message ID = %q, want live-request-1", outbound.Context.MessageID)
+		}
 		raw := outbound.Context.Raw
 		if raw[metadataKeyOutboundKind] != outboundKindFinal {
 			t.Fatalf("outbound kind = %q, want %q", raw[metadataKeyOutboundKind], outboundKindFinal)

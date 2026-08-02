@@ -945,7 +945,7 @@ func closeWorkerAndWait(w *channelWorker) {
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(
 	ctx context.Context,
-	channelName, chatID, sessionKey string,
+	channelName, chatID, sessionKey, requestID string,
 	traceScope runtimeevents.TraceScope,
 ) (bus.Streamer, bool) {
 	m.mu.RLock()
@@ -961,7 +961,13 @@ func (m *Manager) GetStreamer(
 		return nil, false
 	}
 
-	streamer, err := sc.BeginStream(ctx, chatID)
+	beginStream := func(beginCtx context.Context) (Streamer, error) {
+		if scoped, ok := ch.(ScopedStreamingCapable); ok {
+			return scoped.BeginStreamForScope(beginCtx, chatID, sessionKey, requestID, traceScope)
+		}
+		return sc.BeginStream(beginCtx, chatID)
+	}
+	streamer, err := beginStream(ctx)
 	if err != nil {
 		logger.DebugCF("channels", "Streaming unavailable, falling back to placeholder", map[string]any{
 			"channel": channelName,
@@ -1001,11 +1007,9 @@ func (m *Manager) GetStreamer(
 
 	if m.config != nil && m.config.Agents.Defaults.SplitOnMarker {
 		return &splitMarkerStreamer{
-			current:   streamer,
-			reasoning: reasoningStreamerFrom(streamer),
-			begin: func(beginCtx context.Context) (bus.Streamer, error) {
-				return sc.BeginStream(beginCtx, chatID)
-			},
+			current:     streamer,
+			reasoning:   reasoningStreamerFrom(streamer),
+			begin:       beginStream,
 			onFinalize:  onFinalize,
 			clearMarker: clearMarker,
 			footer: responseFooterStreamState{
@@ -1041,6 +1045,10 @@ type defaultModelNameStreamer interface {
 	SetDefaultModelName(defaultModelName string)
 }
 
+type agentIdentityStreamer interface {
+	SetAgentID(agentID string)
+}
+
 func setStreamerModelName(streamer any, modelName string) {
 	setter, ok := streamer.(modelNameStreamer)
 	if !ok {
@@ -1055,6 +1063,14 @@ func setStreamerDefaultModelName(streamer any, defaultModelName string) {
 		return
 	}
 	setter.SetDefaultModelName(defaultModelName)
+}
+
+func setStreamerAgentID(streamer any, agentID string) {
+	setter, ok := streamer.(agentIdentityStreamer)
+	if !ok {
+		return
+	}
+	setter.SetAgentID(agentID)
 }
 
 type turnUsageStreamer interface {
@@ -1117,6 +1133,7 @@ type splitMarkerStreamer struct {
 	defaultModelName string
 	turnInputTokens  int
 	turnOutputTokens int
+	agentID          string
 	footer           responseFooterStreamState
 }
 
@@ -1176,6 +1193,14 @@ func (s *splitMarkerStreamer) SetDefaultModelName(defaultModelName string) {
 	s.footer.defaultModelName = s.defaultModelName
 	setStreamerDefaultModelName(s.current, s.defaultModelName)
 	setStreamerDefaultModelName(s.reasoning, s.defaultModelName)
+}
+
+func (s *splitMarkerStreamer) SetAgentID(agentID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentID = strings.TrimSpace(agentID)
+	setStreamerAgentID(s.current, s.agentID)
+	setStreamerAgentID(s.reasoning, s.agentID)
 }
 
 func (s *splitMarkerStreamer) SetTurnUsage(inputTokens, outputTokens int) {
@@ -1259,6 +1284,16 @@ func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
 				} else if err := s.current.Finalize(ctx, content); err != nil {
 					return err
 				}
+			} else if isFinalPart {
+				if err := s.current.Finalize(ctx, content); err != nil {
+					return err
+				}
+			} else if segmentStreamer, ok := s.current.(interface {
+				FinalizeSegment(context.Context, string) error
+			}); ok {
+				if err := segmentStreamer.FinalizeSegment(ctx, content); err != nil {
+					return err
+				}
 			} else if err := s.current.Finalize(ctx, content); err != nil {
 				return err
 			}
@@ -1284,6 +1319,7 @@ func (s *splitMarkerStreamer) ensureCurrentLocked(ctx context.Context) error {
 	setStreamerModelName(s.current, s.modelName)
 	setStreamerDefaultModelName(s.current, s.defaultModelName)
 	setStreamerTurnUsage(s.current, s.turnInputTokens, s.turnOutputTokens)
+	setStreamerAgentID(s.current, s.agentID)
 	return nil
 }
 
@@ -1349,6 +1385,10 @@ func (s *finalizeHookStreamer) SetModelName(modelName string) {
 func (s *finalizeHookStreamer) SetDefaultModelName(defaultModelName string) {
 	s.footer.defaultModelName = strings.TrimSpace(defaultModelName)
 	setStreamerDefaultModelName(s.Streamer, s.footer.defaultModelName)
+}
+
+func (s *finalizeHookStreamer) SetAgentID(agentID string) {
+	setStreamerAgentID(s.Streamer, agentID)
 }
 
 func (s *finalizeHookStreamer) SetTurnUsage(inputTokens, outputTokens int) {

@@ -37,7 +37,7 @@ type MessageBus interface {
 	// GetStreamer returns a channel streamer when the active channel supports streaming.
 	GetStreamer(
 		ctx context.Context,
-		channel, chatID, sessionKey string,
+		channel, chatID, sessionKey, requestID string,
 		traceScope runtimeevents.TraceScope,
 	) (bus.Streamer, bool)
 

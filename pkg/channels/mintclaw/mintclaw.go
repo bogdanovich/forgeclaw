@@ -23,6 +23,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/channels"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/identity"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
@@ -469,9 +470,11 @@ func (c *MintClawChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		PayloadKeyContent: msg.Content,
 		"message_id":      msgID,
 	}
+	setOutboundIdentityPayload(payload, msg)
 	if modelName := strings.TrimSpace(msg.Context.Raw[PayloadKeyModelName]); modelName != "" {
 		payload[PayloadKeyModelName] = modelName
 	}
+	metadata := bus.OutboundMetadataFromMessage(msg)
 	switch {
 	case isThought:
 		payload[PayloadKeyKind] = MessageKindThought
@@ -486,7 +489,10 @@ func (c *MintClawChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		if toolCalls, ok := mintclawToolCallsPayload(msg); ok {
 			payload[PayloadKeyToolCalls] = toolCalls
 		}
+	case metadata.IsFinalReply():
+		payload[PayloadKeyKind] = MessageKindFinalReply
 	}
+	setOutboundControlPayload(payload, metadata)
 	setContextUsagePayload(payload, msg.ContextUsage)
 	outMsg := newMessage(TypeMessageCreate, payload)
 
@@ -556,6 +562,27 @@ func (c *MintClawChannel) SendPlaceholder(ctx context.Context, chatID string) (s
 
 // BeginStream implements channels.StreamingCapable for MintClaw WebUI.
 func (c *MintClawChannel) BeginStream(ctx context.Context, chatID string) (channels.Streamer, error) {
+	return c.beginStream(ctx, chatID, "", "", runtimeevents.TraceScope{})
+}
+
+// BeginStreamForScope preserves live turn correlation for operator clients.
+func (c *MintClawChannel) BeginStreamForScope(
+	ctx context.Context,
+	chatID string,
+	sessionKey string,
+	requestID string,
+	traceScope runtimeevents.TraceScope,
+) (channels.Streamer, error) {
+	return c.beginStream(ctx, chatID, sessionKey, requestID, traceScope)
+}
+
+func (c *MintClawChannel) beginStream(
+	ctx context.Context,
+	chatID string,
+	sessionKey string,
+	requestID string,
+	traceScope runtimeevents.TraceScope,
+) (channels.Streamer, error) {
 	if c == nil || c.config == nil || !c.config.Streaming.Enabled {
 		return nil, fmt.Errorf("streaming disabled in config")
 	}
@@ -566,6 +593,9 @@ func (c *MintClawChannel) BeginStream(ctx context.Context, chatID string) (chann
 	return &mintclawStreamer{
 		channel:          c,
 		chatID:           chatID,
+		sessionKey:       sessionKey,
+		requestID:        requestID,
+		traceScope:       traceScope,
 		throttleInterval: time.Duration(streamCfg.ThrottleSeconds) * time.Second,
 		minGrowth:        streamCfg.MinGrowthChars,
 	}, nil
@@ -574,6 +604,10 @@ func (c *MintClawChannel) BeginStream(ctx context.Context, chatID string) (chann
 type mintclawStreamer struct {
 	channel          *MintClawChannel
 	chatID           string
+	sessionKey       string
+	requestID        string
+	traceScope       runtimeevents.TraceScope
+	agentID          string
 	modelName        string
 	turnInputTokens  int
 	turnOutputTokens int
@@ -599,6 +633,15 @@ func (s *mintclawStreamer) SetModelName(modelName string) {
 	s.modelName = strings.TrimSpace(modelName)
 }
 
+func (s *mintclawStreamer) SetAgentID(agentID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentID = strings.TrimSpace(agentID)
+}
+
 // SetTurnUsage records the real per-turn LLM token usage to emit on finalize.
 func (s *mintclawStreamer) SetTurnUsage(inputTokens, outputTokens int) {
 	if s == nil {
@@ -618,6 +661,20 @@ func (s *mintclawStreamer) Update(ctx context.Context, content string) error {
 
 func (s *mintclawStreamer) Finalize(ctx context.Context, content string) error {
 	return s.FinalizeWithContext(ctx, content, nil)
+}
+
+// FinalizeSegment flushes a completed split-stream segment without marking it
+// as the terminal response for the owning agent turn.
+func (s *mintclawStreamer) FinalizeSegment(ctx context.Context, content string) error {
+	if s == nil {
+		return fmt.Errorf("streamer is not initialized")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.channel == nil {
+		return fmt.Errorf("streamer is not initialized")
+	}
+	return s.sendLockedWithFinal(ctx, content, false, nil)
 }
 
 func (s *mintclawStreamer) FinalizeWithContext(
@@ -685,7 +742,7 @@ func (s *mintclawStreamer) updateLocked(
 		}
 	}
 
-	return s.sendLocked(ctx, content, contextUsage)
+	return s.sendLockedWithFinal(ctx, content, force, contextUsage)
 }
 
 func (s *mintclawStreamer) updateReasoningLocked(ctx context.Context, content string, force bool) error {
@@ -708,7 +765,20 @@ func (s *mintclawStreamer) updateReasoningLocked(ctx context.Context, content st
 	return s.sendReasoningLocked(ctx, content)
 }
 
-func (s *mintclawStreamer) sendLocked(ctx context.Context, content string, contextUsage *bus.ContextUsage) error {
+func (s *mintclawStreamer) sendLocked(
+	ctx context.Context,
+	content string,
+	contextUsage *bus.ContextUsage,
+) error {
+	return s.sendLockedWithFinal(ctx, content, false, contextUsage)
+}
+
+func (s *mintclawStreamer) sendLockedWithFinal(
+	ctx context.Context,
+	content string,
+	final bool,
+	contextUsage *bus.ContextUsage,
+) error {
 	now := time.Now()
 	contentLen := len([]rune(content))
 
@@ -717,6 +787,14 @@ func (s *mintclawStreamer) sendLocked(ctx context.Context, content string, conte
 		payload := map[string]any{
 			PayloadKeyContent: content,
 			"message_id":      messageID,
+		}
+		setStreamingIdentityPayload(payload, s.sessionKey, s.traceScope)
+		setStreamingRequestPayload(payload, s.requestID)
+		setStreamingAgentPayload(payload, s.agentID)
+		if final {
+			payload[PayloadKeyFinal] = true
+			payload[PayloadKeyKind] = MessageKindFinalReply
+			payload[PayloadKeyOutbound] = bus.OutboundKindFinal
 		}
 		if s.modelName != "" {
 			payload[PayloadKeyModelName] = s.modelName
@@ -728,10 +806,18 @@ func (s *mintclawStreamer) sendLocked(ctx context.Context, content string, conte
 			return err
 		}
 		s.messageID = messageID
-	} else if content != s.lastContent || contextUsage != nil {
+	} else if content != s.lastContent || contextUsage != nil || final {
 		payload := map[string]any{
 			PayloadKeyContent: content,
 			"message_id":      s.messageID,
+		}
+		setStreamingIdentityPayload(payload, s.sessionKey, s.traceScope)
+		setStreamingRequestPayload(payload, s.requestID)
+		setStreamingAgentPayload(payload, s.agentID)
+		if final {
+			payload[PayloadKeyFinal] = true
+			payload[PayloadKeyKind] = MessageKindFinalReply
+			payload[PayloadKeyOutbound] = bus.OutboundKindFinal
 		}
 		if s.modelName != "" {
 			payload[PayloadKeyModelName] = s.modelName
@@ -1514,6 +1600,77 @@ func setTurnUsagePayload(payload map[string]any, inputTokens, outputTokens int) 
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
 		"total_tokens":  inputTokens + outputTokens,
+	}
+}
+
+func setOutboundIdentityPayload(payload map[string]any, msg bus.OutboundMessage) {
+	if strings.TrimSpace(msg.AgentID) != "" {
+		payload[PayloadKeyAgentID] = strings.TrimSpace(msg.AgentID)
+	}
+	if strings.TrimSpace(msg.SessionKey) != "" {
+		payload[PayloadKeySessionKey] = strings.TrimSpace(msg.SessionKey)
+	}
+	requestID := strings.TrimSpace(msg.ReplyToMessageID)
+	if requestID == "" {
+		requestID = strings.TrimSpace(msg.Context.Raw[bus.OutboundMetadataKeyRequestID])
+	}
+	if requestID == "" {
+		requestID = strings.TrimSpace(msg.Context.ReplyToMessageID)
+	}
+	if requestID == "" {
+		requestID = strings.TrimSpace(msg.Context.MessageID)
+	}
+	if requestID != "" {
+		payload["request_id"] = requestID
+	}
+	if len(msg.TraceScopes) > 0 {
+		payload[PayloadKeyTraceScopes] = msg.TraceScopes
+	}
+	if interactionID := strings.TrimSpace(msg.Context.Raw[PayloadKeyInteractionID]); interactionID != "" {
+		payload[PayloadKeyInteractionID] = interactionID
+	}
+	if shortID := strings.TrimSpace(msg.Context.Raw[PayloadKeyInteractionShortID]); shortID != "" {
+		payload[PayloadKeyInteractionShortID] = shortID
+	}
+}
+
+func setStreamingIdentityPayload(
+	payload map[string]any,
+	sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) {
+	if strings.TrimSpace(sessionKey) != "" {
+		payload[PayloadKeySessionKey] = strings.TrimSpace(sessionKey)
+	}
+	if traceScope.Complete() {
+		payload[PayloadKeyTraceScopes] = []runtimeevents.TraceScope{traceScope}
+	}
+}
+
+func setStreamingAgentPayload(payload map[string]any, agentID string) {
+	if strings.TrimSpace(agentID) != "" {
+		payload[PayloadKeyAgentID] = strings.TrimSpace(agentID)
+	}
+}
+
+func setStreamingRequestPayload(payload map[string]any, requestID string) {
+	if strings.TrimSpace(requestID) != "" {
+		payload[bus.OutboundMetadataKeyRequestID] = strings.TrimSpace(requestID)
+	}
+}
+
+func setOutboundControlPayload(payload map[string]any, metadata bus.OutboundMetadata) {
+	if strings.TrimSpace(metadata.OutboundKind) != "" {
+		payload[PayloadKeyOutbound] = metadata.OutboundKind
+	}
+	if metadata.IsFinal() {
+		payload[PayloadKeyFinal] = true
+	}
+	if strings.TrimSpace(metadata.InteractionKind) != "" {
+		payload[PayloadKeyInteraction] = metadata.InteractionKind
+	}
+	if strings.TrimSpace(metadata.InteractionControls) != "" {
+		payload[PayloadKeyControls] = metadata.InteractionControls
 	}
 }
 
