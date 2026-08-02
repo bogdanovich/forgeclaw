@@ -163,6 +163,46 @@ func TestNormalizeServicePoliciesRejectsAggregateSchemaBeyondCeiling(t *testing.
 	}
 }
 
+func TestNormalizeServicePoliciesRejectsAggregateCatalogBeyondCeiling(t *testing.T) {
+	policies := make(ServicePolicies, nodes.MaxServiceProfiles)
+	actions := []nodes.ServiceAction{
+		nodes.ServiceActionDisable,
+		nodes.ServiceActionEnable,
+		nodes.ServiceActionReload,
+		nodes.ServiceActionRestart,
+		nodes.ServiceActionStart,
+		nodes.ServiceActionStop,
+	}
+	for profileIndex := 0; profileIndex < nodes.MaxServiceProfiles; profileIndex++ {
+		services := make(map[string]ServicePolicyEntry, nodes.MaxServicesPerProfile)
+		for serviceIndex := 0; serviceIndex < nodes.MaxServicesPerProfile; serviceIndex++ {
+			alias := fmt.Sprintf("service_%02d", serviceIndex)
+			services[alias] = ServicePolicyEntry{
+				Unit: alias + ".service",
+				Description: strings.Repeat(
+					"d",
+					nodes.MaxServiceDescriptionProjectionBytes/nodes.MaxServicesPerProfile,
+				),
+				Status:              true,
+				Logs:                true,
+				Actions:             append([]nodes.ServiceAction(nil), actions...),
+				ExpectedActiveState: "active",
+			}
+		}
+		alias := fmt.Sprintf("profile-%02d", profileIndex)
+		policies[alias] = ServicePolicyProfile{
+			Enabled:  true,
+			Revision: alias + "-v1",
+			Manager:  "systemd-system",
+			Services: services,
+		}
+	}
+	_, err := normalizeServicePolicies(policies)
+	if err == nil || !strings.Contains(err.Error(), "catalog exceeds size limit") {
+		t.Fatalf("aggregate service catalog admission error = %v", err)
+	}
+}
+
 func TestServiceCapabilitiesRequireEnforcementAndUseExactActionPairs(t *testing.T) {
 	profile := servicePolicyFixture()
 	profile.Services["app"] = ServicePolicyEntry{

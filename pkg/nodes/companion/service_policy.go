@@ -260,6 +260,9 @@ func serviceCapabilityDescriptors(
 		}
 		descriptors = append(descriptors, descriptor)
 	}
+	if err := (nodes.CapabilityCatalog{Commands: descriptors}).Validate(); err != nil {
+		return nil, fmt.Errorf("validate service capability catalog: %w", err)
+	}
 	return descriptors, nil
 }
 
