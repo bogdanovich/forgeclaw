@@ -202,6 +202,39 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 			wantErr: "outside the public network policy",
 		},
 		{
+			name: "overflowing numeric IPv4",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://256.256"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "invalid numeric IPv4 address",
+		},
+		{
+			name: "invalid octal numeric IPv4",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://09.0.0.1"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "invalid numeric IPv4 address",
+		},
+		{
+			name: "too many numeric IPv4 parts",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.AllowedOrigins = []string{"http://1.2.3.4.5"}
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "invalid numeric IPv4 address",
+		},
+		{
 			name: "localhost origin",
 			mutate: func(cfg *Config) {
 				target := cfg.Tools.Browser.Targets["gateway"]

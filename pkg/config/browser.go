@@ -272,6 +272,9 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 		}
 		lowerHost = legacyIP.String()
 	} else {
+		if browserIPv4Candidate(lowerHost) {
+			return "", errors.New("origin host is an invalid numeric IPv4 address")
+		}
 		if !browserHostnamePattern.MatchString(host) || !strings.Contains(lowerHost, ".") ||
 			strings.HasPrefix(lowerHost, ".") || strings.HasSuffix(lowerHost, ".") ||
 			strings.Contains(lowerHost, "..") {
@@ -294,6 +297,32 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 		normalizedHost = "[" + lowerHost + "]"
 	}
 	return scheme + "://" + normalizedHost, nil
+}
+
+// browserIPv4Candidate mirrors the WHATWG "ends in a number" discriminator.
+// Browsers route such hosts through IPv4 parsing rather than DNS, so a failed
+// parse must be rejected instead of falling through to the DNS policy.
+func browserIPv4Candidate(host string) bool {
+	parts := strings.Split(host, ".")
+	if len(parts) == 0 {
+		return false
+	}
+	last := parts[len(parts)-1]
+	if last == "" {
+		return false
+	}
+	allDecimalDigits := true
+	for _, char := range last {
+		if char < '0' || char > '9' {
+			allDecimalDigits = false
+			break
+		}
+	}
+	if allDecimalDigits {
+		return true
+	}
+	_, recognized := parseBrowserIPv4Number(last)
+	return recognized
 }
 
 func parseBrowserIPv4(host string) (net.IP, bool) {
