@@ -13,6 +13,14 @@ P3 is admitted under
 [`node-companion-p3-admission.md`](node-companion-p3-admission.md). P4 and later
 milestones remain unadmitted.
 
+The local interactive client slice of the Future P1 follow-up is complete and
+deployed, with evidence in
+[`node-terminal-client-deployment-evidence.md`](../operations/node-terminal-client-deployment-evidence.md).
+Browser terminal UI and agent-operated PTY control remain separate future
+work. Exact target-scoped approval bypass is also complete and deployed under
+[`node-target-approval-deployment-evidence.md`](../operations/node-target-approval-deployment-evidence.md);
+it is shared approval infrastructure, not completion evidence for P3.
+
 The roadmap is ordered by operator value and security dependencies rather than
 calendar dates. Each milestone requires a fresh scope decision based on
 evidence from the deployed preceding milestone.
@@ -117,6 +125,10 @@ execution or an isolated shell without inheriting an owner's root profile.
 | Future operations follow-up | Authenticated live-agent and invocation smoke | Exercise the running gateway agent and durable node invocation path without Telegram or a second disconnected AgentLoop | Stable gateway operator authentication and deployed node execution |
 
 Priorities express ordering, not a commitment to implement every milestone.
+
+The local CLI portion of the Future P1 follow-up is complete. The browser and
+bounded agent-loop portions remain pending and are not implied by the CLI
+deployment.
 
 ## P0: Model-Visible Capability Contracts
 
