@@ -154,6 +154,32 @@ func TestRunLiveClassifiesDisconnectWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestRunLiveClassifiesOversizedFrameAsOutputLimit(t *testing.T) {
+	server := liveTestServer(
+		t,
+		"test-token",
+		func(connection *websocket.Conn, request channelmintclaw.MintClawMessage) {
+			_ = connection.WriteJSON(channelmintclaw.MintClawMessage{
+				Type:      channelmintclaw.TypeMessageCreate,
+				SessionID: request.SessionID,
+				Payload: map[string]any{
+					channelmintclaw.PayloadKeyContent: strings.Repeat("x", liveMaxOutputBytes+128*1024),
+					channelmintclaw.PayloadKeyFinal:   true,
+					"request_id":                      request.ID,
+				},
+			})
+		},
+	)
+	result, err := runLive(t.Context(), liveOptions{
+		ConfigPath: liveTestConfig(t, server.URL, "test-token"),
+		Message:    "oversized response",
+		Timeout:    5 * time.Second,
+	})
+	if err == nil || result.Outcome != "output_limit" {
+		t.Fatalf("runLive() = (%#v, %v), want output_limit", result, err)
+	}
+}
+
 func TestRunLiveClassifiesAuthenticationWithoutLeakingToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

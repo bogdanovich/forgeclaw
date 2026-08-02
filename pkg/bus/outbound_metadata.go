@@ -150,7 +150,7 @@ func (m OutboundMetadata) IsFinal() bool {
 }
 
 func (m OutboundMetadata) BypassesPlaceholderEdit() bool {
-	return m.IsThought() || m.IsToolCalls() || m.IsFinalReply()
+	return m.IsThought() || m.IsToolCalls() || m.IsFinalReply() || m.IsApprovalPrompt()
 }
 
 func (m OutboundMetadata) IsApprovalPrompt() bool {

@@ -337,6 +337,9 @@ func classifyLiveDialError(ctx context.Context, response *http.Response) string 
 }
 
 func classifyLiveIOError(ctx context.Context, err error) string {
+	if errors.Is(err, websocket.ErrReadLimit) {
+		return "output_limit"
+	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
 		return "canceled"
 	}

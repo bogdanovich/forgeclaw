@@ -3461,6 +3461,42 @@ func TestPreSend_PlaceholderEditSuccess(t *testing.T) {
 	}
 }
 
+func TestPreSend_ApprovalPromptBypassesPlaceholderEdit(t *testing.T) {
+	m := newTestManager()
+	editCalled := false
+	ch := &mockMessageEditor{
+		editFn: func(context.Context, string, string, string) error {
+			editCalled = true
+			return nil
+		},
+	}
+	m.RecordPlaceholder("test", "123", "456")
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "123", Content: "approve protected action",
+		Context: bus.InboundContext{
+			Channel: "test", ChatID: "123", MessageID: "request-1",
+			Raw: map[string]string{bus.OutboundMetadataKeyRequestID: "request-1"},
+		},
+	})
+	bus.OutboundMetadata{
+		InteractionKind:     bus.OutboundInteractionApproval,
+		InteractionControls: bus.OutboundInteractionControlsPrompt,
+	}.ApplyToContext(&msg.Context)
+
+	messageIDs, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled || len(messageIDs) != 0 || editCalled {
+		t.Fatalf(
+			"approval placeholder result = (%v, handled=%v, edit=%v), want normal Send",
+			messageIDs,
+			handled,
+			editCalled,
+		)
+	}
+	if _, exists := m.placeholders.Load("test:123"); exists {
+		t.Fatal("approval prompt should consume the stale placeholder before normal Send")
+	}
+}
+
 func TestPreSend_ToolFeedbackBypassesPlaceholderEdit(t *testing.T) {
 	m := newTestManager()
 
