@@ -71,6 +71,7 @@ type InvocationExecutor func(context.Context) (json.RawMessage, error)
 type workerSlot struct {
 	worker          Worker
 	refs            map[string]DriverElement
+	inputs          map[string]string
 	safeFailure     string
 	cleanupComplete bool
 }
@@ -83,6 +84,7 @@ type Broker struct {
 	now            func() time.Time
 	newID          func() (string, error)
 	lookupIP       func(context.Context, string, string) ([]net.IP, error)
+	bindingKey     []byte
 
 	mu    sync.Mutex
 	slots map[string]*workerSlot
@@ -106,10 +108,14 @@ func NewBroker(rootConfig *config.Config, store Store, factory WorkerFactory) (*
 	if err != nil {
 		return nil, err
 	}
+	bindingKey := make([]byte, 32)
+	if _, err = rand.Read(bindingKey); err != nil {
+		return nil, fmt.Errorf("generate browser action binding key: %w", err)
+	}
 	return &Broker{
 		config: browserConfig, policyRevision: policyRevision, store: store, factory: factory,
 		now: time.Now, newID: randomID, lookupIP: net.DefaultResolver.LookupIP,
-		slots: make(map[string]*workerSlot),
+		bindingKey: bindingKey, slots: make(map[string]*workerSlot),
 	}, nil
 }
 

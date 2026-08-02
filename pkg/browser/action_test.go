@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -321,13 +322,22 @@ func TestFileStorePersistsPreparedApprovalBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const secret = "credential-that-must-never-reach-browser-state"
 	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
 		Owner: owner, RequestID: "request_durable", SessionID: session.ID, TabID: session.TabID,
 		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
-		Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observation.Snapshot), Value: "Ada"},
+		Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observation.Snapshot), Value: secret},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	state, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(state, []byte(secret)) || prepared.Action.Action.Value != "" ||
+		!validDigest(prepared.Action.InputDigest) || prepared.Action.InputBytes != len(secret) {
+		t.Fatalf("durable prepared action exposed raw fill input: %+v", prepared.Action)
 	}
 	store.Close()
 	reopened, err := NewFileStore(path, 0, 0)
@@ -338,6 +348,33 @@ func TestFileStorePersistsPreparedApprovalBinding(t *testing.T) {
 	got, err := reopened.GetPreparedAction(context.Background(), prepared.Action.ID)
 	if err != nil || got != prepared.Action {
 		t.Fatalf("reopened prepared action = %+v, %v; want %+v", got, err, prepared.Action)
+	}
+}
+
+func TestExecuteFillFailsClosedWithoutLiveInput(t *testing.T) {
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_missing_input", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observation.Snapshot), Value: "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.slots[session.ID].inputs = nil
+	if _, err = broker.ExecuteAction(
+		context.Background(), owner, prepared.Action.ID, nil,
+	); !errors.Is(err, ErrStale) {
+		t.Fatalf("ExecuteAction() missing live input error = %v, want ErrStale", err)
+	}
+	if len(worker.actions) != 0 {
+		t.Fatalf("worker accepted action without live input: %+v", worker.actions)
 	}
 }
 

@@ -269,6 +269,8 @@ type PreparedAction struct {
 	CurrentOrigin        string `json:"current_origin"`
 	DestinationOrigin    string `json:"destination_origin,omitempty"`
 	Action               Action `json:"action"`
+	InputDigest          string `json:"input_digest,omitempty"`
+	InputBytes           int    `json:"input_bytes,omitempty"`
 	ElementRole          string `json:"element_role,omitempty"`
 	ElementName          string `json:"element_name,omitempty"`
 	Effect               Effect `json:"effect"`
@@ -304,17 +306,21 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 		destination, destinationErr := originFromURL(prepared.Action.URL)
 		if normalizeErr != nil || normalizedURL != prepared.Action.URL || destinationErr != nil ||
 			destination != prepared.DestinationOrigin || prepared.Effect != EffectNavigation ||
-			prepared.ElementRole != "" || prepared.ElementName != "" {
+			prepared.ElementRole != "" || prepared.ElementName != "" ||
+			prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared navigation", ErrInvalid)
 		}
 	case ActionFill:
 		if prepared.DestinationOrigin != "" || !editableElementRole(prepared.ElementRole) ||
-			prepared.Effect != EffectLocalEdit {
+			prepared.Effect != EffectLocalEdit || prepared.Action.Value != "" ||
+			!validDigest(prepared.InputDigest) || prepared.InputBytes < 0 ||
+			prepared.InputBytes > maxTextBytes {
 			return fmt.Errorf("%w: malformed prepared local edit", ErrInvalid)
 		}
 	case ActionClick:
 		if prepared.DestinationOrigin != "" || !elementRoleRegexp.MatchString(prepared.ElementRole) ||
-			prepared.Effect != classifyClickEffect(DriverElement{Role: prepared.ElementRole}) {
+			prepared.Effect != classifyClickEffect(DriverElement{Role: prepared.ElementRole}) ||
+			prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared click", ErrInvalid)
 		}
 	}

@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -87,6 +88,7 @@ func (broker *Broker) Observe(ctx context.Context, owner Owner, sessionID, tabID
 		return Observation{}, err
 	}
 	slot.refs = refs
+	slot.inputs = nil
 	return Observation{
 		SessionID: session.ID, TabID: session.TabID, SnapshotID: snapshotID,
 		SnapshotGeneration: session.SnapshotGeneration, URL: driverObservation.URL,
@@ -116,6 +118,10 @@ func (broker *Broker) PrepareAction(ctx context.Context, request PrepareActionRe
 		session.SnapshotGeneration != request.SnapshotGeneration {
 		return Preparation{}, ErrStale
 	}
+	boundAction, inputDigest, inputBytes, err := broker.bindActionInput(request.Action)
+	if err != nil {
+		return Preparation{}, err
+	}
 	preparedID := derivedIdentifier("prepared", request.Owner, request.SessionID, request.RequestID)
 	if existing, getErr := broker.store.GetPreparedAction(ctx, preparedID); getErr == nil {
 		if broker.now().UTC().UnixNano() >= existing.ExpiresAt {
@@ -123,14 +129,18 @@ func (broker *Broker) PrepareAction(ctx context.Context, request PrepareActionRe
 		}
 		if existing.Owner != request.Owner || existing.SessionID != request.SessionID ||
 			existing.TabID != request.TabID || existing.SnapshotID != request.SnapshotID ||
-			existing.SnapshotGeneration != request.SnapshotGeneration || existing.Action != request.Action {
+			existing.SnapshotGeneration != request.SnapshotGeneration || existing.Action != boundAction ||
+			existing.InputDigest != inputDigest || existing.InputBytes != inputBytes {
 			return Preparation{}, ErrConflict
 		}
+		broker.rememberActionInput(slot, existing, request.Action.Value)
 		return preparationView(existing), nil
 	} else if !errors.Is(getErr, ErrNotFound) {
 		return Preparation{}, getErr
 	}
-	prepared, err := broker.resolvePreparedActionLocked(ctx, session, slot, worker, request)
+	prepared, err := broker.resolvePreparedActionLocked(
+		ctx, session, slot, worker, request, boundAction, inputDigest, inputBytes,
+	)
 	if err != nil {
 		return Preparation{}, err
 	}
@@ -150,6 +160,7 @@ func (broker *Broker) PrepareAction(ctx context.Context, request PrepareActionRe
 	if err = broker.store.CreatePreparation(ctx, prepared, invocation); err != nil {
 		return Preparation{}, err
 	}
+	broker.rememberActionInput(slot, prepared, request.Action.Value)
 	return preparationView(prepared), nil
 }
 
@@ -218,7 +229,7 @@ func (broker *Broker) ExecuteAction(
 		)
 		return denied, errors.Join(ErrDenied, completeErr)
 	}
-	driverAction, err := driverActionForPrepared(slot, prepared)
+	driverAction, err := broker.driverActionForPrepared(slot, prepared)
 	if err != nil {
 		return Invocation{}, err
 	}
@@ -248,13 +259,17 @@ func (broker *Broker) resolvePreparedActionLocked(
 	slot *workerSlot,
 	worker ActionWorker,
 	request PrepareActionRequest,
+	boundAction Action,
+	inputDigest string,
+	inputBytes int,
 ) (PreparedAction, error) {
 	now := broker.now().UTC()
 	prepared := PreparedAction{
 		SessionID: session.ID, Owner: session.Owner, Target: session.Target, Profile: session.Profile,
 		ControllerGeneration: session.ControllerGeneration, TabID: session.TabID,
 		SnapshotID: session.SnapshotID, SnapshotGeneration: session.SnapshotGeneration,
-		CurrentOrigin: session.SnapshotOrigin, Action: request.Action, DryRun: session.DryRun,
+		CurrentOrigin: session.SnapshotOrigin, Action: boundAction,
+		InputDigest: inputDigest, InputBytes: inputBytes, DryRun: session.DryRun,
 		PolicyRevision: session.PolicyRevision, CatalogRevision: worker.CatalogRevision(),
 		CreatedAt: now.UnixNano(),
 		ExpiresAt: now.Add(time.Duration(broker.config.Limits.Effective().PreparedSeconds) * time.Second).UnixNano(),
@@ -411,6 +426,7 @@ func (broker *Broker) invalidateSnapshotLocked(ctx context.Context, sessionID st
 	}
 	if slot := broker.slots[sessionID]; slot != nil {
 		slot.refs = nil
+		slot.inputs = nil
 	}
 	return nil
 }
@@ -452,7 +468,10 @@ func editableElementRole(role string) bool {
 	return role == "textbox" || role == "searchbox" || role == "combobox"
 }
 
-func driverActionForPrepared(slot *workerSlot, prepared PreparedAction) (DriverAction, error) {
+func (broker *Broker) driverActionForPrepared(
+	slot *workerSlot,
+	prepared PreparedAction,
+) (DriverAction, error) {
 	switch prepared.Action.Kind {
 	case ActionNavigate:
 		return DriverAction{Kind: DriverNavigate, URL: prepared.Action.URL}, nil
@@ -462,15 +481,57 @@ func driverActionForPrepared(slot *workerSlot, prepared PreparedAction) (DriverA
 			return DriverAction{}, ErrStale
 		}
 		kind := DriverClick
+		value := ""
 		if prepared.Action.Kind == ActionFill {
 			kind = DriverFill
+			var ok bool
+			value, ok = slot.inputs[prepared.ID]
+			if !ok || !broker.actionInputMatches(prepared, value) {
+				return DriverAction{}, ErrStale
+			}
 		}
 		return DriverAction{
-			Kind: kind, Target: element.Target, Element: element.Name, Value: prepared.Action.Value,
+			Kind: kind, Target: element.Target, Element: element.Name, Value: value,
 		}, nil
 	default:
 		return DriverAction{}, ErrInvalid
 	}
+}
+
+func (broker *Broker) bindActionInput(action Action) (Action, string, int, error) {
+	if action.Kind != ActionFill {
+		return action, "", 0, nil
+	}
+	if len(broker.bindingKey) != sha256.Size {
+		return Action{}, "", 0, ErrInvalid
+	}
+	mac := hmac.New(sha256.New, broker.bindingKey)
+	_, _ = mac.Write([]byte(action.Value))
+	digest := hex.EncodeToString(mac.Sum(nil))
+	bound := action
+	bound.Value = ""
+	return bound, digest, len(action.Value), nil
+}
+
+func (broker *Broker) actionInputMatches(prepared PreparedAction, value string) bool {
+	_, digest, size, err := broker.bindActionInput(Action{Kind: ActionFill, Value: value})
+	return err == nil && size == prepared.InputBytes && hmac.Equal(
+		[]byte(digest), []byte(prepared.InputDigest),
+	)
+}
+
+func (broker *Broker) rememberActionInput(
+	slot *workerSlot,
+	prepared PreparedAction,
+	value string,
+) {
+	if prepared.Action.Kind != ActionFill {
+		return
+	}
+	if slot.inputs == nil {
+		slot.inputs = make(map[string]string)
+	}
+	slot.inputs[prepared.ID] = value
 }
 
 func (broker *Broker) originAllowed(session Session, origin string) bool {
