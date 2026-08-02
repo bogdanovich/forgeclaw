@@ -333,10 +333,10 @@ type turnState struct {
 	providerCancel        context.CancelFunc
 	turnCancel            context.CancelFunc
 
-	restorePointHistory []providers.Message
-	restorePointSummary string
-	persistedMessages   []providers.Message
-	acceptedSteering    []providers.Message
+	canonicalRestoreHistory []providers.Message
+	canonicalRestoreSummary string
+	persistedMessages       []providers.Message
+	acceptedSteering        []providers.Message
 
 	// SubTurn support.
 	depth                int                    // SubTurn depth (0 for root turn)
@@ -411,8 +411,7 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		ts.session = agent.Sessions
 		history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey)
 		ts.initialHistoryLength = len(history)
-		ts.restorePointHistory = append([]providers.Message(nil), history...)
-		ts.restorePointSummary = agent.Sessions.GetSummary(opts.Dispatch.SessionKey)
+		ts.captureCanonicalRestorePoint(history, agent.Sessions.GetSummary(opts.Dispatch.SessionKey))
 	}
 
 	return ts
@@ -867,11 +866,11 @@ func (ts *turnState) eventMeta(source, tracePath string) HookMeta {
 	}
 }
 
-func (ts *turnState) captureRestorePoint(history []providers.Message, summary string) {
+func (ts *turnState) captureCanonicalRestorePoint(history []providers.Message, summary string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	ts.restorePointHistory = append([]providers.Message(nil), history...)
-	ts.restorePointSummary = summary
+	ts.canonicalRestoreHistory = append([]providers.Message(nil), history...)
+	ts.canonicalRestoreSummary = summary
 }
 
 func (ts *turnState) recordPersistedMessage(msg providers.Message) {
@@ -898,9 +897,12 @@ func (ts *turnState) acceptedSteeringSnapshot() []providers.Message {
 	return append([]providers.Message(nil), ts.acceptedSteering...)
 }
 
-func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
-	history := agent.Sessions.GetHistory(ts.sessionKey)
-	summary := agent.Sessions.GetSummary(ts.sessionKey)
+func (ts *turnState) refreshCanonicalRestorePointFromSession() {
+	if ts == nil || ts.session == nil {
+		return
+	}
+	history := ts.session.GetHistory(ts.sessionKey)
+	summary := ts.session.GetSummary(ts.sessionKey)
 
 	persisted := ts.persistedMessagesSnapshot()
 
@@ -908,7 +910,7 @@ func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
 		history = append([]providers.Message(nil), history[:len(history)-matched]...)
 	}
 
-	ts.captureRestorePoint(history, summary)
+	ts.captureCanonicalRestorePoint(history, summary)
 }
 
 func (ts *turnState) restoreSession() error {
@@ -916,8 +918,8 @@ func (ts *turnState) restoreSession() error {
 		return nil
 	}
 	ts.mu.RLock()
-	history := append([]providers.Message(nil), ts.restorePointHistory...)
-	summary := ts.restorePointSummary
+	history := append([]providers.Message(nil), ts.canonicalRestoreHistory...)
+	summary := ts.canonicalRestoreSummary
 	ts.mu.RUnlock()
 
 	return ts.session.RestoreTurnSnapshot(context.Background(), ts.sessionKey, history, summary)

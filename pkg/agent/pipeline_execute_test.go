@@ -29,6 +29,92 @@ type toolResultFailingJournal struct {
 	err error
 }
 
+type fixedToolResultTool struct {
+	name       string
+	result     *tools.ToolResult
+	executions int
+}
+
+func (t *fixedToolResultTool) Name() string        { return t.name }
+func (t *fixedToolResultTool) Description() string { return "fixed tool result" }
+func (t *fixedToolResultTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t *fixedToolResultTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+	t.executions++
+	return t.result
+}
+
+type recordingToolResultDelivery struct {
+	outboundCalls int
+	syncCalls     int
+}
+
+func (d *recordingToolResultDelivery) PublishOutbound(context.Context, bus.OutboundMessage) error {
+	d.outboundCalls++
+	return nil
+}
+
+func (*recordingToolResultDelivery) GetStreamer(
+	context.Context,
+	string,
+	string,
+	string,
+	runtimeevents.TraceScope,
+) (bus.Streamer, bool) {
+	return nil, false
+}
+
+func (d *recordingToolResultDelivery) applySyncToolResultDelivery(
+	_ context.Context,
+	_ *turnState,
+	result *tools.ToolResult,
+	_ string,
+) ([]providers.Attachment, *tools.ToolResult) {
+	if result != nil && (result.ResponseHandled || result.ImmediateDelivery) {
+		d.syncCalls++
+	}
+	return nil, result
+}
+
+type toolResultRespondHook struct {
+	result *tools.ToolResult
+}
+
+func (h *toolResultRespondHook) BeforeLLM(
+	_ context.Context,
+	req *LLMHookRequest,
+) (*LLMHookRequest, HookDecision) {
+	return req, HookDecision{Action: HookActionContinue}
+}
+
+func (h *toolResultRespondHook) AfterLLM(
+	_ context.Context,
+	resp *LLMHookResponse,
+) (*LLMHookResponse, HookDecision) {
+	return resp, HookDecision{Action: HookActionContinue}
+}
+
+func (h *toolResultRespondHook) BeforeTool(
+	_ context.Context,
+	req *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision) {
+	next := req.Clone()
+	next.HookResult = h.result
+	return next, HookDecision{Action: HookActionRespond}
+}
+
+func (h *toolResultRespondHook) AfterTool(
+	_ context.Context,
+	resp *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision) {
+	return resp, HookDecision{Action: HookActionContinue}
+}
+
+func (*toolResultRespondHook) ApproveTool(context.Context, *ToolApprovalRequest) ApprovalDecision {
+	return ApprovalDecision{Approved: true}
+}
+
 func (s *toolResultFailingJournal) AppendTurnMessage(
 	ctx context.Context,
 	sessionKey string,
@@ -121,6 +207,96 @@ func TestPipelineToolResultJournalFailureLeavesDurableUnresolvedIntent(t *testin
 	history := baseStore.GetHistory(ts.sessionKey)
 	if len(history) != 1 || history[0].Role != "assistant" || len(history[0].ToolCalls) != 1 {
 		t.Fatalf("durable history = %+v, want unresolved assistant tool intent", history)
+	}
+}
+
+func TestPipelineToolResultJournalFailurePreventsEveryDeliveryMode(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result func() *tools.ToolResult
+		hook   bool
+	}{
+		{
+			name: "normal for-user",
+			result: func() *tools.ToolResult {
+				return &tools.ToolResult{ForLLM: "normal result", ForUser: "normal delivery"}
+			},
+		},
+		{
+			name: "response handled",
+			result: func() *tools.ToolResult {
+				return (&tools.ToolResult{ForLLM: "handled result", ForUser: "handled delivery"}).WithResponseHandled()
+			},
+		},
+		{
+			name: "immediate delivery",
+			result: func() *tools.ToolResult {
+				return (&tools.ToolResult{ForLLM: "immediate result", ForUser: "immediate delivery"}).WithImmediateDelivery()
+			},
+		},
+		{
+			name: "hook response",
+			result: func() *tools.ToolResult {
+				return &tools.ToolResult{ForLLM: "hook result", ForUser: "hook delivery"}
+			},
+			hook: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := tools.NewToolRegistry()
+			tool := &fixedToolResultTool{name: "delivery-test", result: tc.result()}
+			registry.Register(tool)
+			baseStore := session.NewSessionManager("")
+			journalErr := errors.New("tool result journal failed")
+			store := &toolResultFailingJournal{SessionStore: baseStore, err: journalErr}
+			agent := &AgentInstance{ID: "main", Tools: registry, Sessions: store}
+			ts := &turnState{
+				agent: agent, agentID: agent.ID, turnID: "turn-delivery-failure",
+				sessionKey: "session-delivery-failure",
+				opts: processOptions{
+					SendResponse: true,
+					Dispatch:     DispatchRequest{SessionKey: "session-delivery-failure"},
+				},
+			}
+			toolCall := providers.ToolCall{ID: "call-delivery", Name: tool.Name(), Arguments: map[string]any{}}
+			intent := providers.Message{Role: "assistant", ToolCalls: []providers.ToolCall{toolCall}}
+			if err := store.AppendTurnMessage(t.Context(), ts.sessionKey, intent); err != nil {
+				t.Fatal(err)
+			}
+			exec := newTurnExecution(agent, ts.opts, nil, "", []providers.Message{intent})
+			exec.normalizedToolCalls = []providers.ToolCall{toolCall}
+			exec.assistantToolCallsPersisted = true
+			delivery := &recordingToolResultDelivery{}
+			pipeline := &Pipeline{
+				Runtime: PipelineRuntimeServices{Bus: delivery},
+				Interaction: PipelineInteractionServices{
+					SyncToolDelivery: delivery,
+				},
+			}
+			if tc.hook {
+				pipeline.Interaction.Hooks = &toolResultRespondHook{result: tc.result()}
+			}
+
+			outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+			if !errors.Is(outcome.JournalErr, journalErr) {
+				t.Fatalf("journal error = %v, want %v", outcome.JournalErr, journalErr)
+			}
+			if delivery.outboundCalls != 0 || delivery.syncCalls != 0 {
+				t.Fatalf(
+					"delivery calls = outbound:%d sync:%d, want none",
+					delivery.outboundCalls,
+					delivery.syncCalls,
+				)
+			}
+			if tc.hook && tool.executions != 0 {
+				t.Fatalf("hook-response tool executions = %d, want 0", tool.executions)
+			}
+			history := baseStore.GetHistory(ts.sessionKey)
+			if len(history) != 1 || history[0].Role != "assistant" || len(history[0].ToolCalls) != 1 {
+				t.Fatalf("durable history = %+v, want unresolved assistant intent", history)
+			}
+		})
 	}
 }
 

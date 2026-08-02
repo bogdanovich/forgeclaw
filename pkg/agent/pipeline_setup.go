@@ -45,8 +45,6 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			budgetReport = resp.Budget
 		}
 	}
-	ts.captureRestorePoint(history, summary)
-
 	ts.recordSkillContextSnapshot(skillContextTriggerInitialBuild, contextualSkills)
 	messages := p.buildTurnMessages(
 		ts,

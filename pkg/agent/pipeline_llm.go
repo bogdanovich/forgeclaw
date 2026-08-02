@@ -323,7 +323,7 @@ func (p *Pipeline) CallLLM(
 				for i := range ts.persistedMessages {
 					ts.persistedMessages[i].Media = nil
 				}
-				ts.refreshRestorePointFromSession(ts.agent)
+				ts.refreshCanonicalRestorePointFromSession()
 			}
 			continue
 		}
@@ -432,7 +432,7 @@ func (p *Pipeline) CallLLM(
 				})
 			}
 			compactCancel()
-			ts.refreshRestorePointFromSession(ts.agent)
+			ts.refreshCanonicalRestorePointFromSession()
 			persistedTurn := ts.persistedMessagesSnapshot()
 			protectedTurnTail := append([]providers.Message(nil), persistedTurn...)
 			asmResp, asmErr := p.Context.Runtime.Assemble(ctx, &AssembleRequest{

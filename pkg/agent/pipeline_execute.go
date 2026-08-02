@@ -376,6 +376,29 @@ toolLoop:
 							"media_count": len(hookResult.Media),
 						})
 					}
+					var toolResultMedia []string
+					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
+						recordCompletionMedia(exec, p.Context.MediaResolver, hookResult.Media)
+						hookResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, hookResult.Media)
+						toolResultMedia = append(toolResultMedia, hookResult.Media...)
+					}
+					contentForLLM := p.filterToolContentForLLM(hookResult.ContentForLLM())
+					_, semantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
+					loopDecision := p.afterToolLoopDecision(
+						ts, exec, toolName, toolArgs, hookResult, contentForLLM, semantics,
+					)
+					contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
+					toolResultMsg := providers.Message{
+						Role:             "tool",
+						Content:          contentForLLM,
+						ToolCallID:       tc.ID,
+						ToolResultStatus: toolResultContextStatus(hookResult),
+						Media:            toolResultMedia,
+					}
+					if err := runner.commitToolResult(toolResultMsg); err != nil {
+						return ToolLoopOutcome{}
+					}
+
 					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
 					hookResult = deliveredResult
 					runner.handledAttachments = append(runner.handledAttachments, attachments...)
@@ -391,27 +414,6 @@ toolLoop:
 
 					if !hookResult.ResponseHandled {
 						exec.allResponsesHandled = false
-					}
-
-					contentForLLM := p.filterToolContentForLLM(hookResult.ContentForLLM())
-					var toolResultMedia []string
-					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
-						recordCompletionMedia(exec, p.Context.MediaResolver, hookResult.Media)
-						hookResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, hookResult.Media)
-						contentForLLM = p.filterToolContentForLLM(hookResult.ContentForLLM())
-						toolResultMedia = append(toolResultMedia, hookResult.Media...)
-					}
-					_, semantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
-					loopDecision := p.afterToolLoopDecision(
-						ts, exec, toolName, toolArgs, hookResult, contentForLLM, semantics,
-					)
-					contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
-					toolResultMsg := providers.Message{
-						Role:             "tool",
-						Content:          contentForLLM,
-						ToolCallID:       tc.ID,
-						ToolResultStatus: toolResultContextStatus(hookResult),
-						Media:            toolResultMedia,
 					}
 
 					p.emitEvent(
@@ -438,7 +440,6 @@ toolLoop:
 						inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 					)
 
-					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 					if loopDecision.Action == loopguard.ActionHalt {
 						runner.appendSkippedToolMessages(
 							i+1,
@@ -889,14 +890,32 @@ toolLoop:
 				"media_count": len(toolResult.Media),
 			})
 		}
-		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
-		toolResult = deliveredResult
-		runner.handledAttachments = append(runner.handledAttachments, attachments...)
-
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
 			recordCompletionMedia(exec, p.Context.MediaResolver, toolResult.Media)
 			toolResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, toolResult.Media)
 		}
+		contentForLLM := p.filterToolContentForLLM(toolResult.ContentForLLM())
+		loopDecision = p.afterToolLoopDecision(
+			ts, exec, toolName, toolArgs, toolResult, contentForLLM, toolSemantics,
+		)
+		contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
+
+		toolResultMsg := providers.Message{
+			Role:             "tool",
+			Content:          contentForLLM,
+			ToolCallID:       toolCallID,
+			ToolResultStatus: toolResultContextStatus(toolResult),
+		}
+		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
+			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
+		}
+		if err := runner.commitToolResult(toolResultMsg); err != nil {
+			return ToolLoopOutcome{}
+		}
+
+		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
+		toolResult = deliveredResult
+		runner.handledAttachments = append(runner.handledAttachments, attachments...)
 
 		if !toolResult.ResponseHandled {
 			exec.allResponsesHandled = false
@@ -914,21 +933,6 @@ toolLoop:
 					"tool":        toolName,
 					"content_len": len(toolResult.ForUser),
 				})
-		}
-		contentForLLM := p.filterToolContentForLLM(toolResult.ContentForLLM())
-		loopDecision = p.afterToolLoopDecision(
-			ts, exec, toolName, toolArgs, toolResult, contentForLLM, toolSemantics,
-		)
-		contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
-
-		toolResultMsg := providers.Message{
-			Role:             "tool",
-			Content:          contentForLLM,
-			ToolCallID:       toolCallID,
-			ToolResultStatus: toolResultContextStatus(toolResult),
-		}
-		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
-			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
 		}
 		p.emitEvent(
 			runtimeevents.KindAgentToolExecEnd,
@@ -968,7 +972,6 @@ toolLoop:
 							"session_id": ts.sessionKey,
 						})
 					exec.allResponsesHandled = false
-					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 					exec.messages = runner.messages
 					return ToolLoopOutcome{
 						Control:      ToolControlBreak,
@@ -989,7 +992,6 @@ toolLoop:
 							"session_id": ts.sessionKey,
 						})
 					exec.allResponsesHandled = false
-					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 					exec.messages = runner.messages
 					return ToolLoopOutcome{
 						Control:      ToolControlBreak,
@@ -998,7 +1000,6 @@ toolLoop:
 				}
 			}
 		}
-		runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 		if loopDecision.Action == loopguard.ActionHalt {
 			runner.appendSkippedToolMessages(
 				i+1,
@@ -1130,10 +1131,10 @@ const (
 	toolMessagePersistAndIngest
 )
 
-func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMessageIngestMode) {
+func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMessageIngestMode) error {
 	r.messages = append(r.messages, msg)
 	if r.ts == nil || r.ts.opts.NoHistory {
-		return
+		return nil
 	}
 	writeErr := persistFullSessionMessage(r.turnCtx, r.ts.agent.Sessions, r.ts.sessionKey, msg)
 	if writeErr == nil {
@@ -1150,6 +1151,11 @@ func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMes
 	if writeErr != nil && !r.journalOwnershipTransferred && r.journalErr == nil {
 		r.journalErr = writeErr
 	}
+	return writeErr
+}
+
+func (r *toolLoopRunner) commitToolResult(msg providers.Message) error {
+	return r.appendToolMessage(msg, toolMessagePersistAndIngest)
 }
 
 func (r *toolLoopRunner) captureAfterToolSteering(markAdditionalSteering bool) {

@@ -950,7 +950,7 @@ func TestHardAbortSessionRollback(t *testing.T) {
 		pendingResults:       make(chan *tools.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, 5),
 	}
-	rootTS.captureRestorePoint(sess.GetHistory(""), sess.GetSummary(""))
+	rootTS.captureCanonicalRestorePoint(sess.GetHistory(""), sess.GetSummary(""))
 
 	// Register the turn state
 	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
@@ -1146,7 +1146,7 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 		pendingResults:       make(chan *tools.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, 5),
 	}
-	rootTS.captureRestorePoint(sess.GetHistory("")[:1], sess.GetSummary(""))
+	rootTS.captureCanonicalRestorePoint(sess.GetHistory("")[:1], sess.GetSummary(""))
 
 	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
 

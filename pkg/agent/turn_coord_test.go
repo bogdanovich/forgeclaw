@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1687,6 +1688,45 @@ func TestHardAbortSnapshotFailureIsNotReportedAsSuccessfulRollback(t *testing.T)
 	history := agent.Sessions.GetHistory(ts.sessionKey)
 	if len(history) != 1 || history[0].Content != opts.Dispatch.UserMessage {
 		t.Fatalf("failed rollback unexpectedly changed history: %+v", history)
+	}
+}
+
+func TestHardAbortRestoresCanonicalHistoryWhenPromptAssemblyIsEmpty(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	sessionKey := "empty-assembly-abort"
+	wantHistory := []providers.Message{
+		{Role: "user", Content: "retained root"},
+		{Role: "assistant", Content: "retained response"},
+	}
+	agent.Sessions.SetHistory(sessionKey, wantHistory)
+	agent.Sessions.SetSummary(sessionKey, "retained summary")
+	if err := agent.Sessions.Save(sessionKey); err != nil {
+		t.Fatal(err)
+	}
+	wantHistory = agent.Sessions.GetHistory(sessionKey)
+
+	opts := normalizeProcessOptions(makeTestProcessOpts(sessionKey))
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-empty-assembly-abort",
+		context: newTurnContext(nil, nil, nil),
+	})
+	pipeline := NewPipeline(al)
+	pipeline.Context.Runtime = &noneContextManager{}
+	if _, err := pipeline.SetupTurn(t.Context(), ts); err != nil {
+		t.Fatal(err)
+	}
+	al.registerActiveTurn(ts)
+	defer al.clearActiveTurn(ts)
+
+	if err := al.HardAbort(sessionKey); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.Sessions.GetHistory(sessionKey); !reflect.DeepEqual(got, wantHistory) {
+		t.Fatalf("history = %+v, want canonical snapshot %+v", got, wantHistory)
+	}
+	if got := agent.Sessions.GetSummary(sessionKey); got != "retained summary" {
+		t.Fatalf("summary = %q, want retained summary", got)
 	}
 }
 
