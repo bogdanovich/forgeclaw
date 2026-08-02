@@ -794,7 +794,10 @@ func (m *Manager) reconnectServer(
 		m.mu.Unlock()
 		err = m.rejectConnection(freshConn)
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("manager is closed"), fmt.Errorf("fresh connection cleanup failed: %w", err))
+			return nil, errors.Join(
+				fmt.Errorf("manager is closed"),
+				fmt.Errorf("fresh connection cleanup failed: %w", err),
+			)
 		}
 		return nil, fmt.Errorf("manager is closed")
 	}
