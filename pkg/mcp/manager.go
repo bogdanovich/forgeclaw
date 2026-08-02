@@ -119,15 +119,15 @@ func loadEnvFile(path string) (map[string]string, error) {
 
 // ServerConnection represents a connection to an MCP server
 type ServerConnection struct {
-	Name           string
-	Config         config.MCPServerConfig
-	Client         *mcp.Client
-	Session        *mcp.ClientSession
-	Tools          []*mcp.Tool
-	reconnectMu    sync.Mutex
-	exclusiveLease *exclusiveServerLease
-	cleanup        io.Closer
-	cleanupFailed  bool
+	Name          string
+	Config        config.MCPServerConfig
+	Client        *mcp.Client
+	Session       *mcp.ClientSession
+	Tools         []*mcp.Tool
+	reconnectMu   sync.Mutex
+	leaseGroup    *exclusiveLeaseGroup
+	cleanup       io.Closer
+	cleanupFailed bool
 	// recoveryRequired is set after a session-loss reconnect fails. New calls
 	// must recover this known-stale connection before dispatching a tool.
 	recoveryRequired atomic.Bool
@@ -141,6 +141,12 @@ type Manager struct {
 	mu             sync.RWMutex
 	closed         atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
 	wg             sync.WaitGroup // tracks in-flight CallTool calls
+}
+
+type exclusiveLeaseGroup struct {
+	mu      sync.Mutex
+	lease   *exclusiveServerLease
+	members map[*ServerConnection]struct{}
 }
 
 var connectServerFunc = connectServer
@@ -326,6 +332,11 @@ func (m *Manager) ConnectServer(
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
 	}
+	if err := m.beginLifecycleOperation(); err != nil {
+		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
+		return err
+	}
+	defer m.wg.Done()
 	cfg.SessionLossReplay = config.EffectiveMCPSessionLossReplay(cfg)
 
 	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
@@ -339,29 +350,25 @@ func (m *Manager) ConnectServer(
 		}
 	}
 	conn, err := connectServerFunc(ctx, name, cfg)
+	if conn != nil {
+		conn.attachExclusiveLease(lease)
+	} else {
+		lease.release()
+	}
 	if err != nil {
-		retain, cleanupErr := closeRejectedConnection(conn, lease)
-		if retain {
-			m.mu.Lock()
-			m.pendingCleanup = append(m.pendingCleanup, conn)
-			m.mu.Unlock()
-		}
+		cleanupErr := m.rejectConnection(conn)
 		if cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("connection cleanup failed: %w", cleanupErr))
 		}
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
 	}
-	conn.exclusiveLease = lease
 
 	m.mu.Lock()
 	if m.closed.Load() {
-		closedErr := fmt.Errorf("manager is closed")
-		retain, cleanupErr := closeRejectedConnection(conn, lease)
-		if retain {
-			m.pendingCleanup = append(m.pendingCleanup, conn)
-		}
 		m.mu.Unlock()
+		closedErr := fmt.Errorf("manager is closed")
+		cleanupErr := m.rejectConnection(conn)
 		if cleanupErr != nil {
 			closedErr = errors.Join(closedErr, fmt.Errorf("connection cleanup failed: %w", cleanupErr))
 		}
@@ -382,21 +389,29 @@ func (m *Manager) ConnectServer(
 	return nil
 }
 
-func closeRejectedConnection(
-	conn *ServerConnection,
-	lease *exclusiveServerLease,
-) (retain bool, err error) {
-	if conn == nil {
-		lease.release()
-		return false, nil
+func (m *Manager) beginLifecycleOperation() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed.Load() {
+		return fmt.Errorf("manager is closed")
 	}
-	conn.exclusiveLease = lease
-	err = conn.close()
+	m.wg.Add(1)
+	return nil
+}
+
+func (m *Manager) rejectConnection(conn *ServerConnection) error {
+	if conn == nil {
+		return nil
+	}
+	err := conn.close()
 	if err == nil || conn.cleanup == nil {
 		conn.releaseExclusiveLease()
-		return false, err
+		return err
 	}
-	return true, err
+	m.mu.Lock()
+	m.pendingCleanup = append(m.pendingCleanup, conn)
+	m.mu.Unlock()
+	return err
 }
 
 func connectServer(
@@ -752,37 +767,65 @@ func (m *Manager) reconnectServer(
 	}
 	staleConn.recoveryRequired.Store(true)
 
+	// A replacement must not start while the stale process tree may still own
+	// the exclusive resource. Keep the stale connection's lease-group
+	// membership as a sentinel across replacement startup, and release that
+	// sentinel only after the fresh connection is admitted.
+	if err := staleConn.close(); err != nil {
+		return nil, fmt.Errorf("close stale server before reconnect: %w", err)
+	}
+	if staleConn.leaseGroup.hasOtherMembers(staleConn) {
+		return nil, fmt.Errorf("prior reconnect cleanup is still pending")
+	}
+
 	freshConn, err := connectServerFunc(ctx, serverName, staleConn.Config)
+	if freshConn != nil {
+		freshConn.attachExclusiveLeaseGroup(staleConn.leaseGroup)
+	}
 	if err != nil {
+		if cleanupErr := m.rejectConnection(freshConn); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("fresh connection cleanup failed: %w", cleanupErr))
+		}
 		return nil, err
 	}
 
 	m.mu.Lock()
 	if m.closed.Load() {
 		m.mu.Unlock()
-		_ = freshConn.Session.Close()
+		err = m.rejectConnection(freshConn)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("manager is closed"), fmt.Errorf("fresh connection cleanup failed: %w", err))
+		}
 		return nil, fmt.Errorf("manager is closed")
 	}
 
 	currentConn, ok = m.servers[serverName]
 	if !ok {
 		m.mu.Unlock()
-		_ = freshConn.Session.Close()
+		err = m.rejectConnection(freshConn)
+		staleConn.releaseExclusiveLease()
+		if err != nil {
+			return nil, errors.Join(
+				fmt.Errorf("server %s not found", serverName),
+				fmt.Errorf("fresh connection cleanup failed: %w", err),
+			)
+		}
 		return nil, fmt.Errorf("server %s not found", serverName)
 	}
 
 	if currentConn == staleConn {
-		freshConn.exclusiveLease = staleConn.exclusiveLease
-		staleConn.exclusiveLease = nil
 		m.servers[serverName] = freshConn
-		staleToClose := staleConn
 		m.mu.Unlock()
-		_ = staleToClose.Session.Close()
+		staleConn.releaseExclusiveLease()
 		return freshConn, nil
 	}
 
 	m.mu.Unlock()
-	_ = freshConn.Session.Close()
+	if cleanupErr := m.rejectConnection(freshConn); cleanupErr != nil {
+		staleConn.releaseExclusiveLease()
+		return nil, fmt.Errorf("superseded fresh connection cleanup failed: %w", cleanupErr)
+	}
+	staleConn.releaseExclusiveLease()
 	return currentConn, nil
 }
 
@@ -791,7 +834,9 @@ func (m *Manager) Close() error {
 	// Closing prevents new calls immediately, but failed server cleanup remains
 	// retryable and retains its exclusive lease. A second Close is therefore a
 	// real cleanup retry rather than an unconditional no-op.
+	m.mu.Lock()
 	m.closed.Store(true)
+	m.mu.Unlock()
 
 	// Wait for all in-flight CallTool calls to finish before closing sessions
 	// After closed=true is set, no new CallTool can start (they check closed first)
@@ -865,11 +910,61 @@ func (c *ServerConnection) close() error {
 }
 
 func (c *ServerConnection) releaseExclusiveLease() {
-	if c == nil || c.exclusiveLease == nil {
+	if c == nil || c.leaseGroup == nil {
 		return
 	}
-	c.exclusiveLease.release()
-	c.exclusiveLease = nil
+	group := c.leaseGroup
+	c.leaseGroup = nil
+	group.remove(c)
+}
+
+func (c *ServerConnection) attachExclusiveLease(lease *exclusiveServerLease) {
+	if c == nil || lease == nil {
+		return
+	}
+	c.attachExclusiveLeaseGroup(&exclusiveLeaseGroup{
+		lease: lease, members: make(map[*ServerConnection]struct{}),
+	})
+}
+
+func (c *ServerConnection) attachExclusiveLeaseGroup(group *exclusiveLeaseGroup) {
+	if c == nil || group == nil || c.leaseGroup == group {
+		return
+	}
+	group.mu.Lock()
+	group.members[c] = struct{}{}
+	group.mu.Unlock()
+	c.leaseGroup = group
+}
+
+func (g *exclusiveLeaseGroup) remove(conn *ServerConnection) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	delete(g.members, conn)
+	empty := len(g.members) == 0
+	lease := g.lease
+	if empty {
+		g.lease = nil
+	}
+	g.mu.Unlock()
+	if empty {
+		lease.release()
+	}
+}
+
+func (g *exclusiveLeaseGroup) hasOtherMembers(conn *ServerConnection) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	count := len(g.members)
+	if _, ok := g.members[conn]; ok {
+		count--
+	}
+	return count > 0
 }
 
 // GetAllTools returns all tools from all connected servers
