@@ -131,7 +131,10 @@ func TestBrokerRecoverMarksSessionLostAndAcceptedInvocationUnknown(t *testing.T)
 	if err = recovered.Recover(context.Background()); err != nil {
 		t.Fatalf("idempotent Recover() error = %v", err)
 	}
-	if _, err = recovered.Open(context.Background(), OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"}); err != nil {
+	if _, err = recovered.Open(
+		context.Background(),
+		OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"},
+	); err != nil {
 		t.Fatalf("Open() after recovery error = %v", err)
 	}
 }
@@ -153,7 +156,10 @@ func TestBrokerSweepEnforcesIdleAndAbsoluteExpiry(t *testing.T) {
 			broker := lifecycleTestBroker(t, root, NewMemoryStore(), factory)
 			now := time.Unix(1_000, 0).UTC()
 			broker.now = func() time.Time { return now }
-			session, err := broker.Open(context.Background(), OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"})
+			session, err := broker.Open(
+				context.Background(),
+				OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -177,7 +183,10 @@ func TestBrokerTouchRenewsIdleButNotAbsoluteLifetime(t *testing.T) {
 	broker := lifecycleTestBroker(t, root, NewMemoryStore(), &fakeWorkerFactory{})
 	now := time.Unix(2_000, 0).UTC()
 	broker.now = func() time.Time { return now }
-	session, err := broker.Open(context.Background(), OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"})
+	session, err := broker.Open(
+		context.Background(),
+		OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +235,8 @@ func TestBrokerExecutePreparedPersistsAcceptanceAndReturnsTerminalResultIdempote
 		t.Fatalf("first ExecutePrepared() = %+v, %v; calls = %d", first, err, calls)
 	}
 	second, err := broker.ExecutePrepared(context.Background(), owner, invocation.ID, invocation.ActionHash, execute)
-	if err != nil || second.State != InvocationSucceeded || calls != 1 || string(second.TerminalResult) != `{"ok":true}` {
+	if err != nil || second.State != InvocationSucceeded || calls != 1 ||
+		string(second.TerminalResult) != `{"ok":true}` {
 		t.Fatalf("second ExecutePrepared() = %+v, %v; calls = %d", second, err, calls)
 	}
 }
@@ -251,10 +261,16 @@ func TestBrokerExecutePreparedNeverReplaysAcceptedInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	got, err := broker.ExecutePrepared(context.Background(), owner, invocation.ID, invocation.ActionHash, func(context.Context) (json.RawMessage, error) {
-		calls++
-		return json.RawMessage(`{"unexpected":true}`), nil
-	})
+	got, err := broker.ExecutePrepared(
+		context.Background(),
+		owner,
+		invocation.ID,
+		invocation.ActionHash,
+		func(context.Context) (json.RawMessage, error) {
+			calls++
+			return json.RawMessage(`{"unexpected":true}`), nil
+		},
+	)
 	if err != nil || got.State != InvocationUnknown || calls != 0 {
 		t.Fatalf("ExecutePrepared() = %+v, %v; calls = %d", got, err, calls)
 	}
@@ -273,10 +289,16 @@ func TestBrokerExecutePreparedDoesNotDispatchBeforeDurableAcceptance(t *testing.
 		t.Fatal(err)
 	}
 	calls := 0
-	_, err = broker.ExecutePrepared(context.Background(), owner, invocation.ID, invocation.ActionHash, func(context.Context) (json.RawMessage, error) {
-		calls++
-		return json.RawMessage(`{"unexpected":true}`), nil
-	})
+	_, err = broker.ExecutePrepared(
+		context.Background(),
+		owner,
+		invocation.ID,
+		invocation.ActionHash,
+		func(context.Context) (json.RawMessage, error) {
+			calls++
+			return json.RawMessage(`{"unexpected":true}`), nil
+		},
+	)
 	if !errors.Is(err, ErrStale) || calls != 0 {
 		t.Fatalf("ExecutePrepared() error = %v, calls = %d; want durable failure and no dispatch", err, calls)
 	}
@@ -296,7 +318,10 @@ func TestBrokerExecutePreparedCancellationBoundary(t *testing.T) {
 			store := NewMemoryStore()
 			broker := lifecycleTestBroker(t, admittedBrowserConfig(), store, &fakeWorkerFactory{})
 			owner := testOwner()
-			session, err := broker.Open(context.Background(), OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"})
+			session, err := broker.Open(
+				context.Background(),
+				OpenRequest{Owner: owner, Target: "gateway", Profile: "managed"},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -309,11 +334,17 @@ func TestBrokerExecutePreparedCancellationBoundary(t *testing.T) {
 				cancel()
 			}
 			calls := 0
-			got, err := broker.ExecutePrepared(ctx, owner, invocation.ID, invocation.ActionHash, func(context.Context) (json.RawMessage, error) {
-				calls++
-				cancel()
-				return nil, context.Canceled
-			})
+			got, err := broker.ExecutePrepared(
+				ctx,
+				owner,
+				invocation.ID,
+				invocation.ActionHash,
+				func(context.Context) (json.RawMessage, error) {
+					calls++
+					cancel()
+					return nil, context.Canceled
+				},
+			)
 			if err != nil || got.State != test.wantState || (got.AcceptedAt != 0) != test.wantAcceptedAt {
 				t.Fatalf("ExecutePrepared() = %+v, %v", got, err)
 			}
@@ -392,7 +423,10 @@ func TestBrokerSweepPrunesOnlyExpiredTerminalInvocations(t *testing.T) {
 func TestBrokerPolicyChangeInvalidatesSession(t *testing.T) {
 	factory := &fakeWorkerFactory{}
 	broker := lifecycleTestBroker(t, admittedBrowserConfig(), NewMemoryStore(), factory)
-	session, err := broker.Open(context.Background(), OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"})
+	session, err := broker.Open(
+		context.Background(),
+		OpenRequest{Owner: testOwner(), Target: "gateway", Profile: "managed"},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +465,11 @@ type failInvocationAcceptanceStore struct {
 	*MemoryStore
 }
 
-func (store *failInvocationAcceptanceStore) UpdateInvocation(ctx context.Context, expected uint64, next Invocation) error {
+func (store *failInvocationAcceptanceStore) UpdateInvocation(
+	ctx context.Context,
+	expected uint64,
+	next Invocation,
+) error {
 	if next.State == InvocationAccepted {
 		return ErrStale
 	}

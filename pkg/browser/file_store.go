@@ -215,7 +215,10 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func (store *FileStore) persistLocked(previousSessions map[string]Session, previousInvocations map[string]Invocation) error {
+func (store *FileStore) persistLocked(
+	previousSessions map[string]Session,
+	previousInvocations map[string]Invocation,
+) error {
 	document := fileStoreDocument{Version: fileStoreVersion, Sessions: store.sessions, Invocations: store.invocations}
 	raw, err := json.Marshal(document)
 	if err != nil {

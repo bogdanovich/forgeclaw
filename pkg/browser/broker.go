@@ -322,7 +322,8 @@ func (broker *Broker) Sweep(ctx context.Context) error {
 	}
 	now := broker.now().UTC()
 	for _, session := range sessions {
-		if !session.State.Terminal() && (session.PolicyRevision != broker.policyRevision || broker.sessionExpired(session, now)) {
+		if !session.State.Terminal() &&
+			(session.PolicyRevision != broker.policyRevision || broker.sessionExpired(session, now)) {
 			state, failure := SessionExpired, ""
 			if session.PolicyRevision != broker.policyRevision {
 				state, failure = SessionLost, "policy_changed"
@@ -398,7 +399,11 @@ func (broker *Broker) finishSessionLocked(
 	if session.State.Terminal() {
 		return session, nil
 	}
-	if err := broker.terminateInvocationsLocked(ctx, session.ID, terminalInvocationFailure(desired, safeFailure)); err != nil {
+	if err := broker.terminateInvocationsLocked(
+		ctx,
+		session.ID,
+		terminalInvocationFailure(desired, safeFailure),
+	); err != nil {
 		return Session{}, err
 	}
 	if session.State != SessionClosing {
@@ -512,7 +517,13 @@ func (broker *Broker) ExecutePrepared(
 		return broker.completeInvocationLocked(ctx, invocation, InvocationUnknown, nil, "worker_lost")
 	}
 	if ctx.Err() != nil {
-		return broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationCanceled, nil, "canceled_before_acceptance")
+		return broker.completeInvocationLocked(
+			context.WithoutCancel(ctx),
+			invocation,
+			InvocationCanceled,
+			nil,
+			"canceled_before_acceptance",
+		)
 	}
 	now := broker.now().UTC()
 	if now.UnixNano() >= invocation.ExpiresAt {
@@ -549,12 +560,30 @@ func (broker *Broker) ExecutePrepared(
 	}
 	result, executeErr := execute(ctx)
 	if executeErr != nil {
-		return broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationUnknown, nil, "outcome_unknown")
+		return broker.completeInvocationLocked(
+			context.WithoutCancel(ctx),
+			invocation,
+			InvocationUnknown,
+			nil,
+			"outcome_unknown",
+		)
 	}
 	if len(result) == 0 || len(result) > MaxTerminalBytes || !json.Valid(result) {
-		return broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationUnknown, nil, "result_invalid")
+		return broker.completeInvocationLocked(
+			context.WithoutCancel(ctx),
+			invocation,
+			InvocationUnknown,
+			nil,
+			"result_invalid",
+		)
 	}
-	completed, err := broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationSucceeded, result, "")
+	completed, err := broker.completeInvocationLocked(
+		context.WithoutCancel(ctx),
+		invocation,
+		InvocationSucceeded,
+		result,
+		"",
+	)
 	if err != nil {
 		return completed, err
 	}

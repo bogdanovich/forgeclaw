@@ -16,7 +16,14 @@ func acquireStoreLock(path string) (func(), error) {
 		return nil, fmt.Errorf("open browser state lock: %w", err)
 	}
 	overlapped := &windows.Overlapped{}
-	err = windows.LockFileEx(windows.Handle(lock.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, overlapped)
+	err = windows.LockFileEx(
+		windows.Handle(lock.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		1,
+		0,
+		overlapped,
+	)
 	if err != nil {
 		_ = lock.Close()
 		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
