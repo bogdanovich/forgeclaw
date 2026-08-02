@@ -24,17 +24,25 @@ import (
 
 const repeatedFatalToolErrorStreakLimit = 3
 
-func toolApprovalBypass(cfg *config.Config, toolName string, arguments map[string]any) bool {
+func toolApprovalBypass(
+	cfg *config.Config,
+	registry *tools.ToolRegistry,
+	toolName string,
+	arguments map[string]any,
+) bool {
 	if cfg == nil {
 		return false
 	}
 	if cfg.Tools.Approval.AllowAll() {
 		return true
 	}
-	if !strings.HasPrefix(toolName, "nodes_") {
+	if registry == nil {
 		return false
 	}
-	target, _ := arguments["target"].(string)
+	target, trusted := registry.TrustedNodeApprovalBypassTarget(toolName, arguments)
+	if !trusted {
+		return false
+	}
 	return cfg.Tools.Approval.BypassesNodeTarget(target)
 }
 
@@ -549,7 +557,7 @@ toolLoop:
 			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		approvalBypass := toolApprovalBypass(p.Cfg, toolName, toolArgs)
+		approvalBypass := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
 		execCtx = tools.WithToolApprovalContinuation(
 			execCtx,
 			ts.opts.ApprovalGrant != nil && !approvalBypass,

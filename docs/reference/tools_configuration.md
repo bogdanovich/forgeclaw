@@ -79,11 +79,13 @@ mode at `required` and list their configured execution-target aliases:
 }
 ```
 
-The bypass applies to every current or future `nodes_*` tool call that
-explicitly includes an exact listed target. Other targets, calls that omit the
-target, and non-node tools continue through the configured approval hooks.
-Target aliases must exist in `execution.targets`; duplicates, unknown targets,
-and combining `bypass_node_targets` with `allow_all` are rejected.
+The bypass applies to every current or future first-party node tool carrying
+MintClaw's internal trusted-node capability when its call explicitly includes
+an exact listed target. An injected or replacement tool cannot gain the bypass
+just by using a `nodes_*` name. Other targets, calls that omit the target, and
+non-node tools continue through the configured approval hooks. Target aliases
+must exist in `execution.targets`; duplicates, unknown targets, and combining
+`bypass_node_targets` with `allow_all` are rejected.
 `mintclaw doctor` reports the scoped bypass as a high-risk finding.
 
 ## Request User Input

@@ -472,105 +472,30 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 	}
 }
 
-type targetApprovalContextTool struct {
-	approvalContextTool
-}
+type replacementNodeTool struct{ approvalContextTool }
 
-func (*targetApprovalContextTool) Name() string { return "nodes_invoke" }
+func (*replacementNodeTool) Name() string { return "nodes_invoke" }
 
-func (*targetApprovalContextTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"target": map[string]any{"type": "string"},
-		},
-		"additionalProperties": false,
-	}
-}
-
-func TestPipelineBypassesApprovalOnlyForConfiguredNodeTarget(t *testing.T) {
-	for _, test := range []struct {
-		name           string
-		target         string
-		wantHookCalls  int
-		wantExecutions int
-		wantBypass     bool
-	}{
-		{
-			name: "configured target", target: "vpn",
-			wantExecutions: 1, wantBypass: true,
-		},
-		{
-			name: "other target", target: "approval-test",
-			wantHookCalls: 1,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			registry := tools.NewToolRegistry()
-			tool := &targetApprovalContextTool{}
-			registry.Register(tool)
-			agent := &AgentInstance{
-				ID:       "main",
-				Tools:    registry,
-				Sessions: session.NewSessionManager(""),
-			}
-			ts := &turnState{
-				agent: agent, agentID: "main", turnID: "turn-target-bypass",
-				sessionKey: "target-bypass", workspace: t.TempDir(),
-				opts: processOptions{
-					NoHistory: true,
-					Dispatch:  DispatchRequest{SessionKey: "target-bypass"},
-				},
-			}
-			exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-			exec.normalizedToolCalls = []providers.ToolCall{{
-				ID: "call-target-bypass", Name: tool.Name(),
-				Arguments: map[string]any{"target": test.target},
-			}}
-			hook := &durableApprovalHook{actionSummary: "approve protected node command"}
-			hooks := NewHookManager(nil)
-			defer hooks.Close()
-			if err := hooks.Mount(NamedHook("approval", hook)); err != nil {
-				t.Fatal(err)
-			}
-			cfg := config.DefaultConfig()
-			cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
-			manager := &fakeToolSuspensionManager{}
-			pipeline := &Pipeline{
-				Cfg: cfg,
-				Interaction: PipelineInteractionServices{
-					Hooks: hooks, Suspension: manager,
-				},
-			}
-
-			pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
-
-			if hook.calls != test.wantHookCalls || tool.executions != test.wantExecutions ||
-				tool.bypass != test.wantBypass {
-				t.Fatalf(
-					"hook calls = %d, executions = %d, bypass = %v",
-					hook.calls,
-					tool.executions,
-					tool.bypass,
-				)
-			}
-		})
-	}
-}
-
-func TestToolApprovalBypassIncludesFutureNodeTools(t *testing.T) {
+func TestToolApprovalBypassRequiresTrustedNodeTool(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
 	arguments := map[string]any{"target": "vpn"}
+	registry := tools.NewToolRegistry()
+	registry.Register(tools.NewNodeInvokeTool(nil, nil))
 
-	if !toolApprovalBypass(cfg, "nodes_future_operation", arguments) {
-		t.Fatal("future nodes_* tool did not inherit the configured target bypass")
+	if !toolApprovalBypass(cfg, registry, "nodes_invoke", arguments) {
+		t.Fatal("trusted node tool did not receive the configured target bypass")
 	}
-	if toolApprovalBypass(cfg, "future_operation", arguments) {
-		t.Fatal("non-node tool inherited the configured target bypass")
+	if toolApprovalBypass(cfg, registry, "nodes_invoke", map[string]any{"target": "approval-test"}) {
+		t.Fatal("unlisted target received the configured target bypass")
 	}
-	if toolApprovalBypass(cfg, "nodes_future_operation", map[string]any{}) {
-		t.Fatal("node tool without an explicit target inherited the configured bypass")
+	if toolApprovalBypass(cfg, registry, "nodes_invoke", map[string]any{}) {
+		t.Fatal("node tool without an explicit target received the configured bypass")
+	}
+
+	registry.Register(&replacementNodeTool{})
+	if toolApprovalBypass(cfg, registry, "nodes_invoke", arguments) {
+		t.Fatal("replacement nodes_* tool received trusted node approval bypass")
 	}
 }
 

@@ -50,6 +50,20 @@ type ApprovalArgumentsProvider interface {
 	ApprovalArguments(ctx context.Context, args map[string]any) (map[string]any, error)
 }
 
+type nodeTargetApprovalBypassProvider interface {
+	approvalBypassNodeTarget(args map[string]any) (string, bool)
+}
+
+// nodeTargetApprovalBypass marks first-party node tools as eligible for an
+// operator-configured target-scoped approval bypass. Its unexported method
+// prevents injected tools from claiming this trust boundary.
+type nodeTargetApprovalBypass struct{}
+
+func (nodeTargetApprovalBypass) approvalBypassNodeTarget(args map[string]any) (string, bool) {
+	target, ok := args["target"].(string)
+	return target, ok && target != ""
+}
+
 type safeApprovalDenialProvider interface {
 	SafeApprovalDenialResult() *ToolResult
 }
@@ -328,6 +342,23 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 		return nil, false
 	}
 	return entry.Tool, true
+}
+
+// TrustedNodeApprovalBypassTarget returns the explicit target only when the
+// registered tool carries the package-private first-party node capability.
+func (r *ToolRegistry) TrustedNodeApprovalBypassTarget(
+	name string,
+	args map[string]any,
+) (string, bool) {
+	tool, ok := r.Get(name)
+	if !ok {
+		return "", false
+	}
+	provider, ok := tool.(nodeTargetApprovalBypassProvider)
+	if !ok {
+		return "", false
+	}
+	return provider.approvalBypassNodeTarget(args)
 }
 
 // ApprovalArguments returns the trusted arguments that durable human approval

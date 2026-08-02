@@ -146,6 +146,7 @@ type NodeInvocationSource interface {
 }
 
 type NodeInvokeTool struct {
+	nodeTargetApprovalBypass
 	runtime *nodeInvocationToolRuntime
 }
 

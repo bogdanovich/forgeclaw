@@ -61,6 +61,7 @@ type NodeTerminalSource interface {
 }
 
 type NodeTerminalTool struct {
+	nodeTargetApprovalBypass
 	access        *nodeTargetAccess
 	source        NodeTerminalSource
 	runtimeEvents runtimeevents.Bus

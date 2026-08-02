@@ -28,6 +28,29 @@ type semanticRegistryTool struct {
 	semantics loopguard.Semantics
 }
 
+type futureTrustedNodeTool struct {
+	nodeTargetApprovalBypass
+	mockRegistryTool
+}
+
+func TestToolRegistryRecognizesFutureTrustedNodeCapability(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&futureTrustedNodeTool{
+		mockRegistryTool: mockRegistryTool{name: "nodes_future_operation"},
+	})
+
+	target, trusted := registry.TrustedNodeApprovalBypassTarget(
+		"nodes_future_operation",
+		map[string]any{"target": "vpn"},
+	)
+	if !trusted || target != "vpn" {
+		t.Fatalf("trusted future node target = (%q, %v), want (vpn, true)", target, trusted)
+	}
+	if _, trusted = registry.TrustedNodeApprovalBypassTarget("nodes_future_operation", map[string]any{}); trusted {
+		t.Fatal("trusted future node tool accepted an omitted target")
+	}
+}
+
 func (t *semanticRegistryTool) ToolLoopSemantics() loopguard.Semantics {
 	return t.semantics
 }
