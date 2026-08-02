@@ -14,10 +14,11 @@ import (
 )
 
 type fakeWorker struct {
-	closeErr  error
-	closed    int
-	status    WorkerStatus
-	statusErr error
+	closeErr            error
+	closed              int
+	rejectRepeatedClose bool
+	status              WorkerStatus
+	statusErr           error
 }
 
 func (worker *fakeWorker) Status(context.Context) (WorkerStatus, error) {
@@ -26,6 +27,9 @@ func (worker *fakeWorker) Status(context.Context) (WorkerStatus, error) {
 
 func (worker *fakeWorker) Close(context.Context) error {
 	worker.closed++
+	if worker.rejectRepeatedClose && worker.closed > 1 {
+		return errors.New("worker close is not idempotent")
+	}
 	return worker.closeErr
 }
 
@@ -38,7 +42,8 @@ type fakeWorkerFactory struct {
 
 type failNextSessionUpdateStore struct {
 	*MemoryStore
-	failNext bool
+	failNext  bool
+	failState SessionState
 }
 
 func (store *failNextSessionUpdateStore) UpdateSession(
@@ -46,8 +51,9 @@ func (store *failNextSessionUpdateStore) UpdateSession(
 	expected uint64,
 	next Session,
 ) error {
-	if store.failNext {
+	if store.failNext || (store.failState != "" && next.State == store.failState) {
 		store.failNext = false
+		store.failState = ""
 		return ErrStale
 	}
 	return store.MemoryStore.UpdateSession(ctx, expected, next)
@@ -140,6 +146,33 @@ func TestBrokerCloseRetainsWorkerAndLeaseUntilCleanupSucceeds(t *testing.T) {
 	}
 }
 
+func TestBrokerCloseRetriesOnlyTerminalPersistenceAfterCleanup(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore()}
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	worker := factory.workers[0]
+	worker.rejectRepeatedClose = true
+	store.failState = SessionClosed
+	if _, err = broker.Close(context.Background(), owner, session.ID); !errors.Is(err, ErrStale) {
+		t.Fatalf("Close() persistence error = %v, want ErrStale", err)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.State != SessionClosing || worker.closed != 1 {
+		t.Fatalf("stored session after persistence failure = %+v, %v; worker = %+v", stored, err, worker)
+	}
+	closed, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || closed.State != SessionClosed || worker.closed != 1 {
+		t.Fatalf("Close() persistence retry = %+v, %v; worker = %+v", closed, err, worker)
+	}
+}
+
 func TestBrokerDeniesUnadmittedAuthorityBeforeWorkerOpen(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -225,6 +258,26 @@ func TestBrokerPersistsSafeLostStateWhenWorkerOpenFails(t *testing.T) {
 	}
 	if strings.Contains(stored.SafeFailure, "secret") {
 		t.Fatalf("stored safe failure leaked worker error: %q", stored.SafeFailure)
+	}
+}
+
+func TestBrokerCleansWorkerAndPersistsLossWhenReadyPersistenceFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore(), failState: SessionReady}
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: testOwner(), Target: "gateway", Profile: "managed",
+	})
+	if !errors.Is(err, ErrStale) || !errors.Is(err, ErrWorkerUnavailable) {
+		t.Fatalf("Open() persistence error = %v, want ErrStale and ErrWorkerUnavailable", err)
+	}
+	worker := factory.workers[0]
+	if session.State != SessionLost || session.SafeFailure != "worker_unavailable" || worker.closed != 1 {
+		t.Fatalf("Open() recovered session = %+v, worker = %+v", session, worker)
+	}
+	stored, getErr := store.GetSession(context.Background(), session.ID)
+	if getErr != nil || stored != session {
+		t.Fatalf("stored recovered session = %+v, %v; want %+v", stored, getErr, session)
 	}
 }
 
@@ -329,6 +382,7 @@ func TestBrokerStatusRetainsCleanupPathWhenLostPersistenceFails(t *testing.T) {
 	}
 	worker := factory.workers[0]
 	worker.status = WorkerLost
+	worker.rejectRepeatedClose = true
 	store.failNext = true
 	if _, err = broker.Status(context.Background(), owner, session.ID); !errors.Is(err, ErrStale) {
 		t.Fatalf("Status() persistence error = %v, want ErrStale", err)
@@ -338,7 +392,7 @@ func TestBrokerStatusRetainsCleanupPathWhenLostPersistenceFails(t *testing.T) {
 		t.Fatalf("stored session after persistence failure = %+v, %v; worker = %+v", stored, err, worker)
 	}
 	lost, err := broker.Status(context.Background(), owner, session.ID)
-	if err != nil || lost.State != SessionLost || worker.closed != 2 {
+	if err != nil || lost.State != SessionLost || worker.closed != 1 {
 		t.Fatalf("Status() persistence retry = %+v, %v; worker = %+v", lost, err, worker)
 	}
 }

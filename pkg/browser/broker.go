@@ -42,6 +42,15 @@ type OpenRequest struct {
 	Profile string
 }
 
+// workerSlot is the broker's sole owner of a live worker. A successful cleanup
+// is remembered separately from durable session completion so a CAS retry never
+// requires Worker.Close to be idempotent.
+type workerSlot struct {
+	worker          Worker
+	safeFailure     string
+	cleanupComplete bool
+}
+
 type Broker struct {
 	config         config.BrowserToolsConfig
 	policyRevision string
@@ -50,12 +59,8 @@ type Broker struct {
 	now            func() time.Time
 	newID          func() (string, error)
 
-	mu      sync.Mutex
-	workers map[string]Worker
-	// pendingLoss retains the bounded failure classification until both worker
-	// cleanup and the durable lost transition succeed. This prevents a failed
-	// cleanup or CAS from releasing the profile while a worker may still live.
-	pendingLoss map[string]string
+	mu    sync.Mutex
+	slots map[string]*workerSlot
 }
 
 func NewBroker(rootConfig *config.Config, store Store, factory WorkerFactory) (*Broker, error) {
@@ -78,8 +83,7 @@ func NewBroker(rootConfig *config.Config, store Store, factory WorkerFactory) (*
 	}
 	return &Broker{
 		config: browserConfig, policyRevision: policyRevision, store: store, factory: factory,
-		now: time.Now, newID: randomID, workers: make(map[string]Worker),
-		pendingLoss: make(map[string]string),
+		now: time.Now, newID: randomID, slots: make(map[string]*workerSlot),
 	}, nil
 }
 
@@ -124,16 +128,31 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 		}
 		return session, ErrWorkerUnavailable
 	}
-	session.State = SessionReady
-	session.Revision++
-	session.UpdatedAt = broker.now().UTC().UnixNano()
-	session.LastActivityAt = session.UpdatedAt
-	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
-		_ = worker.Close(context.WithoutCancel(ctx))
-		return Session{}, fmt.Errorf("persist ready browser session: %w", err)
+	slot := &workerSlot{worker: worker}
+	broker.slots[session.ID] = slot
+	ready := session
+	ready.State = SessionReady
+	ready.Revision++
+	ready.UpdatedAt = broker.now().UTC().UnixNano()
+	ready.LastActivityAt = ready.UpdatedAt
+	if err = broker.store.UpdateSession(ctx, ready.Revision-1, ready); err != nil {
+		persistReadyErr := fmt.Errorf("persist ready browser session: %w", err)
+		slot.safeFailure = "worker_unavailable"
+		if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
+			return session, errors.Join(persistReadyErr, ErrWorkerUnavailable)
+		}
+		session.State = SessionLost
+		session.SafeFailure = slot.safeFailure
+		session.Revision++
+		session.UpdatedAt = broker.now().UTC().UnixNano()
+		session.LastActivityAt = session.UpdatedAt
+		if updateErr := broker.store.UpdateSession(ctx, session.Revision-1, session); updateErr != nil {
+			return session, errors.Join(persistReadyErr, updateErr, ErrWorkerUnavailable)
+		}
+		delete(broker.slots, session.ID)
+		return session, errors.Join(persistReadyErr, ErrWorkerUnavailable)
 	}
-	broker.workers[session.ID] = worker
-	return session, nil
+	return ready, nil
 }
 
 func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string) (Session, error) {
@@ -155,12 +174,15 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	if session.State != SessionReady {
 		return session, nil
 	}
-	worker := broker.workers[session.ID]
-	safeFailure := broker.pendingLoss[session.ID]
-	if safeFailure == "" && worker == nil {
+	slot := broker.slots[session.ID]
+	var safeFailure string
+	if slot == nil {
 		safeFailure = "worker_lost"
-	} else if safeFailure == "" {
-		status, statusErr := worker.Status(ctx)
+	} else {
+		safeFailure = slot.safeFailure
+	}
+	if safeFailure == "" {
+		status, statusErr := slot.worker.Status(ctx)
 		switch {
 		case statusErr != nil && ctx.Err() != nil:
 			return Session{}, ctx.Err()
@@ -175,9 +197,9 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	if safeFailure == "" {
 		return session, nil
 	}
-	broker.pendingLoss[session.ID] = safeFailure
-	if worker != nil {
-		if closeErr := broker.closeWorker(ctx, worker); closeErr != nil {
+	if slot != nil {
+		slot.safeFailure = safeFailure
+		if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
 			return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
 		}
 	}
@@ -189,8 +211,7 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
 		return Session{}, err
 	}
-	delete(broker.workers, session.ID)
-	delete(broker.pendingLoss, session.ID)
+	delete(broker.slots, session.ID)
 	return session, nil
 }
 
@@ -222,11 +243,11 @@ func (broker *Broker) Close(ctx context.Context, owner Owner, sessionID string) 
 			return Session{}, err
 		}
 	}
-	worker := broker.workers[session.ID]
-	if worker == nil {
+	slot := broker.slots[session.ID]
+	if slot == nil {
 		session.State = SessionLost
 		session.SafeFailure = "worker_lost"
-	} else if closeErr := broker.closeWorker(ctx, worker); closeErr != nil {
+	} else if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
 		return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
 	} else {
 		session.State = SessionClosed
@@ -237,16 +258,22 @@ func (broker *Broker) Close(ctx context.Context, owner Owner, sessionID string) 
 	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
 		return Session{}, err
 	}
-	delete(broker.workers, session.ID)
-	delete(broker.pendingLoss, session.ID)
+	delete(broker.slots, session.ID)
 	return session, nil
 }
 
-func (broker *Broker) closeWorker(ctx context.Context, worker Worker) error {
+func (broker *Broker) cleanupSlot(ctx context.Context, slot *workerSlot) error {
+	if slot.cleanupComplete {
+		return nil
+	}
 	cleanupTimeout := time.Duration(broker.config.Limits.Effective().ActionSeconds) * time.Second
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancelCleanup()
-	return worker.Close(cleanupCtx)
+	if err := slot.worker.Close(cleanupCtx); err != nil {
+		return err
+	}
+	slot.cleanupComplete = true
+	return nil
 }
 
 func (broker *Broker) authorize(request OpenRequest) (config.BrowserTargetConfig, config.BrowserProfileConfig, error) {
