@@ -121,7 +121,7 @@ execution or an isolated shell without inheriting an owner's root profile.
 | P6 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
 | P7 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
 | P8 | Remote workspace routing | Route an explicitly selected set of workspace-aware tools through one node execution context | P2, P5, and remote-capable P7 tools |
-| P9 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
+| P9 | Remaining platforms and compatibility adapters | Add Windows, iOS, constrained-device companions, and explicitly versioned external adapters | Stable internal contracts |
 | Future P1 follow-up | Browser terminal client | Use the existing attached PTY from a browser without exposing a node port through NAT | Deployed P1 terminal core and trusted owner approval |
 | Future operations follow-up | Authenticated live-agent and invocation smoke | Exercise the running gateway agent and durable node invocation path without Telegram or a second disconnected AgentLoop | Stable gateway operator authentication and deployed node execution |
 
@@ -817,17 +817,24 @@ Browser or MCP routing is added only after its independent P7 capability and
 threat model exist. Avoid a generic proxy that forwards arbitrary current or
 future tool calls without per-tool compatibility and policy declarations.
 
-## P9: Platforms And Compatibility
+## P9: Remaining Platforms And Compatibility
 
 Potential later targets include:
 
 - Windows companion service, process containment, filesystem helper, and
   service-manager adapters;
-- iOS and Android companions with platform-native permission prompts;
+- iOS companions with platform-native permission prompts;
 - constrained appliance or camera companions with reduced catalogs;
 - an OpenClaw protocol adapter pinned to an explicitly supported version;
 - native gRPC, MQTT, or other transports when deployment evidence justifies
   them.
+
+Android now has a dedicated
+[`android-companion-roadmap.md`](android-companion-roadmap.md). Its operator
+chat track may start after its own admission because it does not depend on P7
+device capabilities or completion of this generic platform milestone. Its
+device-node track reuses this architecture and admits each Android capability
+under the P7 rules.
 
 Compatibility remains an adapter. Core policy, target, invocation, and
 capability packages do not import external wire types or branch on external
