@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -27,6 +27,7 @@ type isolatedCommandTransport struct {
 	ServerName        string
 	Command           *exec.Cmd
 	TerminateDuration time.Duration
+	cleanup           io.Closer
 }
 
 func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connection, error) {
@@ -43,17 +44,24 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if err != nil {
 		return nil, err
 	}
-	if err := isolation.Start(t.Command); err != nil {
+	processTree, err := prepareIsolatedCommandProcessTree(t.Command)
+	if err != nil {
 		return nil, err
 	}
-	logger.InfoCF("mcp", "MCP stdio process started",
-		map[string]any{
-			"server":  t.ServerName,
-			"command": t.Command.Path,
-			"pid":     t.Command.Process.Pid,
-		})
-	go logStdioProcessStderr(ctx, t.ServerName, t.Command.Path, stderr)
+	td := t.TerminateDuration
+	if td <= 0 {
+		td = isolatedCommandTerminateDuration
+	}
+	pipe := &isolatedPipeRWC{
+		stdout: stdout, stdin: stdin, terminateDuration: td,
+		stopProcessTree: processTree.stop,
+	}
+	t.cleanup = pipe
+	if err := isolation.Start(t.Command); err != nil {
+		return nil, errors.Join(err, pipe.Close())
+	}
 	waitCh := make(chan error, 1)
+	pipe.waitCh = waitCh
 	go func() {
 		err := t.Command.Wait()
 		fields := map[string]any{
@@ -69,17 +77,25 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 		}
 		waitCh <- err
 	}()
-	td := t.TerminateDuration
-	if td <= 0 {
-		td = isolatedCommandTerminateDuration
+	if err := processTree.started(); err != nil {
+		_ = t.Command.Process.Kill()
+		return nil, errors.Join(err, pipe.Close())
 	}
-	return newIsolatedIOConn(
-		&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, waitCh: waitCh, terminateDuration: td},
-	), nil
+	logger.InfoCF("mcp", "MCP stdio process started",
+		map[string]any{
+			"server":  t.ServerName,
+			"command": t.Command.Path,
+			"pid":     t.Command.Process.Pid,
+		})
+	go logStdioProcessStderr(ctx, t.ServerName, t.Command.Path, stderr)
+	return newIsolatedIOConn(pipe), nil
 }
 
 type isolatedPipeRWC struct {
-	cmd               *exec.Cmd
+	closeMu           sync.Mutex
+	stdinOnce         sync.Once
+	closed            bool
+	stopProcessTree   func(time.Duration) error
 	stdout            io.ReadCloser
 	stdin             io.WriteCloser
 	waitCh            <-chan error
@@ -95,32 +111,32 @@ func (s *isolatedPipeRWC) Write(p []byte) (n int, err error) {
 }
 
 func (s *isolatedPipeRWC) Close() error {
-	if err := s.stdin.Close(); err != nil {
-		return fmt.Errorf("closing stdin: %w", err)
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.closed {
+		return nil
 	}
-	wait := func() (error, bool) {
-		select {
-		case err := <-s.waitCh:
-			return err, true
-		case <-time.After(s.terminateDuration):
-		}
-		return nil, false
-	}
-	if err, ok := wait(); ok {
+	// Closing stdin gives a cooperative MCP server its first opportunity to
+	// stop. Process-tree termination then proves that wrappers and browser
+	// descendants sharing the owned process group are gone before Close
+	// succeeds and an exclusive profile lease may be released.
+	s.stdinOnce.Do(func() { _ = s.stdin.Close() })
+	if err := s.stopProcessTree(s.terminateDuration); err != nil {
 		return err
 	}
-	if err := s.cmd.Process.Signal(syscall.SIGTERM); err == nil {
-		if err, ok := wait(); ok {
-			return err
-		}
+	if s.waitCh == nil {
+		s.closed = true
+		return nil
 	}
-	if err := s.cmd.Process.Kill(); err != nil {
-		return err
+	timer := time.NewTimer(s.terminateDuration)
+	defer timer.Stop()
+	select {
+	case <-s.waitCh:
+		s.closed = true
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("browser driver process was not reaped after tree termination")
 	}
-	if err, ok := wait(); ok {
-		return err
-	}
-	return fmt.Errorf("unresponsive subprocess")
 }
 
 func logStdioProcessStderr(ctx context.Context, serverName, command string, stderr io.Reader) {

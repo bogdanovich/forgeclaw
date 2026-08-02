@@ -28,6 +28,39 @@ type finalResponseAdmissionTestBus struct {
 	releaseCause error
 }
 
+type failingRootTurnJournal struct {
+	session.SessionStore
+	err error
+}
+
+func (s *failingRootTurnJournal) AppendTurnMessage(
+	_ context.Context,
+	_ string,
+	msg providers.Message,
+) error {
+	if msg.Role == "user" {
+		return s.err
+	}
+	return errors.New("unexpected non-root journal append")
+}
+
+type countingAdmissionProvider struct {
+	calls int
+}
+
+func (p *countingAdmissionProvider) Chat(
+	context.Context,
+	[]providers.Message,
+	[]providers.ToolDefinition,
+	string,
+	map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	return &providers.LLMResponse{Content: "must not run"}, nil
+}
+
+func (p *countingAdmissionProvider) GetDefaultModel() string { return "counting" }
+
 func (b *finalResponseAdmissionTestBus) PublishOutbound(
 	ctx context.Context,
 	msg bus.OutboundMessage,
@@ -124,6 +157,54 @@ func TestInboundTurnCoordinatorAcknowledgesAcceptedFinalResponse(t *testing.T) {
 		}
 	default:
 		t.Fatal("accepted final response was not queued")
+	}
+}
+
+func TestInboundTurnCoordinatorReleasesRootJournalFailuresBeforeLLM(t *testing.T) {
+	for _, stage := range []string{"append", "flush", "rename", "fsync"} {
+		t.Run(stage, func(t *testing.T) {
+			provider := &countingAdmissionProvider{}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			events := al.SubscribeEvents(8)
+			defer al.UnsubscribeEvents(events.ID)
+			journalErr := errors.New("injected " + stage + " failure")
+			agent.Sessions = &failingRootTurnJournal{
+				SessionStore: session.NewSessionManager(""),
+				err:          journalErr,
+			}
+			trackingBus := &finalResponseAdmissionTestBus{MessageBus: al.bus.(*bus.MessageBus)}
+			al.bus = trackingBus
+			msg := finalResponseAdmissionInboundMessage("spool-root-" + stage)
+
+			runFinalResponseAdmissionTurn(t, al, msg)
+
+			acked, released, cause := trackingBus.ownership()
+			if len(acked) != 0 || len(released) != 1 || released[0] != msg.SpoolID {
+				t.Fatalf("journal failure ownership = acked:%v released:%v", acked, released)
+			}
+			if !errors.Is(cause, journalErr) {
+				t.Fatalf("release cause = %v, want %v", cause, journalErr)
+			}
+			if provider.calls != 0 {
+				t.Fatalf("failure executed provider %d times", provider.calls)
+			}
+			for {
+				select {
+				case event := <-events.C:
+					if event.Kind != EventKindTurnEnd {
+						continue
+					}
+					payload, ok := event.Payload.(TurnEndPayload)
+					if !ok || payload.Status != TurnEndStatusError {
+						t.Fatalf("turn end = %#v, want error", event.Payload)
+					}
+					return
+				case <-time.After(time.Second):
+					t.Fatal("timed out waiting for error turn end")
+				}
+			}
+		})
 	}
 }
 

@@ -1433,7 +1433,7 @@ func (al *AgentLoop) persistInteractionToolResult(
 		ToolResultStatus: providers.ToolResultStatusSuccess,
 	}
 	continuationSessionKey := interactionContinuationSessionKey(record)
-	writeErr := persistFullSessionMessage(agent.Sessions, continuationSessionKey, message)
+	writeErr := persistFullSessionMessage(ctx, agent.Sessions, continuationSessionKey, message)
 	if writeErr != nil {
 		return writeErr
 	}

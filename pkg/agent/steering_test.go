@@ -839,19 +839,19 @@ type saveFailOnContentSessionStore struct {
 	failed  bool
 }
 
-func (s *saveFailOnContentSessionStore) Save(sessionKey string) error {
+func (s *saveFailOnContentSessionStore) AppendTurnMessage(
+	ctx context.Context,
+	sessionKey string,
+	msg providers.Message,
+) error {
 	s.mu.Lock()
-	if !s.failed {
-		for _, msg := range s.SessionStore.GetHistory(sessionKey) {
-			if strings.Contains(msg.Content, s.content) {
-				s.failed = true
-				s.mu.Unlock()
-				return s.err
-			}
-		}
+	if !s.failed && strings.Contains(msg.Content, s.content) {
+		s.failed = true
+		s.mu.Unlock()
+		return s.err
 	}
 	s.mu.Unlock()
-	return s.SessionStore.Save(sessionKey)
+	return s.SessionStore.AppendTurnMessage(ctx, sessionKey, msg)
 }
 
 type recordingMessageBus struct {
@@ -2584,7 +2584,7 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 	}
 }
 
-func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
+func TestAgentLoop_HardAbort_AfterToolStartPreservesDurableIntent(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -2672,8 +2672,8 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 		t.Fatal("expected active turn before hard abort")
 	}
 
-	if err := al.InterruptHard(); err != nil {
-		t.Fatalf("InterruptHard failed: %v", err)
+	if err := al.HardAbort(sessionKey); err != nil {
+		t.Fatalf("HardAbort failed: %v", err)
 	}
 
 	select {
@@ -2699,23 +2699,19 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 	for i := range originalHistory {
 		originalHistory[i].CreatedAt = nil
 	}
-	if !reflect.DeepEqual(finalHistory, originalHistory) {
-		t.Fatalf("expected history rollback after hard abort, got %#v", finalHistory)
+	if len(finalHistory) != len(originalHistory)+2 {
+		t.Fatalf("expected root and unresolved tool intent after hard abort, got %#v", finalHistory)
+	}
+	if !reflect.DeepEqual(finalHistory[:len(originalHistory)], originalHistory) {
+		t.Fatalf("expected original history prefix after hard abort, got %#v", finalHistory)
+	}
+	root := finalHistory[len(originalHistory)]
+	intent := finalHistory[len(originalHistory)+1]
+	if root.Role != "user" || root.Content != "do work" || intent.Role != "assistant" || len(intent.ToolCalls) != 1 {
+		t.Fatalf("expected durable root and unresolved tool intent after hard abort, got %#v", finalHistory)
 	}
 
 	events := collectRuntimeEventStream(runtimeCh)
-	interruptEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentInterruptReceived)
-	if !ok {
-		t.Fatal("expected interrupt received event")
-	}
-	interruptPayload, ok := interruptEvt.Payload.(InterruptReceivedPayload)
-	if !ok {
-		t.Fatalf("expected InterruptReceivedPayload, got %T", interruptEvt.Payload)
-	}
-	if interruptPayload.Kind != InterruptKindHard {
-		t.Fatalf("expected hard interrupt payload, got %q", interruptPayload.Kind)
-	}
-
 	turnEndEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentTurnEnd)
 	if !ok {
 		t.Fatal("expected turn end event")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +29,40 @@ import (
 
 // simpleConvProvider returns a simple text response without tools
 type simpleConvProvider struct{}
+
+type afterToolHardAbortHook struct{}
+
+func (afterToolHardAbortHook) BeforeLLM(
+	_ context.Context,
+	req *LLMHookRequest,
+) (*LLMHookRequest, HookDecision) {
+	return req, HookDecision{Action: HookActionContinue}
+}
+
+func (afterToolHardAbortHook) AfterLLM(
+	_ context.Context,
+	resp *LLMHookResponse,
+) (*LLMHookResponse, HookDecision) {
+	return resp, HookDecision{Action: HookActionContinue}
+}
+
+func (afterToolHardAbortHook) BeforeTool(
+	_ context.Context,
+	req *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision) {
+	return req, HookDecision{Action: HookActionContinue}
+}
+
+func (afterToolHardAbortHook) AfterTool(
+	_ context.Context,
+	resp *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision) {
+	return resp, HookDecision{Action: HookActionHardAbort}
+}
+
+func (afterToolHardAbortHook) ApproveTool(context.Context, *ToolApprovalRequest) ApprovalDecision {
+	return ApprovalDecision{Approved: true}
+}
 
 func (p *simpleConvProvider) Chat(
 	ctx context.Context,
@@ -358,8 +393,57 @@ type saveFailingSessionStore struct {
 	err error
 }
 
-func (s *saveFailingSessionStore) Save(_ string) error {
+type restoreFailingSessionStore struct {
+	session.SessionStore
+	err error
+}
+
+type recordingReasoningPublisher struct {
+	toolCallInterims int
+}
+
+func (*recordingReasoningPublisher) targetReasoningChannelID(string) string { return "" }
+
+func (*recordingReasoningPublisher) publishMintClawReasoning(
+	context.Context,
+	string,
+	string,
+	string,
+	string,
+) {
+}
+
+func (p *recordingReasoningPublisher) publishMintClawToolCallInterim(
+	context.Context,
+	*turnState,
+	string,
+	string,
+	string,
+	[]providers.ToolCall,
+) {
+	p.toolCallInterims++
+}
+
+func (*recordingReasoningPublisher) handleReasoning(context.Context, string, string, string) {}
+
+func (s *restoreFailingSessionStore) RestoreTurnSnapshot(
+	context.Context,
+	string,
+	[]providers.Message,
+	string,
+) error {
 	return s.err
+}
+
+func (s *saveFailingSessionStore) AppendTurnMessage(
+	ctx context.Context,
+	sessionKey string,
+	msg providers.Message,
+) error {
+	if msg.Role == "assistant" {
+		return s.err
+	}
+	return s.SessionStore.AppendTurnMessage(ctx, sessionKey, msg)
 }
 
 type blockingCompactContextManager struct {
@@ -923,7 +1007,7 @@ func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.
 	}
 }
 
-func TestRunTurn_FinalizeSaveErrorEmitsErrorTurnEnd(t *testing.T) {
+func TestRunTurn_FinalizeJournalErrorEmitsErrorTurnEnd(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
 
@@ -1546,6 +1630,155 @@ func TestRunTurn_SimpleConversation(t *testing.T) {
 	}
 	if result.finalContent == "" {
 		t.Error("expected non-empty finalContent")
+	}
+}
+
+func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
+	tool := &steeringSafetyTestTool{name: "side-effect", safety: tools.SteeringSafetyNonCancellable}
+	provider := &toolCallRespProvider{toolName: tool.Name(), response: "must not continue"}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	agent.Tools.Register(tool)
+	pipeline := NewPipeline(al)
+	pipeline.Interaction.Hooks = afterToolHardAbortHook{}
+	opts := normalizeProcessOptions(makeTestProcessOpts("post-tool-hard-abort"))
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-post-tool-hard-abort",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	result, err := al.runTurn(t.Context(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn() error = %v", err)
+	}
+	if result.status != TurnEndStatusAborted || tool.executions != 1 {
+		t.Fatalf("result = %#v, tool executions = %d", result, tool.executions)
+	}
+	history := agent.Sessions.GetHistory(ts.sessionKey)
+	if len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" ||
+		len(history[1].ToolCalls) != 1 {
+		t.Fatalf("history = %+v, want root plus unresolved durable tool intent", history)
+	}
+}
+
+func TestHardAbortSnapshotFailureIsNotReportedAsSuccessfulRollback(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	injectedErr := errors.New("restore snapshot")
+	agent.Sessions = &restoreFailingSessionStore{SessionStore: agent.Sessions, err: injectedErr}
+	opts := normalizeProcessOptions(makeTestProcessOpts("failed-abort-restore"))
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-failed-abort-restore",
+		context: newTurnContext(nil, nil, nil),
+	})
+	if err := agent.Sessions.AppendTurnMessage(
+		t.Context(),
+		ts.sessionKey,
+		providers.Message{Role: "user", Content: opts.Dispatch.UserMessage},
+	); err != nil {
+		t.Fatal(err)
+	}
+	al.registerActiveTurn(ts)
+	defer al.clearActiveTurn(ts)
+
+	err := al.HardAbort(ts.sessionKey)
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("HardAbort() error = %v, want %v", err, injectedErr)
+	}
+	history := agent.Sessions.GetHistory(ts.sessionKey)
+	if len(history) != 1 || history[0].Content != opts.Dispatch.UserMessage {
+		t.Fatalf("failed rollback unexpectedly changed history: %+v", history)
+	}
+}
+
+func TestHardAbortRestoresCanonicalHistoryWhenPromptAssemblyIsEmpty(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	sessionKey := "empty-assembly-abort"
+	wantHistory := []providers.Message{
+		{Role: "user", Content: "retained root"},
+		{Role: "assistant", Content: "retained response"},
+	}
+	agent.Sessions.SetHistory(sessionKey, wantHistory)
+	agent.Sessions.SetSummary(sessionKey, "retained summary")
+	if err := agent.Sessions.Save(sessionKey); err != nil {
+		t.Fatal(err)
+	}
+	wantHistory = agent.Sessions.GetHistory(sessionKey)
+
+	opts := normalizeProcessOptions(makeTestProcessOpts(sessionKey))
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-empty-assembly-abort",
+		context: newTurnContext(nil, nil, nil),
+	})
+	pipeline := NewPipeline(al)
+	pipeline.Context.Runtime = &noneContextManager{}
+	if _, err := pipeline.SetupTurn(t.Context(), ts); err != nil {
+		t.Fatal(err)
+	}
+	al.registerActiveTurn(ts)
+	defer al.clearActiveTurn(ts)
+
+	if err := al.HardAbort(sessionKey); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.Sessions.GetHistory(sessionKey); !reflect.DeepEqual(got, wantHistory) {
+		t.Fatalf("history = %+v, want canonical snapshot %+v", got, wantHistory)
+	}
+	if got := agent.Sessions.GetSummary(sessionKey); got != "retained summary" {
+		t.Fatalf("summary = %q, want retained summary", got)
+	}
+}
+
+func TestCallLLMMintClawToolInterimRequiresDurableIntent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		noHistory  bool
+		failIntent bool
+		want       int
+	}{
+		{name: "journal failure", failIntent: true, want: 0},
+		{name: "explicit no history", noHistory: true, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &toolCallRespProvider{toolName: "search", response: "must not continue"}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			if tc.failIntent {
+				agent.Sessions = &saveFailingSessionStore{
+					SessionStore: agent.Sessions,
+					err:          errors.New("intent journal failed"),
+				}
+			}
+			recorder := &recordingReasoningPublisher{}
+			pipeline := NewPipeline(al)
+			pipeline.Interaction.Reasoning = recorder
+			opts := normalizeProcessOptions(makeTestProcessOpts("mintclaw-interim-" + tc.name))
+			opts.NoHistory = tc.noHistory
+			opts.Dispatch.InboundContext = &bus.InboundContext{
+				Channel: "mintclaw",
+				ChatID:  "session-1",
+			}
+			ts := newTurnState(agent, opts, turnEventScope{
+				turnID:  "turn-mintclaw-interim",
+				context: newTurnContext(opts.Dispatch.InboundContext, nil, nil),
+			})
+			exec, err := pipeline.SetupTurn(t.Context(), ts)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := pipeline.CallLLM(t.Context(), t.Context(), ts, exec, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Control != ControlToolLoop {
+				t.Fatalf("CallLLM() control = %v, want %v", outcome.Control, ControlToolLoop)
+			}
+			if recorder.toolCallInterims != tc.want {
+				t.Fatalf("tool-call interims = %d, want %d", recorder.toolCallInterims, tc.want)
+			}
+		})
 	}
 }
 

@@ -1,10 +1,113 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
+
+func TestSessionManagerAppendTurnMessagePersistsBeforeReturn(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewSessionManager(dir)
+	msg := providers.Message{Role: "user", Content: "durable"}
+	if err := manager.AppendTurnMessage(t.Context(), "turn", msg); err != nil {
+		t.Fatalf("AppendTurnMessage() error = %v", err)
+	}
+
+	reopened := NewSessionManager(dir)
+	history := reopened.GetHistory("turn")
+	if len(history) != 1 || history[0].Content != msg.Content {
+		t.Fatalf("reopened history = %+v", history)
+	}
+}
+
+func TestSessionManagerCanceledJournalWaitDoesNotMutate(t *testing.T) {
+	manager := NewSessionManager(t.TempDir())
+	manager.mu.Lock()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.AppendTurnMessage(ctx, "turn", providers.Message{Role: "user", Content: "canceled"})
+	}()
+	cancel()
+	manager.mu.Unlock()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("AppendTurnMessage() error = %v, want %v", err, context.Canceled)
+	}
+	if history := manager.GetHistory("turn"); len(history) != 0 {
+		t.Fatalf("canceled append mutated history: %+v", history)
+	}
+}
+
+func TestSessionManagerFailedJournalWriteDoesNotMutate(t *testing.T) {
+	manager := NewSessionManager(t.TempDir())
+	err := manager.AppendTurnMessage(t.Context(), ".", providers.Message{Role: "user", Content: "invalid"})
+	if !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("AppendTurnMessage() error = %v, want %v", err, os.ErrInvalid)
+	}
+	if history := manager.GetHistory("."); len(history) != 0 {
+		t.Fatalf("failed append mutated history: %+v", history)
+	}
+}
+
+func TestSessionManagerRestoreTurnSnapshotPersistsBeforeReturn(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewSessionManager(dir)
+	key := "turn"
+	before := []providers.Message{{Role: "user", Content: "before"}}
+	if err := manager.AppendTurnMessage(t.Context(), key, before[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AppendTurnMessage(
+		t.Context(),
+		key,
+		providers.Message{Role: "user", Content: "admitted root"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.RestoreTurnSnapshot(t.Context(), key, before, "restored summary"); err != nil {
+		t.Fatalf("RestoreTurnSnapshot() error = %v", err)
+	}
+	reopened := NewSessionManager(dir)
+	history := reopened.GetHistory(key)
+	if len(history) != 1 || history[0].Content != "before" {
+		t.Fatalf("reopened history = %+v", history)
+	}
+	if summary := reopened.GetSummary(key); summary != "restored summary" {
+		t.Fatalf("reopened summary = %q", summary)
+	}
+}
+
+func TestSessionManagerFailedSnapshotRestoreDoesNotMutate(t *testing.T) {
+	manager := NewSessionManager(t.TempDir())
+	key := "."
+	manager.GetOrCreate(key)
+	manager.SetHistory(key, []providers.Message{{Role: "user", Content: "current"}})
+	manager.SetSummary(key, "current summary")
+
+	err := manager.RestoreTurnSnapshot(
+		t.Context(),
+		key,
+		[]providers.Message{{Role: "user", Content: "before"}},
+		"before summary",
+	)
+	if !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("RestoreTurnSnapshot() error = %v, want %v", err, os.ErrInvalid)
+	}
+	history := manager.GetHistory(key)
+	if len(history) != 1 || history[0].Content != "current" {
+		t.Fatalf("failed restore mutated history: %+v", history)
+	}
+	if summary := manager.GetSummary(key); summary != "current summary" {
+		t.Fatalf("failed restore mutated summary: %q", summary)
+	}
+}
 
 func TestSanitizeFilename(t *testing.T) {
 	tests := []struct {
