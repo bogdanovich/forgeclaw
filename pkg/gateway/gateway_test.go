@@ -18,6 +18,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
@@ -281,6 +282,49 @@ func TestBrowserToolsTrackAgentGrantAcrossReload(t *testing.T) {
 	for _, name := range []string{"browser_targets", "browser_session", "browser_observe", "browser_act"} {
 		if slices.Contains(toolNames, name) {
 			t.Fatalf("registered tools = %#v, %s should be disabled", toolNames, name)
+		}
+	}
+}
+
+func TestConfigReloadRetainsOldRegistryWhenBrowserLeaseCannotDrain(t *testing.T) {
+	cfg := gatewayBrowserConfig(t.TempDir())
+	cfg.Agents.Defaults.ContextManager = "none"
+	cfg.Tools.Browser.Agents = []string{"main"}
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	defer al.Close()
+	runtime := &browserRuntime{}
+	runningServices := &services{Browser: runtime}
+	if err := setupBrowserTools(cfg, al, runningServices); err != nil {
+		t.Fatalf("setupBrowserTools() error = %v", err)
+	}
+
+	newCfg := config.DefaultConfig()
+	newCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	newCfg.Agents.Defaults.ContextManager = "none"
+	provider := providers.LLMProvider(&startupBlockedProvider{reason: "not used"})
+	runningServices.browserMu.RLock()
+	err := handleConfigReload(
+		context.Background(), al, newCfg, &provider, runningServices, msgBus,
+		true, false, 20*time.Millisecond,
+	)
+	runningServices.browserMu.RUnlock()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handleConfigReload() error = %v, want deadline exceeded", err)
+	}
+	if runningServices.Browser != runtime {
+		t.Fatal("failed reload replaced the retained browser runtime")
+	}
+	activeCfg := al.GetConfig()
+	if activeCfg == nil || !activeCfg.Tools.Browser.Enabled ||
+		!slices.Contains(activeCfg.Tools.Browser.Agents, "main") {
+		t.Fatalf("active config after failed reload = %#v", activeCfg)
+	}
+	toolNames := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	for _, name := range []string{"browser_targets", "browser_session", "browser_observe", "browser_act"} {
+		if !slices.Contains(toolNames, name) {
+			t.Fatalf("registered tools after failed reload = %#v, want %s", toolNames, name)
 		}
 	}
 }

@@ -413,7 +413,10 @@ func executeReload(
 		publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReloadCompleted, startedAt, nil)
 	}()
 
-	err = handleConfigReload(ctx, agentLoop, newCfg, provider, runningServices, msgBus, allowEmptyStartup, debug)
+	err = handleConfigReload(
+		ctx, agentLoop, newCfg, provider, runningServices, msgBus,
+		allowEmptyStartup, debug, serviceShutdownTimeout,
+	)
 	return err
 }
 
@@ -928,13 +931,16 @@ func setupAndStartServices(
 	return runningServices, nil
 }
 
-func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Duration, isReload bool) {
+func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Duration, isReload bool) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 	if err := closeBrowserRuntime(shutdownCtx, runningServices); err != nil {
 		logger.WarnCF("browser", "Browser sessions did not close cleanly", map[string]any{
 			"reason": "worker_unavailable",
 		})
+		if isReload {
+			return fmt.Errorf("close browser runtime before reload: %w", err)
+		}
 	}
 
 	// Reload should not stop channels or node admission. Full shutdown drains
@@ -978,6 +984,7 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 			fms.Stop()
 		}
 	}
+	return nil
 }
 
 func closeBrowserRuntime(ctx context.Context, runningServices *services) error {
@@ -1057,6 +1064,7 @@ func handleConfigReload(
 	msgBus *bus.MessageBus,
 	allowEmptyStartup bool,
 	debug bool,
+	shutdownTimeout time.Duration,
 ) error {
 	logger.Info("🔄 Config file changed, reloading...")
 
@@ -1065,7 +1073,10 @@ func handleConfigReload(
 	logger.Infof(" New model is '%s', recreating provider...", newModel)
 
 	logger.Info("  Stopping all services...")
-	stopAndCleanupServices(runningServices, serviceShutdownTimeout, true)
+	if err := stopAndCleanupServices(runningServices, shutdownTimeout, true); err != nil {
+		logger.Errorf("  ⚠ Error stopping services for reload: %v", err)
+		return fmt.Errorf("error stopping services for reload: %w", err)
+	}
 
 	newProvider, newModelID, err := createStartupProvider(newCfg, allowEmptyStartup)
 	if err != nil {
