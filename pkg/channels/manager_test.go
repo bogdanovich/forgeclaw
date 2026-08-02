@@ -1566,11 +1566,12 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
 	}
 	text := testOutboundMessage(bus.OutboundMessage{
-		Channel: "test", ChatID: "chat-1", Content: "hello", TraceScopes: traceScopes,
+		DeliveryID: "out_text", Channel: "test", ChatID: "chat-1", Content: "hello", TraceScopes: traceScopes,
 		TraceSettlement: true,
 	})
 	media := testOutboundMediaMessage(bus.OutboundMediaMessage{
-		Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes, TraceSettlement: true,
+		DeliveryID: "out_media", Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes,
+		TraceSettlement: true,
 	})
 
 	m.publishOutboundQueued("test", text)
@@ -1603,6 +1604,13 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 		}
 		if event.Attrs["trace_scopes_count"] != 2 {
 			t.Fatalf("event %d attrs = %#v, want trace_scopes_count=2", i, event.Attrs)
+		}
+		wantDeliveryID := "out_text"
+		if payload.Media {
+			wantDeliveryID = "out_media"
+		}
+		if payload.DeliveryID != wantDeliveryID || event.Attrs["delivery_id"] != wantDeliveryID {
+			t.Fatalf("event %d delivery identity = payload %q attrs %#v", i, payload.DeliveryID, event.Attrs)
 		}
 	}
 }

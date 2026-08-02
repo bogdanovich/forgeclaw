@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -28,6 +30,39 @@ func TestWriteFileAtomic_PropagatesDirectorySyncFailure(t *testing.T) {
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || string(data) != "durable marker" {
 		t.Fatalf("renamed file after sync failure = %q, %v", data, readErr)
+	}
+}
+
+func TestMkdirAllDurableSyncsEveryParentAndReconfirmsExistingPath(t *testing.T) {
+	root := t.TempDir()
+	var synced []string
+	syncDir := func(path string) error {
+		synced = append(synced, path)
+		return nil
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := mkdirAllDurable(root, filepath.Join("state", "outbox"), 0o700, syncDir); err != nil {
+			t.Fatalf("mkdirAllDurable() attempt %d error = %v", attempt+1, err)
+		}
+	}
+	want := []string{root, filepath.Join(root, "state"), root, filepath.Join(root, "state")}
+	if !slices.Equal(synced, want) {
+		t.Fatalf("synced directories = %#v, want %#v", synced, want)
+	}
+}
+
+func TestMkdirAllDurableReportsCommittedDirectorySyncFailure(t *testing.T) {
+	root := t.TempDir()
+	wantErr := errors.New("directory sync failed")
+	err := mkdirAllDurable(root, filepath.Join("state", "outbox"), 0o700, func(string) error {
+		return wantErr
+	})
+	if !IsCommittedWriteError(err) || !errors.Is(err, wantErr) {
+		t.Fatalf("mkdirAllDurable() error = %v, want committed error wrapping %v", err, wantErr)
+	}
+	if info, statErr := os.Stat(filepath.Join(root, "state", "outbox")); statErr != nil || !info.IsDir() {
+		t.Fatalf("durable target was not created before sync failure: info=%v err=%v", info, statErr)
 	}
 }
 
@@ -63,9 +98,11 @@ func TestWriteFileAtomic_Permissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat failed: %v", err)
 	}
-	// On Unix, check file mode (ignoring directory bits)
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("permissions = %o, want %o", got, 0o600)
+	// Windows does not expose POSIX permission bits through os.FileMode.
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("permissions = %o, want %o", got, 0o600)
+		}
 	}
 }
 
@@ -192,8 +229,11 @@ func TestWriteFileAtomic_Concurrent(t *testing.T) {
 }
 
 func TestWriteFileAtomic_InvalidPath(t *testing.T) {
-	// /dev/null/impossible is not a valid path on any OS
-	err := WriteFileAtomic("/dev/null/impossible/file.txt", []byte("data"), 0o644)
+	parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("data"), 0o600); err != nil {
+		t.Fatalf("WriteFile(parent fixture) error = %v", err)
+	}
+	err := WriteFileAtomic(filepath.Join(parentFile, "file.txt"), []byte("data"), 0o644)
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
 	}

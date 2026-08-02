@@ -111,6 +111,7 @@ type ContextUsage struct {
 }
 
 type OutboundMessage struct {
+	DeliveryID       string                     `json:"delivery_id,omitempty"`
 	Channel          string                     `json:"channel"`
 	ChatID           string                     `json:"chat_id"`
 	Context          InboundContext             `json:"context"`
@@ -135,6 +136,7 @@ type MediaPart struct {
 
 // OutboundMediaMessage carries media attachments from Agent to channels via the bus.
 type OutboundMediaMessage struct {
+	DeliveryID      string                     `json:"delivery_id,omitempty"`
 	Channel         string                     `json:"channel"`
 	ChatID          string                     `json:"chat_id"`
 	Context         InboundContext             `json:"context"`
