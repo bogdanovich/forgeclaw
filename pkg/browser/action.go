@@ -17,14 +17,20 @@ import (
 )
 
 type Observation struct {
-	SessionID          string `json:"browser_session_id"`
-	TabID              string `json:"tab_id"`
-	SnapshotID         string `json:"snapshot_id"`
-	SnapshotGeneration uint64 `json:"snapshot_generation"`
-	URL                string `json:"url"`
-	Origin             string `json:"origin"`
-	Title              string `json:"title,omitempty"`
-	Snapshot           string `json:"snapshot"`
+	SessionID          string             `json:"browser_session_id"`
+	TabID              string             `json:"tab_id"`
+	SnapshotID         string             `json:"snapshot_id"`
+	SnapshotGeneration uint64             `json:"snapshot_generation"`
+	URL                string             `json:"url"`
+	Origin             string             `json:"origin"`
+	Title              string             `json:"title,omitempty"`
+	Snapshot           string             `json:"snapshot"`
+	PendingDialog      *DialogObservation `json:"pending_dialog,omitempty"`
+}
+
+type DialogObservation struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 type PrepareActionRequest struct {
@@ -93,6 +99,7 @@ func (broker *Broker) Observe(ctx context.Context, owner Owner, sessionID, tabID
 		SessionID: session.ID, TabID: session.TabID, SnapshotID: snapshotID,
 		SnapshotGeneration: session.SnapshotGeneration, URL: driverObservation.URL,
 		Origin: driverObservation.Origin, Title: driverObservation.Title, Snapshot: visibleSnapshot,
+		PendingDialog: cloneDialogObservation(driverObservation.PendingDialog),
 	}, nil
 }
 
@@ -351,6 +358,20 @@ func (broker *Broker) resolvePreparedActionLocked(
 		} else {
 			prepared.Effect = EffectRead
 		}
+	case ActionDialog:
+		observation, observeErr := worker.Observe(ctx)
+		if observeErr != nil {
+			return PreparedAction{}, observeErr
+		}
+		if observation.Origin != session.SnapshotOrigin || observation.PendingDialog == nil {
+			return PreparedAction{}, ErrStale
+		}
+		prepared.DialogType = observation.PendingDialog.Type
+		prepared.DialogMessage = observation.PendingDialog.Message
+		if request.Action.PromptProvided && prepared.DialogType != "prompt" {
+			return PreparedAction{}, ErrDenied
+		}
+		prepared.Effect = classifyDialogEffect(request.Action.Decision)
 	default:
 		return PreparedAction{}, ErrInvalid
 	}
@@ -383,6 +404,18 @@ func (broker *Broker) revalidatePreparedLocked(
 			return err
 		}
 		if observation.Origin != prepared.CurrentOrigin {
+			return ErrStale
+		}
+		return nil
+	}
+	if prepared.Action.Kind == ActionDialog {
+		observation, err := worker.Observe(ctx)
+		if err != nil {
+			return err
+		}
+		if observation.Origin != prepared.CurrentOrigin || observation.PendingDialog == nil ||
+			observation.PendingDialog.Type != prepared.DialogType ||
+			observation.PendingDialog.Message != prepared.DialogMessage {
 			return ErrStale
 		}
 		return nil
@@ -490,6 +523,30 @@ func classifyClickEffect(element DriverElement) Effect {
 	}
 }
 
+func classifyDialogEffect(decision string) Effect {
+	if decision == "dismiss" {
+		return EffectLocalEdit
+	}
+	return EffectExternalCommit
+}
+
+func validDialogType(dialogType string) bool {
+	switch dialogType {
+	case "alert", "beforeunload", "confirm", "prompt":
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneDialogObservation(dialog *DialogObservation) *DialogObservation {
+	if dialog == nil {
+		return nil
+	}
+	cloned := *dialog
+	return &cloned
+}
+
 func editableElementRole(role string) bool {
 	return role == "textbox" || role == "searchbox" || role == "combobox"
 }
@@ -528,13 +585,26 @@ func (broker *Broker) driverActionForPrepared(
 		return DriverAction{
 			Kind: DriverScroll, Direction: prepared.Action.Direction, Amount: prepared.Action.Amount,
 		}, nil
+	case ActionDialog:
+		value := ""
+		if prepared.Action.PromptProvided {
+			var ok bool
+			value, ok = slot.inputs[prepared.ID]
+			if !ok || !broker.actionInputMatches(prepared, value) {
+				return DriverAction{}, ErrStale
+			}
+		}
+		return DriverAction{
+			Kind: DriverDialog, Accept: prepared.Action.Decision == "accept", Value: value,
+			PromptProvided: prepared.Action.PromptProvided,
+		}, nil
 	default:
 		return DriverAction{}, ErrInvalid
 	}
 }
 
 func (broker *Broker) bindActionInput(action Action) (Action, string, int, error) {
-	if !actionHasSensitiveInput(action.Kind) {
+	if !actionHasSensitiveInput(action) {
 		return action, "", 0, nil
 	}
 	if len(broker.bindingKey) != sha256.Size {
@@ -549,14 +619,17 @@ func (broker *Broker) bindActionInput(action Action) (Action, string, int, error
 }
 
 func (broker *Broker) actionInputMatches(prepared PreparedAction, value string) bool {
-	_, digest, size, err := broker.bindActionInput(Action{Kind: prepared.Action.Kind, Value: value})
+	_, digest, size, err := broker.bindActionInput(Action{
+		Kind: prepared.Action.Kind, Decision: prepared.Action.Decision, Value: value,
+		PromptProvided: prepared.Action.PromptProvided,
+	})
 	return err == nil && size == prepared.InputBytes && hmac.Equal(
 		[]byte(digest), []byte(prepared.InputDigest),
 	)
 }
 
 func (broker *Broker) validateActionInput(slot *workerSlot, prepared PreparedAction) error {
-	if !actionHasSensitiveInput(prepared.Action.Kind) {
+	if prepared.InputDigest == "" {
 		return nil
 	}
 	value, ok := slot.inputs[prepared.ID]
@@ -571,7 +644,7 @@ func (broker *Broker) rememberActionInput(
 	prepared PreparedAction,
 	value string,
 ) {
-	if !actionHasSensitiveInput(prepared.Action.Kind) {
+	if prepared.InputDigest == "" {
 		return
 	}
 	if slot.inputs == nil {
@@ -580,8 +653,9 @@ func (broker *Broker) rememberActionInput(
 	slot.inputs[prepared.ID] = value
 }
 
-func actionHasSensitiveInput(kind ActionKind) bool {
-	return kind == ActionFill || kind == ActionSelect
+func actionHasSensitiveInput(action Action) bool {
+	return action.Kind == ActionFill || action.Kind == ActionSelect ||
+		(action.Kind == ActionDialog && action.PromptProvided)
 }
 
 func (broker *Broker) originAllowed(session Session, origin string) bool {

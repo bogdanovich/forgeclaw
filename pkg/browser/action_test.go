@@ -452,6 +452,109 @@ func TestBrokerTreatsGlobalPressAsUnknownAndDryRunDenied(t *testing.T) {
 	}
 }
 
+func TestBrokerObservesAndDismissesBoundDialog(t *testing.T) {
+	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	worker.observation = driverObservationFixture()
+	worker.observation.PendingDialog = &DialogObservation{Type: "confirm", Message: "Discard draft?"}
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil || observation.PendingDialog == nil ||
+		*observation.PendingDialog != (DialogObservation{Type: "confirm", Message: "Discard draft?"}) {
+		t.Fatalf("Observe() dialog = %+v, %v", observation, err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_dismiss", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionDialog, Decision: "dismiss"},
+	})
+	if err != nil || prepared.RequiresApproval || prepared.Action.Effect != EffectLocalEdit ||
+		prepared.Action.DialogType != "confirm" || prepared.Action.DialogMessage != "Discard draft?" {
+		t.Fatalf("PrepareAction(dismiss) = %+v, %v", prepared, err)
+	}
+	invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+	if err != nil || invocation.State != InvocationSucceeded || !reflect.DeepEqual(
+		worker.actions, []DriverAction{{Kind: DriverDialog}},
+	) {
+		t.Fatalf("ExecuteAction(dismiss) = %+v, %v; actions = %+v", invocation, err, worker.actions)
+	}
+}
+
+func TestBrokerBindsDialogPromptAndProtectsAcceptance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "browser.json")
+	store, err := NewFileStore(path, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	broker, worker, session := openActionTestBroker(t, store)
+	worker.observation = driverObservationFixture()
+	worker.observation.PendingDialog = &DialogObservation{Type: "prompt", Message: "Type confirmation"}
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_accept", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{
+			Kind: ActionDialog, Decision: "accept", Value: "prompt-secret", PromptProvided: true,
+		},
+	})
+	if err != nil || !prepared.RequiresApproval || prepared.Action.Effect != EffectExternalCommit ||
+		prepared.Action.Action.Value != "" || !validDigest(prepared.Action.InputDigest) {
+		t.Fatalf("PrepareAction(accept) = %+v, %v", prepared, err)
+	}
+	state, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(state, []byte("prompt-secret")) {
+		t.Fatalf("durable browser state exposed dialog prompt: %s", state)
+	}
+	if _, err = broker.ExecuteAction(
+		context.Background(), owner, prepared.Action.ID, nil,
+	); !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("ExecuteAction(accept) error = %v, want ErrApprovalRequired", err)
+	}
+	if _, err = broker.ExecuteAction(
+		context.Background(), owner, prepared.Action.ID, &prepared.Approval,
+	); !errors.Is(err, ErrDenied) {
+		t.Fatalf("ExecuteAction(approved dry-run accept) error = %v, want ErrDenied", err)
+	}
+	if len(worker.actions) != 0 {
+		t.Fatalf("protected dialog acceptance reached driver: %+v", worker.actions)
+	}
+}
+
+func TestBrokerRejectsChangedDialogBeforeDispatch(t *testing.T) {
+	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	worker.observation = driverObservationFixture()
+	worker.observation.PendingDialog = &DialogObservation{Type: "confirm", Message: "First"}
+	owner := testOwner()
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_changed_dialog", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionDialog, Decision: "dismiss"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.observation.PendingDialog.Message = "Replacement"
+	if _, err = broker.ExecuteAction(
+		context.Background(), owner, prepared.Action.ID, nil,
+	); !errors.Is(err, ErrStale) {
+		t.Fatalf("ExecuteAction(changed dialog) error = %v, want ErrStale", err)
+	}
+	if len(worker.actions) != 0 {
+		t.Fatalf("changed dialog reached driver: %+v", worker.actions)
+	}
+}
+
 func TestActionValidationRejectsUnadmittedKeyAndUnboundedScroll(t *testing.T) {
 	for _, action := range []Action{
 		{Kind: ActionPress, Key: "a"},
@@ -459,6 +562,9 @@ func TestActionValidationRejectsUnadmittedKeyAndUnboundedScroll(t *testing.T) {
 		{Kind: ActionPress, Key: "Enter"},
 		{Kind: ActionScroll, Direction: "left", Amount: 1},
 		{Kind: ActionScroll, Direction: "down", Amount: MaxScrollAmount + 1},
+		{Kind: ActionDialog, Decision: "dismiss", Value: "unexpected"},
+		{Kind: ActionDialog, Decision: "accept", Value: "unmarked-prompt"},
+		{Kind: ActionDialog, Decision: "later"},
 	} {
 		if err := action.Validate(config.BrowserMaxTextInputBytes); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("Action.Validate(%+v) error = %v, want ErrInvalid", action, err)

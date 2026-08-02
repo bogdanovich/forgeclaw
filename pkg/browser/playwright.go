@@ -30,6 +30,9 @@ var (
 	playwrightElementPattern    = regexp.MustCompile(
 		`(?m)^\s*-\s+([A-Za-z][A-Za-z0-9_-]*)(?:\s+"([^"]*)")?[^\n]*\[ref=(e[1-9][0-9]{0,9})\]`,
 	)
+	playwrightDialogPattern = regexp.MustCompile(
+		`^- \["(alert|beforeunload|confirm|prompt)" dialog with message "(.*)"\]: can be handled by browser_handle_dialog$`,
+	)
 )
 
 type DriverActionKind string
@@ -41,25 +44,29 @@ const (
 	DriverSelect   DriverActionKind = "select"
 	DriverPress    DriverActionKind = "press"
 	DriverScroll   DriverActionKind = "scroll"
+	DriverDialog   DriverActionKind = "dialog"
 )
 
 type DriverAction struct {
-	Kind      DriverActionKind
-	URL       string
-	Target    string
-	Element   string
-	Value     string
-	Key       string
-	Direction string
-	Amount    int
+	Kind           DriverActionKind
+	URL            string
+	Target         string
+	Element        string
+	Value          string
+	Key            string
+	Direction      string
+	Amount         int
+	Accept         bool
+	PromptProvided bool
 }
 
 type DriverObservation struct {
-	URL      string
-	Origin   string
-	Title    string
-	Snapshot string
-	Elements []DriverElement
+	URL           string
+	Origin        string
+	Title         string
+	Snapshot      string
+	Elements      []DriverElement
+	PendingDialog *DialogObservation
 }
 
 type DriverElement struct {
@@ -274,10 +281,12 @@ type playwrightWorker struct {
 	catalogRevision string
 	cancelLifetime  context.CancelFunc
 
-	mu      sync.Mutex
-	lost    bool
-	closing bool
-	closed  bool
+	mu              sync.Mutex
+	lost            bool
+	closing         bool
+	closed          bool
+	lastObservation DriverObservation
+	pendingDialog   *DialogObservation
 }
 
 func (worker *playwrightWorker) Status(ctx context.Context) (WorkerStatus, error) {
@@ -302,6 +311,17 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 	if worker.closing || worker.closed || worker.lost {
 		return DriverObservation{}, ErrWorkerUnavailable
 	}
+	if worker.pendingDialog != nil {
+		if worker.lastObservation.Origin == "" {
+			worker.lost = true
+			return DriverObservation{}, ErrDriverIncompatible
+		}
+		observation := worker.lastObservation
+		observation.Snapshot = ""
+		observation.Elements = nil
+		observation.PendingDialog = cloneDialogObservation(worker.pendingDialog)
+		return observation, nil
+	}
 	result, err := worker.call(ctx, "browser_snapshot", map[string]any{"boxes": false})
 	if err != nil {
 		return DriverObservation{}, err
@@ -310,17 +330,23 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 	if err != nil {
 		return DriverObservation{}, err
 	}
-	return parsePlaywrightObservation(
+	observation, err := parsePlaywrightObservation(
 		text,
 		worker.limits.SnapshotBytes,
 		worker.limits.SnapshotRefs,
 	)
+	if err != nil {
+		return DriverObservation{}, err
+	}
+	worker.lastObservation = observation
+	return observation, nil
 }
 
 func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (DriverElement, string, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost || !playwrightTargetPattern.MatchString(target) {
+	if worker.closing || worker.closed || worker.lost || worker.pendingDialog != nil ||
+		!playwrightTargetPattern.MatchString(target) {
 		return DriverElement{}, "", ErrWorkerUnavailable
 	}
 	result, err := worker.call(ctx, "browser_snapshot", map[string]any{"boxes": false, "target": target})
@@ -353,6 +379,12 @@ func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction
 	if worker.closing || worker.closed || worker.lost {
 		return ErrWorkerUnavailable
 	}
+	if worker.pendingDialog != nil && action.Kind != DriverDialog {
+		return ErrDriverRejected
+	}
+	if worker.pendingDialog == nil && action.Kind == DriverDialog {
+		return ErrStale
+	}
 	tool, arguments, err := mapPlaywrightAction(action, worker.limits)
 	if err != nil {
 		return err
@@ -361,8 +393,27 @@ func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction
 	if err != nil {
 		return err
 	}
-	_, err = boundedPlaywrightText(result, worker.limits.ToolResultBytes)
-	return err
+	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
+	if err != nil {
+		return err
+	}
+	if action.Kind == DriverDialog {
+		worker.pendingDialog = nil
+		return nil
+	}
+	dialog, err := parsePlaywrightPendingDialog(text)
+	if err != nil {
+		worker.lost = true
+		return err
+	}
+	if dialog != nil {
+		if worker.lastObservation.Origin == "" {
+			worker.lost = true
+			return ErrDriverIncompatible
+		}
+		worker.pendingDialog = dialog
+	}
+	return nil
 }
 
 func (worker *playwrightWorker) Close(ctx context.Context) error {
@@ -416,14 +467,21 @@ func mapPlaywrightAction(
 	switch action.Kind {
 	case DriverNavigate:
 		normalized, err := normalizeDriverNavigationURL(action.URL)
-		if err != nil || action.Target != "" || action.Element != "" || action.Value != "" ||
-			action.Key != "" || action.Direction != "" || action.Amount != 0 {
+		if err != nil || action.Target != "" || action.Element != "" || action.Value != "" || action.Accept ||
+			action.PromptProvided ||
+			action.Key != "" ||
+			action.Direction != "" ||
+			action.Amount != 0 {
 			return "", nil, fmt.Errorf("%w: malformed navigate action", ErrInvalid)
 		}
 		return "browser_navigate", map[string]any{"url": normalized}, nil
 	case DriverClick:
-		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" ||
-			action.Value != "" || action.Key != "" || action.Direction != "" || action.Amount != 0 ||
+		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" || action.Accept ||
+			action.PromptProvided ||
+			action.Value != "" ||
+			action.Key != "" ||
+			action.Direction != "" ||
+			action.Amount != 0 ||
 			len(action.Element) > MaxElementNameBytes {
 			return "", nil, fmt.Errorf("%w: malformed click action", ErrInvalid)
 		}
@@ -435,9 +493,13 @@ func mapPlaywrightAction(
 		}
 		return "browser_click", arguments, nil
 	case DriverFill:
-		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" ||
-			len(action.Element) > MaxElementNameBytes || len(action.Value) > limits.TextInputBytes ||
-			action.Key != "" || action.Direction != "" || action.Amount != 0 {
+		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" || action.Accept ||
+			action.PromptProvided ||
+			len(action.Element) > MaxElementNameBytes ||
+			len(action.Value) > limits.TextInputBytes ||
+			action.Key != "" ||
+			action.Direction != "" ||
+			action.Amount != 0 {
 			return "", nil, fmt.Errorf("%w: malformed fill action", ErrInvalid)
 		}
 		arguments := map[string]any{
@@ -449,8 +511,13 @@ func mapPlaywrightAction(
 		return "browser_type", arguments, nil
 	case DriverSelect:
 		if !playwrightTargetPattern.MatchString(action.Target) || action.URL != "" || action.Key != "" ||
-			action.Direction != "" || action.Amount != 0 || len(action.Element) > MaxElementNameBytes ||
-			action.Value == "" || len(action.Value) > limits.TextInputBytes {
+			action.Accept ||
+			action.PromptProvided ||
+			action.Direction != "" ||
+			action.Amount != 0 ||
+			len(action.Element) > MaxElementNameBytes ||
+			action.Value == "" ||
+			len(action.Value) > limits.TextInputBytes {
 			return "", nil, fmt.Errorf("%w: malformed select action", ErrInvalid)
 		}
 		arguments := map[string]any{"target": action.Target, "values": []string{action.Value}}
@@ -459,15 +526,22 @@ func mapPlaywrightAction(
 		}
 		return "browser_select_option", arguments, nil
 	case DriverPress:
-		if !validBrowserKey(action.Key) || action.URL != "" || action.Target != "" ||
-			action.Element != "" || action.Value != "" || action.Direction != "" || action.Amount != 0 {
+		if !validBrowserKey(action.Key) || action.URL != "" || action.Target != "" || action.Accept ||
+			action.PromptProvided ||
+			action.Element != "" ||
+			action.Value != "" ||
+			action.Direction != "" ||
+			action.Amount != 0 {
 			return "", nil, fmt.Errorf("%w: malformed press action", ErrInvalid)
 		}
 		return "browser_press_key", map[string]any{"key": action.Key}, nil
 	case DriverScroll:
-		if action.URL != "" || action.Target != "" || action.Element != "" || action.Value != "" ||
-			action.Key != "" || (action.Direction != "up" && action.Direction != "down") ||
-			action.Amount < 1 || action.Amount > MaxScrollAmount {
+		if action.URL != "" || action.Target != "" || action.Element != "" || action.Value != "" || action.Accept ||
+			action.PromptProvided ||
+			action.Key != "" ||
+			(action.Direction != "up" && action.Direction != "down") ||
+			action.Amount < 1 ||
+			action.Amount > MaxScrollAmount {
 			return "", nil, fmt.Errorf("%w: malformed scroll action", ErrInvalid)
 		}
 		delta := action.Amount * 500
@@ -475,6 +549,18 @@ func mapPlaywrightAction(
 			delta = -delta
 		}
 		return "browser_mouse_wheel", map[string]any{"deltaX": 0, "deltaY": delta}, nil
+	case DriverDialog:
+		if action.URL != "" || action.Target != "" || action.Element != "" || action.Key != "" ||
+			action.Direction != "" || action.Amount != 0 || len(action.Value) > limits.TextInputBytes ||
+			(!action.Accept && (action.Value != "" || action.PromptProvided)) ||
+			(!action.PromptProvided && action.Value != "") {
+			return "", nil, fmt.Errorf("%w: malformed dialog action", ErrInvalid)
+		}
+		arguments := map[string]any{"accept": action.Accept}
+		if action.PromptProvided {
+			arguments["promptText"] = action.Value
+		}
+		return "browser_handle_dialog", arguments, nil
 	default:
 		return "", nil, fmt.Errorf("%w: unsupported driver action", ErrInvalid)
 	}
@@ -553,6 +639,57 @@ func parsePlaywrightObservation(
 	return DriverObservation{
 		URL: safeURL, Origin: origin, Title: title, Snapshot: snapshot, Elements: elements,
 	}, nil
+}
+
+func parsePlaywrightPendingDialog(text string) (*DialogObservation, error) {
+	section, found, err := playwrightMarkdownSection(text, "Modal state")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	section = strings.TrimSpace(section)
+	match := playwrightDialogPattern.FindStringSubmatch(section)
+	if len(match) != 3 || !validDialogType(match[1]) || len(match[2]) > MaxDialogMessageBytes {
+		return nil, ErrDriverIncompatible
+	}
+	return &DialogObservation{Type: match[1], Message: match[2]}, nil
+}
+
+func playwrightMarkdownSection(text, title string) (string, bool, error) {
+	lines := strings.Split(text, "\n")
+	header := "### " + title
+	start := -1
+	end := len(lines)
+	inFence := false
+	for index, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if line == header {
+			if start >= 0 {
+				return "", false, ErrDriverIncompatible
+			}
+			start = index + 1
+			continue
+		}
+		if start >= 0 && strings.HasPrefix(line, "### ") {
+			end = index
+			break
+		}
+	}
+	if inFence {
+		return "", false, ErrDriverIncompatible
+	}
+	if start < 0 {
+		return "", false, nil
+	}
+	return strings.Join(lines[start:end], "\n"), true, nil
 }
 
 func parsePlaywrightElements(snapshot string) []DriverElement {
@@ -694,6 +831,16 @@ var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
 			"deltaY":{"default":0,"description":"Y delta","type":"number"}
 		},
 		"required":["deltaX","deltaY"],
+		"type":"object"
+	}`),
+	"browser_handle_dialog": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"accept":{"description":"Whether to accept the dialog.","type":"boolean"},
+			"promptText":{"description":"The text of the prompt in case of a prompt dialog.","type":"string"}
+		},
+		"required":["accept"],
 		"type":"object"
 	}`),
 }
