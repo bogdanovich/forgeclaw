@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 func TestDeliveryIDIsStableForLogicalMessage(t *testing.T) {
@@ -167,6 +168,152 @@ func TestCreateDoesNotAdmitFailedPersistence(t *testing.T) {
 	}
 }
 
+func TestTerminalTransitionReconfirmsCommittedWriteError(t *testing.T) {
+	store := openTestStore(t)
+	intent := createTestIntent(t, store, "response")
+	if _, err := store.BeginAttempt(intent.ID); err != nil {
+		t.Fatalf("BeginAttempt() error = %v", err)
+	}
+
+	originalWrite := store.writeAtomic
+	writes := 0
+	store.writeAtomic = func(path string, data []byte, perm os.FileMode) error {
+		writes++
+		if err := originalWrite(path, data, perm); err != nil {
+			return err
+		}
+		if writes == 1 {
+			return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+		}
+		return nil
+	}
+	outcome := Outcome{PlatformMessageIDs: []string{"platform-1"}}
+	if _, err := store.MarkDelivered(intent.ID, outcome); err == nil {
+		t.Fatal("MarkDelivered() did not report uncertain durability")
+	}
+	if _, err := store.MarkDelivered(intent.ID, outcome); err != nil {
+		t.Fatalf("MarkDelivered() reconfirm error = %v", err)
+	}
+	if writes != 2 {
+		t.Fatalf("terminal writes = %d, want 2", writes)
+	}
+}
+
+func TestRecoverReconfirmsCommittedAmbiguousWrite(t *testing.T) {
+	store := openTestStore(t)
+	intent := createTestIntent(t, store, "response")
+	if _, err := store.BeginAttempt(intent.ID); err != nil {
+		t.Fatalf("BeginAttempt() error = %v", err)
+	}
+
+	originalWrite := store.writeAtomic
+	writes := 0
+	store.writeAtomic = func(path string, data []byte, perm os.FileMode) error {
+		writes++
+		if err := originalWrite(path, data, perm); err != nil {
+			return err
+		}
+		if writes == 1 {
+			return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+		}
+		return nil
+	}
+	if _, err := store.Recover(); err == nil {
+		t.Fatal("Recover() did not report uncertain durability")
+	}
+	if recovered, err := store.Recover(); err != nil {
+		t.Fatalf("Recover() reconfirm error = %v", err)
+	} else if len(recovered) != 0 {
+		t.Fatalf("Recover() reconfirm returned pending intents: %#v", recovered)
+	}
+	if writes != 2 {
+		t.Fatalf("recovery writes = %d, want 2", writes)
+	}
+}
+
+func TestConstructorsBindPayloadRouteToIdentity(t *testing.T) {
+	identity := testIdentity()
+	message, err := NewMessageIntent(identity, bus.OutboundMessage{
+		Channel: "wrong", ChatID: "wrong", SessionKey: "wrong",
+		Context: bus.InboundContext{Channel: "wrong", ChatID: "wrong"},
+		Scope:   &bus.OutboundScope{Channel: "wrong"},
+		Content: "response",
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMessageIntent() error = %v", err)
+	}
+	assertMessageRouteMatchesIdentity(t, identity, *message.Message)
+
+	media, err := NewMediaIntent(identity, bus.OutboundMediaMessage{
+		Channel: "wrong", ChatID: "wrong", SessionKey: "wrong",
+		Context: bus.InboundContext{Channel: "wrong", ChatID: "wrong"},
+		Scope:   &bus.OutboundScope{Channel: "wrong"},
+		Parts:   []bus.MediaPart{{Type: "image", Ref: "media://image"}},
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMediaIntent() error = %v", err)
+	}
+	assertMediaRouteMatchesIdentity(t, identity, *media.Media)
+}
+
+func TestCreateRejectsPayloadRouteMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Intent)
+	}{
+		{name: "message mirror", mutate: func(intent *Intent) { intent.Message.Channel = "wrong" }},
+		{name: "message context", mutate: func(intent *Intent) { intent.Message.Context.ChatID = "wrong" }},
+		{name: "message session", mutate: func(intent *Intent) { intent.Message.SessionKey = "wrong" }},
+		{name: "message scope", mutate: func(intent *Intent) {
+			intent.Message.Scope = &bus.OutboundScope{Channel: "wrong"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			intent := newTestIntent(t, "response", 0)
+			tc.mutate(&intent)
+			if _, err := store.Create(intent); err == nil {
+				t.Fatal("Create() accepted mismatched message route")
+			}
+		})
+	}
+
+	store := openTestStore(t)
+	identity := testIdentity()
+	intent, err := NewMediaIntent(identity, bus.OutboundMediaMessage{
+		Parts: []bus.MediaPart{{Type: "image", Ref: "media://image"}},
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMediaIntent() error = %v", err)
+	}
+	intent.Media.Context.Channel = "wrong"
+	if _, err := store.Create(intent); err == nil {
+		t.Fatal("Create() accepted mismatched media route")
+	}
+}
+
+func TestCreateRequiresCleanPendingState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Intent)
+	}{
+		{name: "status", mutate: func(intent *Intent) { intent.Status = StatusDelivered }},
+		{name: "attempts", mutate: func(intent *Intent) { intent.Attempts = 1 }},
+		{name: "message IDs", mutate: func(intent *Intent) { intent.PlatformMessageIDs = []string{"id"} }},
+		{name: "retry after", mutate: func(intent *Intent) { intent.RetryAfter = time.Now() }},
+		{name: "error", mutate: func(intent *Intent) { intent.LastError = "failed" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			intent := newTestIntent(t, "response", 0)
+			tc.mutate(&intent)
+			if _, err := store.Create(intent); err == nil {
+				t.Fatal("Create() accepted non-pending lifecycle state")
+			}
+		})
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(t.TempDir())
@@ -229,4 +376,22 @@ func cloneMessage(msg *bus.OutboundMessage) *bus.OutboundMessage {
 	}
 	cloned := *msg
 	return &cloned
+}
+
+func assertMessageRouteMatchesIdentity(t *testing.T, identity Identity, msg bus.OutboundMessage) {
+	t.Helper()
+	if msg.Channel != identity.Channel || msg.Context.Channel != identity.Channel ||
+		msg.ChatID != identity.ChatID || msg.Context.ChatID != identity.ChatID ||
+		msg.SessionKey != identity.SessionKey || msg.Scope == nil || msg.Scope.Channel != identity.Channel {
+		t.Fatalf("message route = %#v, want identity %#v", msg, identity)
+	}
+}
+
+func assertMediaRouteMatchesIdentity(t *testing.T, identity Identity, msg bus.OutboundMediaMessage) {
+	t.Helper()
+	if msg.Channel != identity.Channel || msg.Context.Channel != identity.Channel ||
+		msg.ChatID != identity.ChatID || msg.Context.ChatID != identity.ChatID ||
+		msg.SessionKey != identity.SessionKey || msg.Scope == nil || msg.Scope.Channel != identity.Channel {
+		t.Fatalf("media route = %#v, want identity %#v", msg, identity)
+	}
 }

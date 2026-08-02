@@ -20,6 +20,8 @@ import (
 
 const recordVersion = 1
 
+const interruptedAttemptError = "process stopped before the delivery outcome was persisted"
+
 // Status records what is known about remote acceptance of an outbound intent.
 type Status string
 
@@ -118,11 +120,24 @@ func DeliveryID(identity Identity) (string, error) {
 // NewMessageIntent creates a pending text-message intent.
 func NewMessageIntent(identity Identity, msg bus.OutboundMessage, now time.Time) (Intent, error) {
 	identity.Kind = KindMessage
+	identity = normalizeIdentity(identity)
 	id, err := DeliveryID(identity)
 	if err != nil {
 		return Intent{}, err
 	}
+	msg.Channel = identity.Channel
+	msg.ChatID = identity.ChatID
+	msg.Context.Channel = identity.Channel
+	msg.Context.ChatID = identity.ChatID
+	msg.SessionKey = identity.SessionKey
+	if msg.Scope != nil {
+		msg.Scope.Channel = identity.Channel
+	}
 	msg.DeliveryID = id
+	msg, err = bus.NormalizeOutboundMessage(msg)
+	if err != nil {
+		return Intent{}, fmt.Errorf("normalize outbox message: %w", err)
+	}
 	now = now.UTC()
 	return Intent{
 		Version:   recordVersion,
@@ -138,11 +153,24 @@ func NewMessageIntent(identity Identity, msg bus.OutboundMessage, now time.Time)
 // NewMediaIntent creates a pending media-message intent.
 func NewMediaIntent(identity Identity, msg bus.OutboundMediaMessage, now time.Time) (Intent, error) {
 	identity.Kind = KindMedia
+	identity = normalizeIdentity(identity)
 	id, err := DeliveryID(identity)
 	if err != nil {
 		return Intent{}, err
 	}
+	msg.Channel = identity.Channel
+	msg.ChatID = identity.ChatID
+	msg.Context.Channel = identity.Channel
+	msg.Context.ChatID = identity.ChatID
+	msg.SessionKey = identity.SessionKey
+	if msg.Scope != nil {
+		msg.Scope.Channel = identity.Channel
+	}
 	msg.DeliveryID = id
+	msg, err = bus.NormalizeOutboundMediaMessage(msg)
+	if err != nil {
+		return Intent{}, fmt.Errorf("normalize outbox media: %w", err)
+	}
 	now = now.UTC()
 	return Intent{
 		Version:   recordVersion,
@@ -160,7 +188,7 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := validateIntent(intent); err != nil {
+	if err := validateNewIntent(intent); err != nil {
 		return Intent{}, err
 	}
 	existing, err := s.read(intent.ID)
@@ -224,10 +252,16 @@ func (s *Store) Recover() ([]Intent, error) {
 			pending = append(pending, intent)
 		case StatusAttempting:
 			intent.Status = StatusAmbiguous
-			intent.LastError = "process stopped before the delivery outcome was persisted"
+			intent.LastError = interruptedAttemptError
 			intent.UpdatedAt = s.now().UTC()
 			if err := s.write(intent); err != nil {
 				return nil, fmt.Errorf("mark interrupted intent %q ambiguous: %w", intent.ID, err)
+			}
+		case StatusAmbiguous:
+			if intent.LastError == interruptedAttemptError {
+				if err := s.write(intent); err != nil {
+					return nil, fmt.Errorf("reconfirm interrupted intent %q: %w", intent.ID, err)
+				}
 			}
 		}
 	}
@@ -250,6 +284,9 @@ func (s *Store) transition(id string, next Status, outcome Outcome, allowed ...S
 		return Intent{}, err
 	}
 	if intent.Status == next && next != StatusAttempting {
+		if err := s.write(intent); err != nil {
+			return Intent{}, err
+		}
 		return intent, nil
 	}
 	if !statusAllowed(intent.Status, allowed) {
@@ -383,10 +420,54 @@ func validateIntent(intent Intent) error {
 		if intent.Message == nil || intent.Media != nil || intent.Message.DeliveryID != intent.ID {
 			return errors.New("outbox message payload does not match its identity")
 		}
+		if err := validateMessageRoute(intent.Identity, *intent.Message); err != nil {
+			return err
+		}
 	case KindMedia:
 		if intent.Media == nil || intent.Message != nil || intent.Media.DeliveryID != intent.ID {
 			return errors.New("outbox media payload does not match its identity")
 		}
+		if err := validateMediaRoute(intent.Identity, *intent.Media); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNewIntent(intent Intent) error {
+	if err := validateIntent(intent); err != nil {
+		return err
+	}
+	if intent.Status != StatusPending {
+		return fmt.Errorf("new outbox intent must be %q, got %q", StatusPending, intent.Status)
+	}
+	if intent.Attempts != 0 || len(intent.PlatformMessageIDs) != 0 ||
+		!intent.RetryAfter.IsZero() || strings.TrimSpace(intent.LastError) != "" {
+		return errors.New("new outbox intent cannot contain delivery outcome state")
+	}
+	return nil
+}
+
+func validateMessageRoute(identity Identity, msg bus.OutboundMessage) error {
+	if strings.TrimSpace(msg.Channel) != identity.Channel ||
+		strings.TrimSpace(msg.Context.Channel) != identity.Channel ||
+		strings.TrimSpace(msg.ChatID) != identity.ChatID ||
+		strings.TrimSpace(msg.Context.ChatID) != identity.ChatID ||
+		strings.TrimSpace(msg.SessionKey) != identity.SessionKey ||
+		(msg.Scope != nil && strings.TrimSpace(msg.Scope.Channel) != identity.Channel) {
+		return errors.New("outbox message route does not match its identity")
+	}
+	return nil
+}
+
+func validateMediaRoute(identity Identity, msg bus.OutboundMediaMessage) error {
+	if strings.TrimSpace(msg.Channel) != identity.Channel ||
+		strings.TrimSpace(msg.Context.Channel) != identity.Channel ||
+		strings.TrimSpace(msg.ChatID) != identity.ChatID ||
+		strings.TrimSpace(msg.Context.ChatID) != identity.ChatID ||
+		strings.TrimSpace(msg.SessionKey) != identity.SessionKey ||
+		(msg.Scope != nil && strings.TrimSpace(msg.Scope.Channel) != identity.Channel) {
+		return errors.New("outbox media route does not match its identity")
 	}
 	return nil
 }
