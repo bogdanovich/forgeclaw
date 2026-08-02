@@ -472,6 +472,108 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 	}
 }
 
+type targetApprovalContextTool struct {
+	approvalContextTool
+}
+
+func (*targetApprovalContextTool) Name() string { return "nodes_invoke" }
+
+func (*targetApprovalContextTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"target": map[string]any{"type": "string"},
+		},
+		"additionalProperties": false,
+	}
+}
+
+func TestPipelineBypassesApprovalOnlyForConfiguredNodeTarget(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		target         string
+		wantHookCalls  int
+		wantExecutions int
+		wantBypass     bool
+	}{
+		{
+			name: "configured target", target: "vpn",
+			wantExecutions: 1, wantBypass: true,
+		},
+		{
+			name: "other target", target: "approval-test",
+			wantHookCalls: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			registry := tools.NewToolRegistry()
+			tool := &targetApprovalContextTool{}
+			registry.Register(tool)
+			agent := &AgentInstance{
+				ID:       "main",
+				Tools:    registry,
+				Sessions: session.NewSessionManager(""),
+			}
+			ts := &turnState{
+				agent: agent, agentID: "main", turnID: "turn-target-bypass",
+				sessionKey: "target-bypass", workspace: t.TempDir(),
+				opts: processOptions{
+					NoHistory: true,
+					Dispatch:  DispatchRequest{SessionKey: "target-bypass"},
+				},
+			}
+			exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+			exec.normalizedToolCalls = []providers.ToolCall{{
+				ID: "call-target-bypass", Name: tool.Name(),
+				Arguments: map[string]any{"target": test.target},
+			}}
+			hook := &durableApprovalHook{actionSummary: "approve protected node command"}
+			hooks := NewHookManager(nil)
+			defer hooks.Close()
+			if err := hooks.Mount(NamedHook("approval", hook)); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.DefaultConfig()
+			cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
+			manager := &fakeToolSuspensionManager{}
+			pipeline := &Pipeline{
+				Cfg: cfg,
+				Interaction: PipelineInteractionServices{
+					Hooks: hooks, Suspension: manager,
+				},
+			}
+
+			pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+			if hook.calls != test.wantHookCalls || tool.executions != test.wantExecutions ||
+				tool.bypass != test.wantBypass {
+				t.Fatalf(
+					"hook calls = %d, executions = %d, bypass = %v",
+					hook.calls,
+					tool.executions,
+					tool.bypass,
+				)
+			}
+		})
+	}
+}
+
+func TestToolApprovalBypassIncludesFutureNodeTools(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
+	arguments := map[string]any{"target": "vpn"}
+
+	if !toolApprovalBypass(cfg, "nodes_future_operation", arguments) {
+		t.Fatal("future nodes_* tool did not inherit the configured target bypass")
+	}
+	if toolApprovalBypass(cfg, "future_operation", arguments) {
+		t.Fatal("non-node tool inherited the configured target bypass")
+	}
+	if toolApprovalBypass(cfg, "nodes_future_operation", map[string]any{}) {
+		t.Fatal("node tool without an explicit target inherited the configured bypass")
+	}
+}
+
 func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})

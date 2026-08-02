@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
@@ -22,6 +23,20 @@ import (
 )
 
 const repeatedFatalToolErrorStreakLimit = 3
+
+func toolApprovalBypass(cfg *config.Config, toolName string, arguments map[string]any) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Tools.Approval.AllowAll() {
+		return true
+	}
+	if !strings.HasPrefix(toolName, "nodes_") {
+		return false
+	}
+	target, _ := arguments["target"].(string)
+	return cfg.Tools.Approval.BypassesNodeTarget(target)
+}
 
 type mcpServerTool interface {
 	MCPServerName() string
@@ -534,23 +549,23 @@ toolLoop:
 			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		allowAllApprovals := p.Cfg != nil && p.Cfg.Tools.Approval.AllowAll()
+		approvalBypass := toolApprovalBypass(p.Cfg, toolName, toolArgs)
 		execCtx = tools.WithToolApprovalContinuation(
 			execCtx,
-			ts.opts.ApprovalGrant != nil && !allowAllApprovals,
+			ts.opts.ApprovalGrant != nil && !approvalBypass,
 		)
-		execCtx = tools.WithToolApprovalBypass(execCtx, allowAllApprovals)
+		execCtx = tools.WithToolApprovalBypass(execCtx, approvalBypass)
 
-		if (!allowAllApprovals && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
+		if (!approvalBypass && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}
-			if !allowAllApprovals && p.Interaction.Hooks != nil {
+			if !approvalBypass && p.Interaction.Hooks != nil {
 				approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
 					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 				})
-			} else if !allowAllApprovals {
+			} else if !approvalBypass {
 				approval = ApprovalDecision{Reason: "approval policy is no longer available"}
 			}
 			interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)
@@ -609,7 +624,7 @@ toolLoop:
 					consumeErr = approvalArgsErr
 				} else {
 					var argumentHash string
-					if allowAllApprovals {
+					if approvalBypass {
 						// ApprovalArguments above still validates current tool
 						// state. This transition consumes the original durable
 						// binding, not a newly prepared time-bound node plan.

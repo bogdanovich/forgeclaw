@@ -161,3 +161,18 @@ func TestToolApprovalAllowAllIsFailFinding(t *testing.T) {
 	}
 	t.Fatalf("missing allow-all approval finding: %+v", findings)
 }
+
+func TestToolApprovalNodeTargetBypassIsFailFinding(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Approval.BypassNodeTargets = []string{"vpn"}
+
+	findings := checkToolRisks(cfg)
+	for _, finding := range findings {
+		if finding.ID == CheckToolApprovalBypassNodes && finding.Severity == SeverityFail &&
+			len(finding.Evidence) == 1 &&
+			finding.Evidence[0].Path == "tools.approval.bypass_node_targets" {
+			return
+		}
+	}
+	t.Fatalf("missing node-target approval bypass finding: %+v", findings)
+}
