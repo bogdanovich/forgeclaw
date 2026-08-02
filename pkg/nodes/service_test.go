@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCommandDescriptorBindsSchemasToServiceAuthority(t *testing.T) {
@@ -25,6 +26,35 @@ func TestCommandDescriptorBindsSchemasToServiceAuthority(t *testing.T) {
 	alteredOutput.OutputSchema = json.RawMessage(`{"type":"object"}`)
 	if err := alteredOutput.Validate(); err == nil || !strings.Contains(err.Error(), "output schema") {
 		t.Fatalf("altered output validation error = %v", err)
+	}
+}
+
+func TestServiceActionSchemaDeduplicatesAuthorityAcrossProfiles(t *testing.T) {
+	descriptor := serviceActionDescriptorFixture()
+	second := descriptor.ServiceProfiles[0]
+	second.Alias = "other-services"
+	second.Revision = "other-services-v1"
+	second.Services = CloneServiceProfileDescriptors([]ServiceProfileDescriptor{second})[0].Services
+	descriptor.ServiceProfiles = append([]ServiceProfileDescriptor{second}, descriptor.ServiceProfiles...)
+	descriptor.InputSchema = ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles)
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("two-profile descriptor: %v", err)
+	}
+	_, err := PrepareExecutionPlan(InvocationRequest{
+		InvocationID:     "inv_duplicate_pair",
+		IdempotencyKey:   "idem_duplicate_pair",
+		NodeID:           ID("node_test"),
+		CatalogHash:      strings.Repeat("a", 64),
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{"service":"vpn","action":"restart"}`),
+		AgentID:          "main",
+		SessionID:        "session",
+		ActorID:          "actor",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 4096,
+	}, descriptor, "local", "policy-v1", time.Unix(1, 0), time.Minute)
+	if err != nil {
+		t.Fatalf("authorized duplicate pair was unusable: %v", err)
 	}
 }
 

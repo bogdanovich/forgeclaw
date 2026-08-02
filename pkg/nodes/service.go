@@ -160,29 +160,51 @@ func ServiceCommandInputSchema(
 	command string,
 	profiles []ServiceProfileDescriptor,
 ) json.RawMessage {
-	aliases := make([]string, 0)
-	pairs := make([]any, 0)
+	type actionPair struct {
+		service string
+		action  ServiceAction
+	}
+	aliasSet := make(map[string]struct{})
+	pairSet := make(map[actionPair]struct{})
 	entriesMax := 0
 	ageSecondsMax := 0
 	for _, profile := range profiles {
 		entriesMax = max(entriesMax, profile.LogLimits.EntriesMax)
 		ageSecondsMax = max(ageSecondsMax, profile.LogLimits.AgeSecondsMax)
 		for _, service := range profile.Services {
-			aliases = append(aliases, service.Alias)
+			aliasSet[service.Alias] = struct{}{}
 			for _, action := range service.Actions {
-				pairs = append(pairs, map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"required":             []string{"service", "action"},
-					"properties": map[string]any{
-						"service": map[string]any{"const": service.Alias},
-						"action":  map[string]any{"const": action},
-					},
-				})
+				pairSet[actionPair{service: service.Alias, action: action}] = struct{}{}
 			}
 		}
 	}
+	aliases := make([]string, 0, len(aliasSet))
+	for alias := range aliasSet {
+		aliases = append(aliases, alias)
+	}
 	sort.Strings(aliases)
+	pairKeys := make([]actionPair, 0, len(pairSet))
+	for pair := range pairSet {
+		pairKeys = append(pairKeys, pair)
+	}
+	sort.Slice(pairKeys, func(i, j int) bool {
+		if pairKeys[i].service == pairKeys[j].service {
+			return pairKeys[i].action < pairKeys[j].action
+		}
+		return pairKeys[i].service < pairKeys[j].service
+	})
+	pairs := make([]any, 0, len(pairKeys))
+	for _, pair := range pairKeys {
+		pairs = append(pairs, map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"service", "action"},
+			"properties": map[string]any{
+				"service": map[string]any{"const": pair.service},
+				"action":  map[string]any{"const": pair.action},
+			},
+		})
+	}
 	var schema map[string]any
 	switch command {
 	case "service.status.v1":
