@@ -357,7 +357,7 @@ func randomID() (string, error) {
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+	return "session_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func cloneBrowserConfig(source config.BrowserToolsConfig) config.BrowserToolsConfig {
