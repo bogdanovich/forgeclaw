@@ -2,11 +2,12 @@
 
 ## Status
 
-Proposed work derived from
-[`browser-capability.md`](browser-capability.md). No browser milestone is
-admitted by this roadmap. After an operator selects a milestone, an admission
-decision must fix its exact scope, authority, completion evidence, and stop
-conditions before implementation begins.
+Work derived from [`browser-capability.md`](browser-capability.md). B0, B1, N1,
+and N2 are merged and deployed. B2 is admitted in
+[Browser Capability B2 Admission](browser-capability-b2-admission.md), including
+a prerequisite repair for consecutive managed sessions. Later milestones
+remain proposals until an operator selects one and a separate admission fixes
+its exact scope, authority, completion evidence, and stop conditions.
 
 The roadmap is ordered by immediate risk reduction, operator value, and
 security dependencies rather than calendar dates. Browser milestone labels use
@@ -389,6 +390,11 @@ Stop B1 if:
   approval evidence exists.
 
 ## B2: Artifacts, Diagnostics, and Human Handoff
+
+B2 is admitted as dependency-ordered, separately deployed vertical slices in
+[Browser Capability B2 Admission](browser-capability-b2-admission.md). Its first
+prerequisite is a B1 lifecycle repair proving consecutive managed sessions in
+one gateway process without a restart.
 
 ### Operator outcome
 
