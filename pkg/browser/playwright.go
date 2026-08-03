@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -264,8 +263,9 @@ func playwrightServerWithNetworkPolicy(
 	if profile.EffectiveNetworkMode() == config.BrowserNetworkExactOrigins && len(origins) == 0 {
 		return config.MCPServerConfig{}, errors.New("browser driver requires allowed origins")
 	}
-	if profile.EffectiveNetworkMode() == config.BrowserNetworkPublicWeb && len(origins) != 0 {
-		return config.MCPServerConfig{}, errors.New("public-web browser driver cannot use allowed origins")
+	if (profile.EffectiveNetworkMode() == config.BrowserNetworkPublicWeb ||
+		profile.EffectiveNetworkMode() == config.BrowserNetworkAnyHTTP) && len(origins) != 0 {
+		return config.MCPServerConfig{}, errors.New("non-exact browser driver cannot use allowed origins")
 	}
 	sort.Strings(origins)
 	allowedOrigins := strings.Join(origins, ";")
@@ -693,7 +693,11 @@ func normalizeDriverNavigationURL(raw string) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", ErrInvalid
 	}
-	parsed.Host = strings.ToLower(parsed.Host)
+	origin, normalizedOrigin, err := normalizeParsedBrowserHTTPOrigin(parsed)
+	if err != nil || origin == "" || normalizedOrigin == nil {
+		return "", ErrInvalid
+	}
+	parsed.Host = normalizedOrigin.Host
 	return parsed.String(), nil
 }
 
@@ -949,27 +953,38 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", "", ErrInvalid
 	}
-	hostname := strings.ToLower(parsed.Hostname())
-	port := parsed.Port()
-	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
-		port = ""
+	origin, normalizedOrigin, err := normalizeParsedBrowserHTTPOrigin(parsed)
+	if err != nil || normalizedOrigin == nil {
+		return "", "", ErrInvalid
 	}
-	host := hostname
-	if port != "" {
-		host = net.JoinHostPort(hostname, port)
-	} else if strings.Contains(hostname, ":") {
-		host = "[" + hostname + "]"
-	}
-	parsed.Host = host
+	parsed.Host = normalizedOrigin.Host
 	parsed.RawQuery = ""
 	parsed.ForceQuery = false
 	parsed.Fragment = ""
-	origin := parsed.Scheme + "://" + host
 	safeURL := parsed.String()
 	if len(safeURL) > MaxURLBytes || len(origin) > MaxURLBytes {
 		return "", "", ErrInvalid
 	}
 	return safeURL, origin, nil
+}
+
+func normalizeParsedBrowserHTTPOrigin(parsed *url.URL) (string, *url.URL, error) {
+	if parsed == nil {
+		return "", nil, ErrInvalid
+	}
+	// URL.String re-escapes a decoded RFC 6874 IPv6 zone while leaving its
+	// case intact. Reconstructing scheme + "://" + Host would produce an
+	// invalid bare percent and can silently change zone identity.
+	rawOrigin := (&url.URL{Scheme: strings.ToLower(parsed.Scheme), Host: parsed.Host}).String()
+	origin, err := config.NormalizeBrowserHTTPOrigin(rawOrigin)
+	if err != nil {
+		return "", nil, ErrInvalid
+	}
+	normalized, err := url.Parse(origin)
+	if err != nil || normalized.Host == "" {
+		return "", nil, ErrInvalid
+	}
+	return origin, normalized, nil
 }
 
 var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{

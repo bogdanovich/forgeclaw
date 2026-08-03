@@ -291,6 +291,179 @@ func TestBrokerPublicWebOriginPolicyAllowsPublicSyntaxButRejectsPrivateLiterals(
 	}
 }
 
+func TestBrokerAnyHTTPObservationAdmitsPrivateOrigin(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBrokerWithConfig(t, root, store)
+	broker.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("169.254.169.254")}, nil
+	}
+	worker.observation.URL = "http://private.internal/status"
+	worker.observation.Origin = "http://private.internal"
+	worker.resolveOrigin = worker.observation.Origin
+
+	observation, err := broker.Observe(
+		context.Background(), testOwner(), session.ID, session.TabID,
+	)
+	if err != nil {
+		t.Fatalf("Observe() private origin error = %v", err)
+	}
+	if observation.URL != "http://private.internal/status" ||
+		observation.Origin != "http://private.internal" {
+		t.Fatalf("private observation = %+v", observation)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.State != SessionReady || stored.SnapshotOrigin != "http://private.internal" {
+		t.Fatalf("stored private session = %+v, %v", stored, err)
+	}
+}
+
+func TestBrokerAnyHTTPRejectsNavigationWithEmptyPort(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	broker, worker, session := openActionTestBrokerWithConfig(t, root, NewMemoryStore())
+	observation, err := broker.Observe(
+		context.Background(), testOwner(), session.ID, session.TabID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: testOwner(), RequestID: "request_empty_port", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "http://127.0.0.1:/health"},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PrepareAction() empty-port error = %v, want ErrInvalid", err)
+	}
+	if len(worker.actions) != 0 {
+		t.Fatalf("empty-port navigation dispatched actions: %+v", worker.actions)
+	}
+}
+
+func TestNavigationOriginPreservesMappedIPv6AddressFamily(t *testing.T) {
+	origin, err := originFromURL("http://[::ffff:7f00:1]/health")
+	if err != nil || origin != "http://[::ffff:127.0.0.1]" {
+		t.Fatalf("originFromURL() = %q, %v", origin, err)
+	}
+}
+
+func TestNavigationOriginCanonicalizesIPv4RootDotButRejectsShorthand(t *testing.T) {
+	origin, err := originFromURL("http://127.0.0.1./health")
+	if err != nil || origin != "http://127.0.0.1" {
+		t.Fatalf("originFromURL(canonical IPv4) = %q, %v", origin, err)
+	}
+	if _, err = originFromURL("http://127.1./health"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("originFromURL(shorthand IPv4) error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestNavigationOriginPreservesScopedIPv6Zone(t *testing.T) {
+	normalized, err := normalizeDriverNavigationURL("http://[FE80::1%25EtherNet]:8080/health")
+	if err != nil || normalized != "http://[fe80::1%25EtherNet]:8080/health" {
+		t.Fatalf("normalizeDriverNavigationURL() = %q, %v", normalized, err)
+	}
+	origin, err := originFromURL(normalized)
+	if err != nil || origin != "http://[fe80::1%25EtherNet]:8080" {
+		t.Fatalf("originFromURL() = %q, %v", origin, err)
+	}
+}
+
+func TestBrokerAnyHTTPAdmitsScopedIPv6NavigationAndObservation(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	broker, worker, session := openActionTestBrokerWithConfig(t, root, NewMemoryStore())
+	broker.lookupIP = func(_ context.Context, _, host string) ([]net.IP, error) {
+		if host == "example.com" {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		}
+		t.Fatalf("scoped IPv6 literal used DNS for %q", host)
+		return nil, nil
+	}
+	observation, err := broker.Observe(context.Background(), testOwner(), session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: testOwner(), RequestID: "request_scoped_ipv6", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "http://[FE80::1%25EtherNet]:8080/health"},
+	})
+	if err != nil || prepared.Action.DestinationOrigin != "http://[fe80::1%25EtherNet]:8080" {
+		t.Fatalf("PrepareAction() scoped destination = %q, %v", prepared.Action.DestinationOrigin, err)
+	}
+
+	worker.observation.URL = "http://[fe80::1%25EtherNet]:8080/health"
+	worker.observation.Origin = "http://[fe80::1%25EtherNet]:8080"
+	if _, err = broker.Observe(context.Background(), testOwner(), session.ID, session.TabID); err != nil {
+		t.Fatalf("Observe() scoped IPv6 error = %v", err)
+	}
+}
+
+func TestBrokerAnyHTTPAdmitsPercentEncodedScopedIPv6NavigationAndObservation(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	broker, worker, session := openActionTestBrokerWithConfig(t, root, NewMemoryStore())
+	broker.lookupIP = func(_ context.Context, _, host string) ([]net.IP, error) {
+		if host == "example.com" {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		}
+		t.Fatalf("scoped IPv6 literal used DNS for %q", host)
+		return nil, nil
+	}
+	observation, err := broker.Observe(context.Background(), testOwner(), session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: testOwner(), RequestID: "request_encoded_scoped_ipv6", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "http://[FE80::1%25Ether%20Net]:8080/health"},
+	})
+	if err != nil || prepared.Action.DestinationOrigin != "http://[fe80::1%25Ether%20Net]:8080" {
+		t.Fatalf("PrepareAction() encoded scoped destination = %q, %v", prepared.Action.DestinationOrigin, err)
+	}
+	prepared, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: testOwner(), RequestID: "request_trailing_dot_scoped_ipv6", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "http://[FE80::1%25Ether%2E]:8080/health"},
+	})
+	if err != nil || prepared.Action.DestinationOrigin != "http://[fe80::1%25Ether.]:8080" {
+		t.Fatalf("PrepareAction() trailing-dot scoped destination = %q, %v", prepared.Action.DestinationOrigin, err)
+	}
+
+	worker.observation.URL = "http://[fe80::1%25Ether.]:8080/health"
+	worker.observation.Origin = "http://[fe80::1%25Ether.]:8080"
+	if _, err = broker.Observe(context.Background(), testOwner(), session.ID, session.TabID); err != nil {
+		t.Fatalf("Observe() trailing-dot scoped IPv6 error = %v", err)
+	}
+}
+
 func TestBrokerPreparationQuarantinesDeniedDNSResolution(t *testing.T) {
 	t.Run("current origin", func(t *testing.T) {
 		store := NewMemoryStore()

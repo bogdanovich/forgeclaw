@@ -290,6 +290,33 @@ func TestPlaywrightWorkerFactoryConfiguresPublicWebWithoutDriverAllowlist(t *tes
 	}
 }
 
+func TestPlaywrightServerConfiguresAnyHTTPThroughManagedProxyOnly(t *testing.T) {
+	root := admittedBrowserConfig()
+	server := root.Tools.MCP.Servers["playwright"]
+	profile := config.BrowserProfileConfig{
+		Enabled: true, Mode: config.BrowserProfileManaged,
+		NetworkMode: config.BrowserNetworkAnyHTTP, DryRun: true,
+	}
+	configured, err := playwrightServerWithNetworkPolicy(server, profile, "http://127.0.0.1:43210")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(configured.Args, " ")
+	if strings.Contains(args, "--allowed-origins") ||
+		configured.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] != "" {
+		t.Fatalf(
+			"any_http retained driver allowlist: args=%q env=%q",
+			args,
+			configured.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"],
+		)
+	}
+	if configured.Env["PLAYWRIGHT_MCP_PROXY_SERVER"] != "http://127.0.0.1:43210" ||
+		!strings.Contains(args, "--proxy-server http://127.0.0.1:43210") ||
+		configured.Env["PLAYWRIGHT_MCP_PROXY_BYPASS"] != "<-loopback>" {
+		t.Fatalf("any_http managed proxy config = args=%q env=%+v", args, configured.Env)
+	}
+}
+
 func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 	tests := []struct {
 		name string
@@ -998,6 +1025,32 @@ func TestPlaywrightObservationAcceptsOnlyExactEmptyInitialBlank(t *testing.T) {
 	}
 }
 
+func TestSanitizeObservedURLCanonicalizesMappedIPv6AndRejectsEmptyPort(t *testing.T) {
+	safeURL, origin, err := sanitizeObservedURL("http://[::ffff:7f00:1]/health?secret=value#fragment")
+	if err != nil || safeURL != "http://[::ffff:127.0.0.1]/health" ||
+		origin != "http://[::ffff:127.0.0.1]" {
+		t.Fatalf("sanitizeObservedURL() = %q, %q, %v", safeURL, origin, err)
+	}
+	if _, _, err = sanitizeObservedURL("http://127.0.0.1:/health"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("sanitizeObservedURL(empty port) error = %v, want ErrInvalid", err)
+	}
+	safeURL, origin, err = sanitizeObservedURL("http://[FE80::1%25EtherNet]:8080/health")
+	if err != nil || safeURL != "http://[fe80::1%25EtherNet]:8080/health" ||
+		origin != "http://[fe80::1%25EtherNet]:8080" {
+		t.Fatalf("sanitizeObservedURL(scoped) = %q, %q, %v", safeURL, origin, err)
+	}
+	safeURL, origin, err = sanitizeObservedURL("http://[FE80::1%25Ether%20Net]:8080/health")
+	if err != nil || safeURL != "http://[fe80::1%25Ether%20Net]:8080/health" ||
+		origin != "http://[fe80::1%25Ether%20Net]:8080" {
+		t.Fatalf("sanitizeObservedURL(percent-encoded scoped) = %q, %q, %v", safeURL, origin, err)
+	}
+	safeURL, origin, err = sanitizeObservedURL("http://[FE80::1%25Ether%2E]:8080/health")
+	if err != nil || safeURL != "http://[fe80::1%25Ether.]:8080/health" ||
+		origin != "http://[fe80::1%25Ether.]:8080" {
+		t.Fatalf("sanitizeObservedURL(trailing-dot scoped) = %q, %q, %v", safeURL, origin, err)
+	}
+}
+
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
 		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")
@@ -1176,6 +1229,60 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 			privateProbeRequests.Load(),
 			worker.networkProxy.Denials(),
 		)
+	}
+	if err = worker.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestPlaywrightWorkerRealBrowserAnyHTTPLoopbackFixture(t *testing.T) {
+	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
+		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")
+	}
+	var requests atomic.Int64
+	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(writer, "<!doctype html><title>Private Loopback Fixture</title><main>reached</main>")
+	}))
+	defer fixture.Close()
+
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+	server := root.Tools.MCP.Servers["playwright"]
+	driverTemp := t.TempDir()
+	server.ExclusiveLockFile = filepath.Join(driverTemp, "playwright.lock")
+	server.Args = []string{
+		"-y", "@playwright/mcp@0.0.78", "--headless", "--browser=chrome", "--isolated",
+		"--output-mode=stdout", "--output-dir=" + filepath.Join(driverTemp, "output"),
+	}
+	root.Tools.MCP.Servers["playwright"] = server
+	factory, err := NewPlaywrightWorkerFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	opened, err := factory.Open(ctx, WorkerOpenRequest{
+		SessionID: "any_http_fixture", Target: "gateway", Profile: "managed", DryRun: true,
+		Limits: config.BrowserLimitsConfig{},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	worker := opened.Owner.(*playwrightWorker)
+	t.Cleanup(func() { _ = worker.Close(context.Background()) })
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixture.URL}); err != nil {
+		t.Fatalf("loopback navigate error = %v", err)
+	}
+	observation, err := worker.Observe(ctx)
+	if err != nil || observation.Title != "Private Loopback Fixture" || requests.Load() == 0 {
+		t.Fatalf("loopback observation = %+v, requests = %d, error = %v", observation, requests.Load(), err)
 	}
 	if err = worker.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)

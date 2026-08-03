@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -79,7 +80,8 @@ func newBrowserNetworkPolicy(
 	dial browserProxyDial,
 ) (*browserNetworkPolicy, error) {
 	mode := profile.EffectiveNetworkMode()
-	if mode != config.BrowserNetworkExactOrigins && mode != config.BrowserNetworkPublicWeb {
+	if mode != config.BrowserNetworkExactOrigins && mode != config.BrowserNetworkPublicWeb &&
+		mode != config.BrowserNetworkAnyHTTP {
 		return nil, ErrDenied
 	}
 	if lookupIP == nil {
@@ -100,7 +102,8 @@ func newBrowserNetworkPolicy(
 	if mode == config.BrowserNetworkExactOrigins && len(allowed) == 0 {
 		return nil, ErrDenied
 	}
-	if mode == config.BrowserNetworkPublicWeb && len(allowed) != 0 {
+	if (mode == config.BrowserNetworkPublicWeb || mode == config.BrowserNetworkAnyHTTP) &&
+		len(allowed) != 0 {
 		return nil, ErrDenied
 	}
 	return &browserNetworkPolicy{
@@ -190,11 +193,11 @@ func (proxy *browserNetworkProxy) ServeHTTP(writer http.ResponseWriter, request 
 		proxy.deny(writer)
 		return
 	}
-	requestOrigin, requestOriginErr := config.NormalizeBrowserOrigin(
-		request.URL.Scheme + "://" + request.URL.Host,
+	requestOrigin, requestOriginErr := proxy.policy.normalizeAuthorityOrigin(
+		request.URL.Scheme, request.URL.Host,
 	)
-	hostOrigin, hostOriginErr := config.NormalizeBrowserOrigin(
-		request.URL.Scheme + "://" + request.Host,
+	hostOrigin, hostOriginErr := proxy.policy.normalizeAuthorityOrigin(
+		request.URL.Scheme, request.Host,
 	)
 	if requestOriginErr != nil || hostOriginErr != nil || requestOrigin != hostOrigin {
 		proxy.deny(writer)
@@ -367,7 +370,7 @@ func (policy *browserNetworkPolicy) destination(
 	if policy == nil || (scheme != "http" && scheme != "https") || authority == "" {
 		return nil, ErrDenied
 	}
-	origin, err := config.NormalizeBrowserOrigin(scheme + "://" + authority)
+	origin, err := policy.normalizeAuthorityOrigin(scheme, authority)
 	if err != nil {
 		return nil, ErrDenied
 	}
@@ -389,11 +392,12 @@ func (policy *browserNetworkPolicy) destination(
 		}
 	}
 	host := parsed.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if !config.IsPublicBrowserIP(ip) {
+	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
+		if policy.mode != config.BrowserNetworkAnyHTTP &&
+			!config.IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return nil, ErrDenied
 		}
-		return []string{net.JoinHostPort(ip.String(), port)}, nil
+		return []string{net.JoinHostPort(address.String(), port)}, nil
 	}
 	addresses, err := policy.lookupIP(ctx, "ip", host)
 	if err != nil || len(addresses) == 0 || len(addresses) > browserProxyMaxResolvedAddresses {
@@ -401,12 +405,31 @@ func (policy *browserNetworkPolicy) destination(
 	}
 	validated := make([]string, 0, len(addresses))
 	for _, address := range addresses {
-		if !config.IsPublicBrowserIP(address) {
+		if address == nil || (address.To4() == nil && address.To16() == nil) ||
+			(policy.mode != config.BrowserNetworkAnyHTTP && !config.IsPublicBrowserIP(address)) {
 			return nil, ErrDenied
 		}
 		validated = append(validated, net.JoinHostPort(address.String(), port))
 	}
 	return validated, nil
+}
+
+func (policy *browserNetworkPolicy) normalizeOrigin(raw string) (string, error) {
+	if policy != nil && policy.mode == config.BrowserNetworkAnyHTTP {
+		return config.NormalizeBrowserHTTPOrigin(raw)
+	}
+	return config.NormalizeBrowserOrigin(raw)
+}
+
+func (policy *browserNetworkPolicy) normalizeAuthorityOrigin(scheme, authority string) (string, error) {
+	// url.URL.String restores the percent escaping that url.Parse and net/http
+	// decode from an RFC 6874 IPv6 zone identifier in Host.
+	if parsed, err := url.Parse("http://" + authority); err == nil &&
+		parsed.User == nil && parsed.Host != "" {
+		authority = parsed.Host
+	}
+	raw := (&url.URL{Scheme: scheme, Host: authority}).String()
+	return policy.normalizeOrigin(raw)
 }
 
 func (policy *browserNetworkPolicy) dialDestination(

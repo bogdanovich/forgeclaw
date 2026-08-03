@@ -165,6 +165,139 @@ func TestBrowserNetworkPolicyDeniesAzureWireServerWithoutDialing(t *testing.T) {
 	}
 }
 
+func TestBrowserNetworkPolicyAnyHTTPAdmitsEveryValidAddressScope(t *testing.T) {
+	lookupCalls := 0
+	policy, err := newBrowserNetworkPolicy(
+		config.BrowserProfileConfig{NetworkMode: config.BrowserNetworkAnyHTTP},
+		func(_ context.Context, network, host string) ([]net.IP, error) {
+			lookupCalls++
+			if network != "ip" || host != "mixed.internal" {
+				t.Fatalf("lookup = %q, %q", network, host)
+			}
+			return []net.IP{
+				net.ParseIP("8.8.8.8"),
+				net.ParseIP("10.0.0.8"),
+				net.ParseIP("127.0.0.1"),
+				net.ParseIP("169.254.169.254"),
+				net.ParseIP("fe80::1"),
+			}, nil
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]string{
+		"127.0.0.1:8080":  "127.0.0.1:8080",
+		"10.0.0.8":        "10.0.0.8:80",
+		"169.254.169.254": "169.254.169.254:80",
+		"[fe80::1]:8080":  "[fe80::1]:8080",
+		"[::]:8080":       "[::]:8080",
+		"[::ffff:7f00:1]": "[::ffff:127.0.0.1]:80",
+		"224.0.0.1:8080":  "224.0.0.1:8080",
+	}
+	for authority, want := range tests {
+		destinations, destinationErr := policy.destination(context.Background(), "http", authority)
+		if destinationErr != nil || len(destinations) != 1 || destinations[0] != want {
+			t.Errorf("destination(%q) = %v, %v, want %q", authority, destinations, destinationErr, want)
+		}
+	}
+	loopbackTLS, err := policy.destination(context.Background(), "https", "127.0.0.1:8443")
+	if err != nil || len(loopbackTLS) != 1 || loopbackTLS[0] != "127.0.0.1:8443" {
+		t.Fatalf("HTTPS loopback destination = %v, %v", loopbackTLS, err)
+	}
+	for _, authority := range []string{
+		"[fe80::1%EtherNet]:8080",
+		"[fe80::1%25EtherNet]:8080",
+	} {
+		scoped, scopedErr := policy.destination(context.Background(), "http", authority)
+		if scopedErr != nil || len(scoped) != 1 || scoped[0] != "[fe80::1%EtherNet]:8080" {
+			t.Errorf("scoped destination(%q) = %v, %v", authority, scoped, scopedErr)
+		}
+	}
+	encoded, encodedErr := policy.destination(context.Background(), "http", "[fe80::1%25Ether%20Net]:8080")
+	if encodedErr != nil || len(encoded) != 1 || encoded[0] != "[fe80::1%Ether Net]:8080" {
+		t.Errorf("percent-encoded scoped destination = %v, %v", encoded, encodedErr)
+	}
+	trailingDot, trailingDotErr := policy.destination(context.Background(), "http", "[fe80::1%25Ether%2E]:8080")
+	if trailingDotErr != nil || len(trailingDot) != 1 || trailingDot[0] != "[fe80::1%Ether.]:8080" {
+		t.Errorf("trailing-dot scoped destination = %v, %v", trailingDot, trailingDotErr)
+	}
+	destinations, err := policy.destination(context.Background(), "https", "mixed.internal")
+	want := "8.8.8.8:443,10.0.0.8:443,127.0.0.1:443,169.254.169.254:443,[fe80::1]:443"
+	if err != nil || strings.Join(destinations, ",") != want || lookupCalls != 1 {
+		t.Fatalf("mixed destination = %v, calls = %d, error = %v, want %q", destinations, lookupCalls, err, want)
+	}
+}
+
+func TestBrowserNetworkProxyAnyHTTPCarriesLoopbackRequest(t *testing.T) {
+	var requests atomic.Int64
+	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(writer, "private fixture reached")
+	}))
+	defer fixture.Close()
+
+	proxy, err := startBrowserNetworkProxy(
+		config.BrowserProfileConfig{NetworkMode: config.BrowserNetworkAnyHTTP}, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	response, err := client.Get(fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusOK || string(body) != "private fixture reached" {
+		t.Fatalf("response = %d, %q, %v", response.StatusCode, body, readErr)
+	}
+	if requests.Load() != 1 || proxy.Denials() != 0 {
+		t.Fatalf("requests = %d, denials = %d, want 1, 0", requests.Load(), proxy.Denials())
+	}
+}
+
+func TestBrowserNetworkPolicyAnyHTTPStillRejectsMalformedDestinations(t *testing.T) {
+	policy, err := newBrowserNetworkPolicy(
+		config.BrowserProfileConfig{NetworkMode: config.BrowserNetworkAnyHTTP},
+		func(context.Context, string, string) ([]net.IP, error) {
+			return []net.IP{nil}, nil
+		}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		scheme    string
+		authority string
+	}{
+		{"file", "localhost"},
+		{"http", "user@localhost"},
+		{"http", "127.1"},
+		{"http", "localhost:0"},
+		{"http", "bad_name"},
+	} {
+		if destination, destinationErr := policy.destination(
+			context.Background(), test.scheme, test.authority,
+		); !errors.Is(destinationErr, ErrDenied) {
+			t.Errorf(
+				"destination(%q, %q) = %v, %v, want ErrDenied",
+				test.scheme,
+				test.authority,
+				destination,
+				destinationErr,
+			)
+		}
+	}
+}
+
 func TestBrowserNetworkProxyEnforcesRedirectsAndFreshDNS(t *testing.T) {
 	var secretRequests atomic.Int64
 	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

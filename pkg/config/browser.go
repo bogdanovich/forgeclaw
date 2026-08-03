@@ -19,6 +19,7 @@ const (
 	BrowserProfileManaged      = "managed"
 	BrowserNetworkExactOrigins = "exact_origins"
 	BrowserNetworkPublicWeb    = "public_web"
+	BrowserNetworkAnyHTTP      = "any_http"
 
 	BrowserMaxSessions          = 1
 	BrowserMaxTabs              = 4
@@ -266,7 +267,8 @@ func validateBrowserProfile(targetName, name string, profile BrowserProfileConfi
 		return fmt.Errorf("browser profile %q supports only mode %q", name, BrowserProfileManaged)
 	}
 	networkMode := profile.EffectiveNetworkMode()
-	if networkMode != BrowserNetworkExactOrigins && networkMode != BrowserNetworkPublicWeb {
+	if networkMode != BrowserNetworkExactOrigins && networkMode != BrowserNetworkPublicWeb &&
+		networkMode != BrowserNetworkAnyHTTP {
 		return fmt.Errorf("browser profile %q has unsupported network_mode %q", name, profile.NetworkMode)
 	}
 	if len(profile.AllowedOrigins) > BrowserMaxConfiguredOrigins {
@@ -296,14 +298,27 @@ func validateBrowserProfile(targetName, name string, profile BrowserProfileConfi
 		if networkMode == BrowserNetworkExactOrigins && len(profile.AllowedOrigins) == 0 {
 			return fmt.Errorf("enabled browser profile %q requires allowed_origins", name)
 		}
-		if networkMode == BrowserNetworkPublicWeb && len(profile.AllowedOrigins) != 0 {
-			return fmt.Errorf("enabled public_web browser profile %q must not set allowed_origins", name)
+		if (networkMode == BrowserNetworkPublicWeb || networkMode == BrowserNetworkAnyHTTP) &&
+			len(profile.AllowedOrigins) != 0 {
+			return fmt.Errorf("enabled %s browser profile %q must not set allowed_origins", networkMode, name)
 		}
 	}
 	return nil
 }
 
 func NormalizeBrowserOrigin(raw string) (string, error) {
+	return normalizeBrowserOrigin(raw, true)
+}
+
+// NormalizeBrowserHTTPOrigin canonicalizes an HTTP or HTTPS origin without
+// applying an address-scope policy. It is used only after an operator has
+// explicitly selected the high-risk any_http mode, and for validating durable
+// browser state whose network authority is checked separately.
+func NormalizeBrowserHTTPOrigin(raw string) (string, error) {
+	return normalizeBrowserOrigin(raw, false)
+}
+
+func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 	if strings.TrimSpace(raw) != raw || raw == "" || len(raw) > 2048 {
 		return "", errors.New("origin must be non-empty, trimmed, and at most 2048 bytes")
 	}
@@ -323,17 +338,33 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 	if host == "" || strings.Contains(host, "*") {
 		return "", errors.New("origin host must be exact")
 	}
-	lowerHost := strings.ToLower(strings.TrimSuffix(host, "."))
-	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") ||
-		lowerHost == "metadata.google.internal" {
+	trimmedHost := strings.TrimSuffix(host, ".")
+	lowerHost := strings.ToLower(trimmedHost)
+	if publicOnly && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") ||
+		lowerHost == "metadata.google.internal") {
 		return "", errors.New("origin host is outside the public network policy")
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if !IsPublicBrowserIP(ip) {
+	// Parse the untouched host before applying DNS-only trailing-dot
+	// canonicalization. A trailing dot can be part of an IPv6 zone name and
+	// therefore affects the interface selected for a scoped destination.
+	address, addressErr := netip.ParseAddr(host)
+	if addressErr != nil && trimmedHost != host {
+		// Browsers accept a DNS root dot after a canonical dotted-quad IPv4
+		// literal. Preserve that compatibility without admitting shorthand or
+		// other ambiguous numeric forms such as 127.1.
+		if trimmedAddress, trimmedErr := netip.ParseAddr(trimmedHost); trimmedErr == nil && trimmedAddress.Is4() {
+			address, addressErr = trimmedAddress, nil
+		}
+	}
+	if addressErr == nil {
+		if publicOnly && !IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return "", errors.New("origin IP is outside the public network policy")
 		}
-		lowerHost = ip.String()
+		lowerHost = address.String()
 	} else if legacyIP, recognized := parseBrowserIPv4(lowerHost); recognized {
+		if !publicOnly {
+			return "", errors.New("origin host is an ambiguous numeric IPv4 address")
+		}
 		if !IsPublicBrowserIP(legacyIP) {
 			return "", errors.New("origin IP is outside the public network policy")
 		}
@@ -342,14 +373,18 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 		if browserIPv4Candidate(lowerHost) {
 			return "", errors.New("origin host is an invalid numeric IPv4 address")
 		}
-		if !browserHostnamePattern.MatchString(host) || !strings.Contains(lowerHost, ".") ||
+		dnsError := "origin host must be an exact DNS name"
+		if publicOnly {
+			dnsError = "origin host must be an exact public DNS name"
+		}
+		if !browserHostnamePattern.MatchString(host) || (publicOnly && !strings.Contains(lowerHost, ".")) ||
 			strings.HasPrefix(lowerHost, ".") || strings.HasSuffix(lowerHost, ".") ||
 			strings.Contains(lowerHost, "..") {
-			return "", errors.New("origin host must be an exact public DNS name")
+			return "", errors.New(dnsError)
 		}
 		for _, label := range strings.Split(lowerHost, ".") {
 			if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-				return "", errors.New("origin host must be an exact public DNS name")
+				return "", errors.New(dnsError)
 			}
 		}
 	}
@@ -368,11 +403,14 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 	}
 	normalizedHost := lowerHost
 	if port != "" {
-		normalizedHost = net.JoinHostPort(lowerHost, port)
+		normalizedHost = net.JoinHostPort(normalizedHost, port)
 	} else if strings.Contains(lowerHost, ":") {
-		normalizedHost = "[" + lowerHost + "]"
+		normalizedHost = "[" + normalizedHost + "]"
 	}
-	return scheme + "://" + normalizedHost, nil
+	// URL.String applies RFC 6874 escaping to the complete decoded IPv6 zone.
+	// Escaping only '%' would leave other valid percent-decoded characters,
+	// such as spaces, as invalid URL text.
+	return (&url.URL{Scheme: scheme, Host: normalizedHost}).String(), nil
 }
 
 // browserIPv4Candidate mirrors the WHATWG "ends in a number" discriminator.

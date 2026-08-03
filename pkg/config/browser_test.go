@@ -47,6 +47,19 @@ func TestBrowserConfigAcceptsPublicWebWithoutExactOrigins(t *testing.T) {
 	}
 }
 
+func TestBrowserConfigAcceptsExplicitAnyHTTPWithoutExactOrigins(t *testing.T) {
+	cfg := browserConfigFixture(t)
+	target := cfg.Tools.Browser.Targets[BrowserDefaultTarget]
+	profile := target.Profiles[BrowserDefaultProfile]
+	profile.NetworkMode = BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[BrowserDefaultProfile] = profile
+	cfg.Tools.Browser.Targets[BrowserDefaultTarget] = target
+	if err := cfg.ValidateBrowserConfig(); err != nil {
+		t.Fatalf("ValidateBrowserConfig() any_http error = %v", err)
+	}
+}
+
 func TestBrowserPolicyRevisionCanonicalizesDefaultNetworkMode(t *testing.T) {
 	cfg := browserConfigFixture(t)
 	omitted, err := cfg.Tools.Browser.PolicyRevision()
@@ -187,7 +200,7 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 			mutate: func(cfg *Config) {
 				target := cfg.Tools.Browser.Targets["gateway"]
 				profile := target.Profiles["managed"]
-				profile.NetworkMode = "any_http"
+				profile.NetworkMode = "unbounded_network"
 				target.Profiles["managed"] = profile
 				cfg.Tools.Browser.Targets["gateway"] = target
 			},
@@ -199,6 +212,17 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 				target := cfg.Tools.Browser.Targets["gateway"]
 				profile := target.Profiles["managed"]
 				profile.NetworkMode = BrowserNetworkPublicWeb
+				target.Profiles["managed"] = profile
+				cfg.Tools.Browser.Targets["gateway"] = target
+			},
+			wantErr: "must not set allowed_origins",
+		},
+		{
+			name: "any HTTP with exact origins",
+			mutate: func(cfg *Config) {
+				target := cfg.Tools.Browser.Targets["gateway"]
+				profile := target.Profiles["managed"]
+				profile.NetworkMode = BrowserNetworkAnyHTTP
 				target.Profiles["managed"] = profile
 				cfg.Tools.Browser.Targets["gateway"] = target
 			},
@@ -396,6 +420,42 @@ func TestNormalizeBrowserOriginCanonicalizesPublicNumericIPv4(t *testing.T) {
 	}
 	if origin != "http://8.8.8.8" {
 		t.Fatalf("NormalizeBrowserOrigin() = %q", origin)
+	}
+}
+
+func TestNormalizeBrowserOriginCanonicalizesIPv4RootDot(t *testing.T) {
+	origin, err := NormalizeBrowserOrigin("http://8.8.8.8./")
+	if err != nil || origin != "http://8.8.8.8" {
+		t.Fatalf("NormalizeBrowserOrigin() = %q, %v", origin, err)
+	}
+}
+
+func TestNormalizeBrowserHTTPOriginAdmitsPrivateScopesButRejectsAmbiguousNumericHosts(t *testing.T) {
+	tests := map[string]string{
+		"http://127.0.0.1:8080":           "http://127.0.0.1:8080",
+		"http://127.0.0.1./":              "http://127.0.0.1",
+		"HTTP://LOCALHOST:80/":            "http://localhost",
+		"http://service.internal/":        "http://service.internal",
+		"http://metadata.google.internal": "http://metadata.google.internal",
+		"http://169.254.169.254/":         "http://169.254.169.254",
+		"http://[fe80::1]:8080/":          "http://[fe80::1]:8080",
+		"http://[fe80::1%25en0]:8080/":    "http://[fe80::1%25en0]:8080",
+		"http://[FE80::1%25EtherNet]/":    "http://[fe80::1%25EtherNet]",
+		"http://[FE80::1%25Ether%20Net]/": "http://[fe80::1%25Ether%20Net]",
+		"http://[FE80::1%25Ether.]/":      "http://[fe80::1%25Ether.]",
+		"http://[FE80::1%25Ether%2E]/":    "http://[fe80::1%25Ether.]",
+		"http://[::ffff:7f00:1]/":         "http://[::ffff:127.0.0.1]",
+	}
+	for raw, want := range tests {
+		got, err := NormalizeBrowserHTTPOrigin(raw)
+		if err != nil || got != want {
+			t.Errorf("NormalizeBrowserHTTPOrigin(%q) = %q, %v, want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"http://127.1", "http://127.1./", "http://0x7f000001", "file:///tmp/test", "http://user@localhost"} {
+		if got, err := NormalizeBrowserHTTPOrigin(raw); err == nil {
+			t.Errorf("NormalizeBrowserHTTPOrigin(%q) = %q, want error", raw, got)
+		}
 	}
 }
 

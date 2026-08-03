@@ -304,7 +304,7 @@ func (session Session) Validate() error {
 		return fmt.Errorf("%w: malformed session snapshot", ErrInvalid)
 	}
 	if session.SnapshotOrigin != "" && session.SnapshotOrigin != initialBlankOrigin {
-		normalized, err := config.NormalizeBrowserOrigin(session.SnapshotOrigin)
+		normalized, err := config.NormalizeBrowserHTTPOrigin(session.SnapshotOrigin)
 		if err != nil || normalized != session.SnapshotOrigin {
 			return fmt.Errorf("%w: malformed session snapshot origin", ErrInvalid)
 		}
@@ -379,7 +379,7 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 			return fmt.Errorf("%w: blank-document authority permits only navigation", ErrInvalid)
 		}
 	} else {
-		currentOrigin, err := config.NormalizeBrowserOrigin(prepared.CurrentOrigin)
+		currentOrigin, err := config.NormalizeBrowserHTTPOrigin(prepared.CurrentOrigin)
 		if err != nil || currentOrigin != prepared.CurrentOrigin {
 			return fmt.Errorf("%w: malformed prepared action origin", ErrInvalid)
 		}
