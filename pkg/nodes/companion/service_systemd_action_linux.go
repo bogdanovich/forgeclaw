@@ -180,7 +180,7 @@ func (manager *systemdServiceManager) activationIdentity(
 	return identity, nil
 }
 
-func (runner systemdProcessRunner) runAccepted(
+func (runner *systemdProcessRunner) runAccepted(
 	ctx context.Context,
 	executable commandExecutable,
 	args []string,

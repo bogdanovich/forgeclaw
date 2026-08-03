@@ -357,7 +357,7 @@ func (manager *systemdServiceManager) resolve(
 	return service, nil
 }
 
-func (runner systemdProcessRunner) run(
+func (runner *systemdProcessRunner) run(
 	ctx context.Context,
 	executable commandExecutable,
 	args []string,
@@ -405,14 +405,14 @@ func (runner systemdProcessRunner) run(
 	return systemdProcessResult{}, errors.New("systemd process could not start")
 }
 
-func (executable commandExecutable) executionPath() string {
+func (executable *commandExecutable) executionPath() string {
 	if executable.file != nil {
 		return "/proc/self/fd/3"
 	}
 	return executable.path
 }
 
-func (executable commandExecutable) attach(command *exec.Cmd) {
+func (executable *commandExecutable) attach(command *exec.Cmd) {
 	if executable.file != nil {
 		command.ExtraFiles = []*os.File{executable.file}
 	}

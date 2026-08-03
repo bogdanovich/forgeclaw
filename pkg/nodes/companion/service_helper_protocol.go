@@ -20,7 +20,10 @@ const (
 	serviceHelperRequestCancel   = "cancel"
 )
 
-var serviceHelperRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var (
+	serviceHelperRequestIDPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	serviceHelperActionCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+)
 
 type serviceHelperSnapshot struct {
 	Descriptors    []nodes.CommandDescriptor `json:"descriptors"`
@@ -201,7 +204,7 @@ func (response serviceHelperResponse) validate() error {
 		if payloads != 1 || response.Action == nil {
 			return errors.New("service helper action response is invalid")
 		}
-		if response.Action.Code != "" && !fileHelperCodePattern.MatchString(response.Action.Code) {
+		if response.Action.Code != "" && !serviceHelperActionCodePattern.MatchString(response.Action.Code) {
 			return errors.New("service helper action response code is invalid")
 		}
 		return response.Action.validateTerminal()
