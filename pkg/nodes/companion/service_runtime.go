@@ -99,6 +99,10 @@ func (handler *serviceCommandHandler) execute(
 		return result, serviceCommandError(ctx, statusErr)
 	case ServiceLogRequest:
 		result, logsErr := handler.manager.Logs(ctx, typed)
+		if logsErr != nil {
+			return nil, serviceCommandError(ctx, logsErr)
+		}
+		result, logsErr = boundServiceLogs(result, invocation.OutputLimitBytes)
 		return result, serviceCommandError(ctx, logsErr)
 	case ServiceActionRequest:
 		result, actionErr := handler.controller.Action(ctx, typed)
@@ -120,6 +124,23 @@ func (handler *serviceCommandHandler) execute(
 	default:
 		return nil, ErrCommandUnavailable
 	}
+}
+
+func boundServiceLogs(logs ServiceLogs, bytesMax int) (ServiceLogs, error) {
+	if serviceLogsFit(logs, bytesMax) {
+		return logs, nil
+	}
+	logs.Truncated = true
+	for len(logs.Records) > 0 {
+		logs.Records = logs.Records[:len(logs.Records)-1]
+		if serviceLogsFit(logs, bytesMax) {
+			return logs, nil
+		}
+	}
+	if serviceLogsFit(logs, bytesMax) {
+		return logs, nil
+	}
+	return ServiceLogs{}, &ServiceManagerError{Code: "output_limit_too_small"}
 }
 
 func (handler *serviceCommandHandler) prepare(plan nodes.ExecutionPlan) (any, error) {

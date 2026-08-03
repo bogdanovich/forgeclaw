@@ -18,6 +18,7 @@ type fakeServiceController struct {
 	mu            sync.Mutex
 	statusRequest ServiceStatusRequest
 	logsRequest   ServiceLogRequest
+	logsResult    *ServiceLogs
 	actionRequest ServiceActionRequest
 	actionCalls   int
 	actionResult  ServiceActionResult
@@ -45,7 +46,11 @@ func (manager *fakeServiceController) Logs(
 ) (ServiceLogs, error) {
 	manager.mu.Lock()
 	manager.logsRequest = request
+	result := manager.logsResult
 	manager.mu.Unlock()
+	if result != nil {
+		return *result, nil
+	}
 	return ServiceLogs{
 		Service: request.Service,
 		Records: []ServiceLogRecord{{Timestamp: 100, Severity: "info", Message: "bounded result"}},
@@ -75,6 +80,43 @@ func (manager *fakeServiceController) Action(
 		return ServiceActionResult{}, &ServiceManagerError{Code: "request_canceled"}
 	}
 	return result, nil
+}
+
+func TestServiceLogsRespectInvocationOutputLimit(t *testing.T) {
+	manager := newFakeServiceController()
+	manager.logsResult = &ServiceLogs{
+		Service: "vpn",
+		Records: []ServiceLogRecord{
+			{Timestamp: 100, Message: strings.Repeat("a", 80)},
+			{Timestamp: 101, Message: strings.Repeat("b", 80)},
+		},
+	}
+	runtime := newServiceTestRuntime(t, manager)
+	plan := testRuntimePlan(
+		t,
+		runtime,
+		"service.logs.v1",
+		json.RawMessage(`{"service":"vpn","entries":4,"since_seconds":60}`),
+	)
+	handler := runtime.handlers["service.logs.v1"].(*serviceCommandHandler)
+	result, err := handler.execute(t.Context(), commandInvocation{
+		Plan: plan, Input: plan.Input, TimeoutSeconds: plan.TimeoutSeconds,
+		OutputLimitBytes: 96,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, ok := result.(ServiceLogs)
+	if !ok || !logs.Truncated || len(logs.Records) != 0 {
+		t.Fatalf("bounded service logs = %#v", result)
+	}
+	encoded, err := json.Marshal(logs)
+	if err != nil || len(encoded) > 96 {
+		t.Fatalf("bounded service logs bytes = %d, error %v", len(encoded), err)
+	}
+	if _, err := boundServiceLogs(*manager.logsResult, 1); err == nil {
+		t.Fatal("service logs fit an impossible output limit")
+	}
 }
 
 func TestRuntimeExecutesTargetBoundServiceCommands(t *testing.T) {
