@@ -423,6 +423,7 @@ func spawnSubTurn(
 	// admission in runTurn.
 	detachedCtx, releaseInheritedAdmission := inheritAgentTurnAdmissions(context.Background(), ctx)
 	defer releaseInheritedAdmission()
+	detachedCtx = inheritOutboundTransaction(detachedCtx, ctx)
 	childCtx, cancel := context.WithTimeout(detachedCtx, timeout)
 	defer cancel()
 
@@ -508,7 +509,7 @@ func spawnSubTurn(
 		InitialSteeringMessages: cfg.InitialMessages,
 		DefaultResponse:         "",
 		EnableSummary:           false,
-		SendResponse: !cfg.Async &&
+		SendResponse: !hasOutboundTransaction(childCtx) && !cfg.Async &&
 			(deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent),
 		SuppressToolUserDelivery: !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly,
 		SuppressToolFeedback:     parentTS.opts.SuppressToolFeedback,
@@ -672,6 +673,11 @@ func spawnSubTurn(
 				result.ForUser = ""
 				result.Silent = true
 				result.ResponseHandled = true
+			case tools.AsyncDeliveryUserAndParent:
+				if hasOutboundTransaction(childCtx) {
+					result.ImmediateDelivery = true
+					result.Silent = true
+				}
 			}
 		}
 	}

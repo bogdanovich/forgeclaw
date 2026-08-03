@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -436,12 +437,24 @@ func (al *AgentLoop) dequeueSteeringBatchForContinuation(
 }
 
 func (al *AgentLoop) ackAcceptedSteeringMessages(ctx context.Context, msgs []providers.Message) {
+	if err := al.ackAcceptedSteeringMessagesChecked(ctx, msgs); err != nil {
+		if transaction := outboundTransactionFromContext(ctx); transaction != nil {
+			transaction.fail(err)
+		}
+	}
+}
+
+func (al *AgentLoop) ackAcceptedSteeringMessagesChecked(ctx context.Context, msgs []providers.Message) error {
+	var ackErr error
 	for _, msg := range msgs {
 		if msg.InboundSpoolID == "" {
 			continue
 		}
-		al.ackInboundMessage(ctx, bus.InboundMessage{SpoolID: msg.InboundSpoolID})
+		if err := al.ackInboundMessage(ctx, bus.InboundMessage{SpoolID: msg.InboundSpoolID}); err != nil {
+			ackErr = errors.Join(ackErr, err)
+		}
 	}
+	return ackErr
 }
 
 func (al *AgentLoop) releaseSteeringMessages(
@@ -652,11 +665,11 @@ func (al *AgentLoop) continueRuntimeSession(
 		return response, err
 	}
 	if strings.TrimSpace(response) == "" {
-		al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
+		al.ackAcceptedSteeringMessages(ctx, steeringMsgs)
 	} else if target.holdSteeringSettlement {
 		target.unsettledSteering = append(target.unsettledSteering, steeringMsgs...)
 	} else {
-		al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
+		al.ackAcceptedSteeringMessages(ctx, steeringMsgs)
 	}
 	return response, err
 }

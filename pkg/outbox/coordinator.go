@@ -149,6 +149,10 @@ func (c *Coordinator) ReleaseAdmission(lease DispatchLease) error {
 	if c.leases[lease.deliveryID] != lease.generation {
 		return fmt.Errorf("dispatch lease for %q is stale", lease.deliveryID)
 	}
+	// The exact lease is sufficient proof that this caller owns the unsent
+	// publication. Relinquish it even if the diagnostic record read fails, so a
+	// later admission can retry instead of mistaking a stale lease for an owner.
+	delete(c.leases, lease.deliveryID)
 	intent, err := c.store.Get(lease.deliveryID)
 	if err != nil {
 		return err
@@ -156,7 +160,6 @@ func (c *Coordinator) ReleaseAdmission(lease DispatchLease) error {
 	if intent.Status != StatusPending && intent.Status != StatusDefinitelyFailed {
 		return fmt.Errorf("outbox intent %q is %q, not dispatchable", lease.deliveryID, intent.Status)
 	}
-	delete(c.leases, lease.deliveryID)
 	return nil
 }
 

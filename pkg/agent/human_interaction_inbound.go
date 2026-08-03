@@ -796,16 +796,33 @@ func (al *AgentLoop) publishInteractionNotice(
 	sessionKey string,
 	content string,
 ) error {
+	return al.publishInteractionNoticeAdmission(ctx, msg, sessionKey, content).err
+}
+
+func (al *AgentLoop) publishInteractionNoticeAdmission(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	sessionKey string,
+	content string,
+) finalResponseAdmission {
 	if al == nil || al.bus == nil {
-		return fmt.Errorf("message bus unavailable")
+		return rejectedFinalResponseAdmission(fmt.Errorf("message bus unavailable"))
 	}
-	return al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-		Channel:    msg.Channel,
-		ChatID:     msg.ChatID,
-		Context:    outboundContextFromInbound(&msg.Context, msg.Channel, msg.ChatID, msg.MessageID),
-		SessionKey: sessionKey,
-		Content:    content,
-	})
+	workspace, agentID := "", ""
+	if _, routedAgent, _ := al.resolveMessageRoute(msg); routedAgent != nil {
+		workspace, agentID = routedAgent.Workspace, routedAgent.ID
+	}
+	return al.publishResponseWithContextIfNeeded(
+		ctx,
+		workspace,
+		agentID,
+		msg.Channel,
+		msg.ChatID,
+		sessionKey,
+		content,
+		&msg.Context,
+		finalResponseAlwaysPublish,
+	)
 }
 
 type interactionToolResultPayload struct {

@@ -23,35 +23,31 @@ func newInboundTurnCoordinator(al *AgentLoop) *inboundTurnCoordinator {
 
 func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.InboundMessage) {
 	al := c.al
+	if al.outboundCoordinator() != nil {
+		ctx = withOutboundTransaction(ctx, msg.SpoolID)
+	}
 
 	target, ok := al.resolveSteeringTarget(msg)
 	if !ok {
 		// Non-routable message (e.g. system) stays synchronous so it preserves
 		// the historical ordering guarantee and does not enter session steering.
 		admission := al.processMessageSync(ctx, msg)
-		if admission.permitsInboundAck() {
-			al.ackInboundMessage(ctx, msg)
-		} else {
-			al.releaseInboundMessage(context.Background(), msg, admission.err)
-		}
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 	cancellation, err := al.cancelInteractionForControlMessage(ctx, msg, target)
 	if err != nil {
-		if noticeErr := al.publishInteractionNotice(
+		admission := al.publishInteractionNoticeAdmission(
 			ctx,
 			msg,
 			target.SessionKey,
 			"The pending interaction could not be canceled; please retry.",
-		); noticeErr != nil {
-			al.releaseInboundMessage(context.Background(), msg, err)
-		} else {
-			al.ackInboundMessage(ctx, msg)
-		}
+		)
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 	if cancellation.CommandHandled {
-		al.publishStopReply(
+		admission := al.publishStopReply(
 			ctx,
 			msg,
 			target.runtimeSessionScope(),
@@ -59,7 +55,7 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 			commands.StopResult{Stopped: cancellation.Canceled},
 			nil,
 		)
-		al.ackInboundMessage(ctx, msg)
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 	if c.routeExplicitInteractionAnswer(ctx, msg, target) {
@@ -133,8 +129,8 @@ func (c *inboundTurnCoordinator) handleBusySession(
 		return
 	}
 	scope := target.runtimeSessionScope()
-	if al.tryHandleStopCommand(ctx, msg, scope, target.Agent.ID) {
-		al.ackInboundMessage(ctx, msg)
+	if handled, admission := al.tryHandleStopCommand(ctx, msg, scope, target.Agent.ID); handled {
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 
@@ -163,6 +159,19 @@ func (c *inboundTurnCoordinator) startWorker(
 	claim *runtimeSessionClaim,
 ) {
 	go c.runWorker(ctx, msg, target, claim)
+}
+
+func (al *AgentLoop) settleInboundAdmission(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	admission finalResponseAdmission,
+) {
+	admission = transactionAdmission(ctx, admission)
+	if admission.permitsInboundAck() {
+		al.ackInboundMessage(ctx, msg)
+		return
+	}
+	al.releaseInboundMessage(context.Background(), msg, admission.err)
 }
 
 func (c *inboundTurnCoordinator) runWorker(
@@ -195,11 +204,7 @@ func (c *inboundTurnCoordinator) runWorker(
 
 	turn := al.buildInboundMessageTurnForTarget(ctx, msg, target)
 	admission := al.runInboundTurnWithSteering(ctx, turn)
-	if admission.permitsInboundAck() {
-		al.ackInboundMessage(ctx, msg)
-	} else {
-		al.releaseInboundMessage(context.Background(), msg, admission.err)
-	}
+	al.settleInboundAdmission(ctx, msg, admission)
 }
 
 func (c *inboundTurnCoordinator) acquireTurnCapacity(
@@ -240,7 +245,6 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 ) {
 	al := c.al
 	claim.releaseIfOwned()
-	al.ackInboundMessage(ctx, msg)
 
 	target := &continuationTarget{
 		SessionKey: claim.scope.sessionKey,
@@ -253,7 +257,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	}
 	steeringAggregate, continueErr := al.drainSteeringForAggregate(ctx, target)
 	if continueErr != nil {
-		al.maybePublishErrorWithScopes(
+		admission := al.maybePublishErrorWithScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -264,10 +268,14 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			finalResponseAlwaysPublish,
 			target.traceScopes,
 		)
-		al.settleSteeringMessages(
+		settleErr := al.settleSteeringMessages(
 			rejectedFinalResponseAdmission(continueErr),
 			steeringAggregate.messages,
 		)
+		if settleErr != nil {
+			admission = rejectedFinalResponseAdmission(settleErr)
+		}
+		al.settleInboundAdmission(ctx, msg, admission)
 		return
 	}
 	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
@@ -286,7 +294,10 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			target.traceScopes,
 		)
 	}
-	al.settleSteeringMessages(admission, steeringAggregate.messages)
+	if settleErr := al.settleSteeringMessages(admission, steeringAggregate.messages); settleErr != nil {
+		admission = rejectedFinalResponseAdmission(settleErr)
+	}
+	al.settleInboundAdmission(ctx, msg, admission)
 }
 
 func (c *inboundTurnCoordinator) recoverWorkerPanic(sessionKey string, msg bus.InboundMessage) {

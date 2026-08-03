@@ -25,6 +25,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
@@ -56,6 +57,7 @@ type AgentLoop struct {
 	modelExecution             *modelExecutionManager
 	channelManager             interfaces.ChannelManager
 	mediaStore                 media.MediaStore
+	outboundOutbox             *outbox.Coordinator
 	transcriber                asr.Transcriber
 	cmdRegistry                *commands.Registry
 	mcp                        mcpRuntime
@@ -245,6 +247,9 @@ func (al *AgentLoop) Stop() {
 
 // Close releases resources held by agent session stores. Call after Stop.
 func (al *AgentLoop) Close() {
+	if err := al.closeOutboundOutbox(); err != nil {
+		logger.ErrorCF("agent", "Failed to close outbound outbox", map[string]any{"error": err.Error()})
+	}
 	mcpManager := al.mcp.takeManager()
 
 	if mcpManager != nil {

@@ -1,12 +1,38 @@
 package outbox
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
+
+func TestCoordinatorReleaseRelinquishesLeaseWhenRecordCannotBeRead(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	coordinator := newCoordinator(store)
+	identity := Identity{SourceID: "source-unreadable-release", Channel: "telegram", ChatID: "chat-1"}
+	message := bus.OutboundMessage{Channel: "telegram", ChatID: "chat-1", Content: "hello"}
+	first, err := coordinator.AdmitMessage("workspace", identity, message)
+	if err != nil || !first.Dispatch {
+		t.Fatalf("first admission = %+v, %v", first, err)
+	}
+	if removeErr := os.Remove(store.recordPath(first.Intent.ID)); removeErr != nil {
+		t.Fatalf("Remove() error = %v", removeErr)
+	}
+	if releaseErr := coordinator.ReleaseAdmission(first.Lease); !os.IsNotExist(releaseErr) {
+		t.Fatalf("ReleaseAdmission() error = %v, want missing record", releaseErr)
+	}
+
+	retry, err := coordinator.AdmitMessage("workspace", identity, message)
+	if err != nil || !retry.Dispatch {
+		t.Fatalf("retry admission = %+v, %v, want new dispatch lease", retry, err)
+	}
+}
 
 func TestDeliveryIDDoesNotDependOnRoute(t *testing.T) {
 	first := testIdentity()
