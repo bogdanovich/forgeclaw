@@ -269,6 +269,7 @@ const queuedSteeringDeferredToolResult = "Deferred without execution because a n
 // Returns an explicit outcome indicating what the coordinator should do next:
 //   - ToolControlContinue: all tool results handled, pendingMessages or steering exists, continue turn
 //   - ToolControlBreak: tool loop exited, proceed to coordinator's hardAbort/finalContent/finalize
+//   - ToolControlHalt: finalize exact runtime safety content without another model call
 func (p *Pipeline) ExecuteTools(
 	ctx context.Context,
 	turnCtx context.Context,
@@ -474,7 +475,7 @@ toolLoop:
 						)
 						exec.messages = runner.messages
 						return ToolLoopOutcome{
-							Control: ToolControlBreak, FinalContent: loopDecision.Message,
+							Control: ToolControlHalt, FinalContent: loopDecision.Message,
 						}
 					}
 
@@ -544,7 +545,7 @@ toolLoop:
 				)
 				exec.messages = runner.messages
 				return ToolLoopOutcome{
-					Control: ToolControlBreak, FinalContent: loopDecision.Message,
+					Control: ToolControlHalt, FinalContent: loopDecision.Message,
 				}
 			}
 			continue
@@ -1076,7 +1077,7 @@ toolLoop:
 			)
 			exec.messages = runner.messages
 			return ToolLoopOutcome{
-				Control: ToolControlBreak, FinalContent: loopDecision.Message,
+				Control: ToolControlHalt, FinalContent: loopDecision.Message,
 			}
 		}
 

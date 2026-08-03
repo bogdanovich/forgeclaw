@@ -1054,7 +1054,7 @@ func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
 			}
 			continue
 		}
-		if outcome.Control != ToolControlBreak ||
+		if outcome.Control != ToolControlHalt ||
 			!strings.Contains(outcome.FinalContent, "Stopped the turn") {
 			t.Fatalf("terminal outcome = %#v", outcome)
 		}
@@ -1071,6 +1071,54 @@ func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
 	if len(decisions) != 1 || decisions[0].Action != "halt" ||
 		decisions[0].Code != "identical_call_emergency_halt" {
 		t.Fatalf("loop decisions = %#v", decisions)
+	}
+}
+
+func TestPipelineEmergencyHaltPreservesReasonForResponseHandledTool(t *testing.T) {
+	const haltThreshold = 4
+	toolCalls := make([]providers.ToolCall, 0, haltThreshold)
+	for i := 1; i <= haltThreshold; i++ {
+		toolCalls = append(toolCalls, providers.ToolCall{
+			ID:        fmt.Sprintf("call-%d", i),
+			Name:      "handled-loop",
+			Arguments: map[string]any{},
+		})
+	}
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: toolCalls},
+		{Content: "model rewrote the runtime halt reason", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	tool := &fixedToolResultTool{
+		name:   "handled-loop",
+		result: tools.SilentResult("same successful result").WithResponseHandled(),
+	}
+	agent.Tools.Register(tool)
+	agent.ToolLoopDetection = loopguard.DefaultConfig()
+	agent.ToolLoopDetection.IdenticalCallHalt = haltThreshold
+
+	response, err := al.runAgentLoop(t.Context(), agent, processOptions{
+		Dispatch: DispatchRequest{
+			SessionKey:  "session-emergency-handled-loop",
+			UserMessage: "run the handled tool",
+		},
+		DefaultResponse: "default response",
+		NoHistory:       true,
+	})
+	if err != nil {
+		t.Fatalf("runAgentLoop() error = %v", err)
+	}
+	want := "Stopped the turn after 4 consecutive identical successful calls to handled-loop because the operation was not making progress."
+	if response != want {
+		t.Fatalf("response = %q, want exact runtime halt reason %q", response, want)
+	}
+	if provider.callCount != 1 {
+		t.Fatalf("provider calls = %d, want 1 without final rendering", provider.callCount)
+	}
+	if tool.executions != haltThreshold {
+		t.Fatalf("tool executions = %d, want %d", tool.executions, haltThreshold)
 	}
 }
 
