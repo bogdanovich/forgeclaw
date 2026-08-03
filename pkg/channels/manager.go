@@ -2681,6 +2681,9 @@ func (m *Manager) sendMediaWithRetryPolicy(
 			MaxBackoff:     maxBackoff,
 		},
 		func(ctx context.Context, pending []bus.OutboundMediaMessage) DeliveryResult[bus.OutboundMediaMessage] {
+			if sender, ok := w.ch.(MediaDeliverySender); ok {
+				return sender.SendMediaResult(ctx, pending)
+			}
 			msgIDs, err := ms.SendMedia(ctx, pending[0])
 			return FailedDelivery[bus.OutboundMediaMessage](msgIDs, nil, 0, err)
 		},

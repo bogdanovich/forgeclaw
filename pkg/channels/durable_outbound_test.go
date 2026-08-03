@@ -45,10 +45,28 @@ type durableTypedTextChannel struct {
 	typed  int
 }
 
+type durableTypedMediaChannel struct {
+	durableMediaChannel
+	result DeliveryResult[bus.OutboundMediaMessage]
+	cancel context.CancelFunc
+	typed  int
+}
+
 func (c *durableTypedTextChannel) SendMessageResult(
 	context.Context,
 	[]bus.OutboundMessage,
 ) DeliveryResult[bus.OutboundMessage] {
+	c.typed++
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return c.result
+}
+
+func (c *durableTypedMediaChannel) SendMediaResult(
+	context.Context,
+	[]bus.OutboundMediaMessage,
+) DeliveryResult[bus.OutboundMediaMessage] {
 	c.typed++
 	if c.cancel != nil {
 		c.cancel()
@@ -353,6 +371,38 @@ func TestDurableQueuedMessagePersistsTypedAdapterRetryAfter(t *testing.T) {
 	}
 	if intent.Status != outbox.StatusDefinitelyFailed || intent.RetryAfter.Before(before) {
 		t.Fatalf("typed retry outcome = %+v", intent)
+	}
+}
+
+func TestDurableQueuedMediaPersistsTypedAdapterRetryAfter(t *testing.T) {
+	coordinator := openDurableTestCoordinator(t)
+	msg := admitDurableTestMedia(t, coordinator, "source-media-typed-retry-after")
+	ctx, cancel := context.WithCancel(t.Context())
+	channel := &durableTypedMediaChannel{
+		result: DeliveryResult[bus.OutboundMediaMessage]{
+			Status:     DeliveryFailed,
+			Acceptance: DeliveryRejected,
+			RetryAfter: 30 * time.Second,
+			Err:        ErrRateLimit,
+		},
+		cancel: cancel,
+	}
+	manager := newTestManager()
+	manager.outboundOutbox = coordinator
+	before := time.Now().UTC().Add(20 * time.Second)
+	manager.deliverQueuedMedia(ctx, "test", &channelWorker{
+		ch: channel, limiter: rate.NewLimiter(rate.Inf, 1),
+	}, msg)
+
+	if channel.typed != 1 || channel.sends != 0 {
+		t.Fatalf("typed sends = %d, legacy sends = %d; want 1 and 0", channel.typed, channel.sends)
+	}
+	intent, err := coordinator.Get(msg.DeliveryID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if intent.Status != outbox.StatusDefinitelyFailed || intent.RetryAfter.Before(before) {
+		t.Fatalf("typed media retry outcome = %+v", intent)
 	}
 }
 

@@ -867,24 +867,58 @@ func (c *TelegramChannel) SendPlaceholder(ctx context.Context, chatID string) (s
 	return fmt.Sprintf("%d", pMsg.MessageID), nil
 }
 
-// SendMedia implements the channels.MediaSender interface.
+// SendMediaResult preserves typed progress for the manager's retry coordinator.
+func (c *TelegramChannel) SendMediaResult(
+	ctx context.Context,
+	pending []bus.OutboundMediaMessage,
+) channels.DeliveryResult[bus.OutboundMediaMessage] {
+	if len(pending) == 0 {
+		return channels.RejectedDelivery[bus.OutboundMediaMessage](errors.New("telegram media payload is empty"))
+	}
+	var confirmedIDs []string
+	for index, msg := range pending {
+		result := c.sendMediaAttempt(ctx, msg)
+		confirmedIDs = append(confirmedIDs, result.MessageIDs...)
+		if result.Delivered() {
+			continue
+		}
+		result.MessageIDs = confirmedIDs
+		if result.Remaining != nil {
+			result.Remaining = append(result.Remaining, pending[index+1:]...)
+		}
+		return result
+	}
+	return channels.SuccessfulDelivery[bus.OutboundMediaMessage](confirmedIDs)
+}
+
+// SendMedia implements the channels.MediaSender compatibility interface.
 func (c *TelegramChannel) SendMedia(
 	ctx context.Context,
 	msg bus.OutboundMediaMessage,
 ) ([]string, error) {
+	result := c.sendMediaAttempt(ctx, msg)
+	return result.MessageIDs, result.Err
+}
+
+func (c *TelegramChannel) sendMediaAttempt(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) channels.DeliveryResult[bus.OutboundMediaMessage] {
 	if !c.IsRunning() {
-		return nil, channels.ErrNotRunning
+		return telegramMediaFailure(nil, &msg, channels.ErrNotRunning)
 	}
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
 
 	chatID, threadID, err := resolveTelegramOutboundTarget(msg.ChatID, &msg.Context)
 	if err != nil {
-		return nil, fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
+		cause := fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
+		return telegramMediaFailure(nil, &msg, cause)
 	}
 
 	store := c.GetMediaStore()
 	if store == nil {
-		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
+		cause := fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
+		return telegramMediaFailure(nil, &msg, cause)
 	}
 
 	var messageIDs []string
@@ -892,38 +926,47 @@ func (c *TelegramChannel) SendMedia(
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {
 		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
 		if leadingErr != nil {
-			return nil, leadingErr
+			var remainder *bus.OutboundMediaMessage
+			if len(leadingIDs) == 0 {
+				remainder = &msg
+			}
+			return telegramMediaFailure(leadingIDs, remainder, leadingErr)
 		}
 		messageIDs = append(messageIDs, leadingIDs...)
 		msg = channels.ClearMediaCaptions(msg)
 	}
 
 	if len(msg.Parts) > 1 && telegramCanSendMediaGroup(msg.Parts) {
-		groupIDs, err := c.sendImageMediaGroups(ctx, chatID, threadID, store, msg.Parts)
+		groupIDs, remainingParts, err := c.sendImageMediaGroups(ctx, chatID, threadID, store, msg.Parts)
 		if err != nil {
 			logger.ErrorCF("telegram", "Failed to send media group", map[string]any{
 				"count": len(msg.Parts),
 				"error": err.Error(),
 			})
-			return messageIDs, fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
+			messageIDs = append(messageIDs, groupIDs...)
+			wrapped := wrapTelegramSendError("telegram send media group", err)
+			remainder := msg
+			remainder.Parts = append([]bus.MediaPart(nil), remainingParts...)
+			return telegramMediaFailure(messageIDs, &remainder, wrapped)
 		}
 		if len(groupIDs) > 0 {
 			messageIDs = append(messageIDs, groupIDs...)
-			return messageIDs, nil
+			return channels.SuccessfulDelivery[bus.OutboundMediaMessage](messageIDs)
 		}
 	}
 
-	for _, part := range msg.Parts {
+	for partIndex, part := range msg.Parts {
 		localPath, err := store.Resolve(part.Ref)
 		if err != nil {
 			logger.ErrorCF("telegram", "Failed to resolve media ref", map[string]any{
 				"ref":   part.Ref,
 				"error": err.Error(),
 			})
-			return messageIDs, fmt.Errorf(
+			cause := fmt.Errorf(
 				"telegram resolve media ref %q: %v: %w",
 				part.Ref, err, channels.ErrSendFailed,
 			)
+			return telegramMediaPartsFailure(messageIDs, msg, partIndex, cause)
 		}
 
 		file, err := os.Open(localPath)
@@ -932,10 +975,11 @@ func (c *TelegramChannel) SendMedia(
 				"path":  localPath,
 				"error": err.Error(),
 			})
-			return messageIDs, fmt.Errorf(
+			cause := fmt.Errorf(
 				"telegram open media file %q: %v: %w",
 				localPath, err, channels.ErrSendFailed,
 			)
+			return telegramMediaPartsFailure(messageIDs, msg, partIndex, cause)
 		}
 
 		var tgResult *telego.Message
@@ -956,9 +1000,8 @@ func (c *TelegramChannel) SendMedia(
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf(
-						"telegram rewind media after caption parse failure: %w",
-						channels.ErrTemporary,
+					return telegramMediaRewindFailure(
+						messageIDs, msg, partIndex, "caption parse failure", rewindErr,
 					)
 				}
 				params.Caption = part.Caption
@@ -968,9 +1011,8 @@ func (c *TelegramChannel) SendMedia(
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf(
-						"telegram rewind media after photo failure: %w",
-						channels.ErrTemporary,
+					return telegramMediaRewindFailure(
+						messageIDs, msg, partIndex, "photo failure", rewindErr,
 					)
 				}
 
@@ -989,9 +1031,8 @@ func (c *TelegramChannel) SendMedia(
 				if err != nil && telegramIsParseModeError(err) {
 					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 						file.Close()
-						return nil, fmt.Errorf(
-							"telegram rewind media after caption parse failure: %w",
-							channels.ErrTemporary,
+						return telegramMediaRewindFailure(
+							messageIDs, msg, partIndex, "caption parse failure", rewindErr,
 						)
 					}
 					docParams.Caption = part.Caption
@@ -1020,9 +1061,8 @@ func (c *TelegramChannel) SendMedia(
 				if err != nil && telegramIsParseModeError(err) {
 					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 						file.Close()
-						return nil, fmt.Errorf(
-							"telegram rewind media after caption parse failure: %w",
-							channels.ErrTemporary,
+						return telegramMediaRewindFailure(
+							messageIDs, msg, partIndex, "caption parse failure", rewindErr,
 						)
 					}
 					vparams.Caption = part.Caption
@@ -1045,9 +1085,8 @@ func (c *TelegramChannel) SendMedia(
 				if err != nil && telegramIsParseModeError(err) {
 					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 						file.Close()
-						return nil, fmt.Errorf(
-							"telegram rewind media after caption parse failure: %w",
-							channels.ErrTemporary,
+						return telegramMediaRewindFailure(
+							messageIDs, msg, partIndex, "caption parse failure", rewindErr,
 						)
 					}
 					params.Caption = part.Caption
@@ -1071,9 +1110,8 @@ func (c *TelegramChannel) SendMedia(
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf(
-						"telegram rewind media after caption parse failure: %w",
-						channels.ErrTemporary,
+					return telegramMediaRewindFailure(
+						messageIDs, msg, partIndex, "caption parse failure", rewindErr,
 					)
 				}
 				params.Caption = part.Caption
@@ -1096,9 +1134,8 @@ func (c *TelegramChannel) SendMedia(
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf(
-						"telegram rewind media after caption parse failure: %w",
-						channels.ErrTemporary,
+					return telegramMediaRewindFailure(
+						messageIDs, msg, partIndex, "caption parse failure", rewindErr,
 					)
 				}
 				params.Caption = part.Caption
@@ -1117,11 +1154,12 @@ func (c *TelegramChannel) SendMedia(
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return messageIDs, fmt.Errorf("telegram send media: %w", channels.ErrTemporary)
+			wrapped := wrapTelegramSendError("telegram send media", err)
+			return telegramMediaPartsFailure(messageIDs, msg, partIndex, wrapped)
 		}
 	}
 
-	return messageIDs, nil
+	return channels.SuccessfulDelivery[bus.OutboundMediaMessage](messageIDs)
 }
 
 func rewindTelegramUpload(file *os.File) error {
@@ -1150,7 +1188,7 @@ func (c *TelegramChannel) sendImageMediaGroups(
 	threadID int,
 	store media.MediaStore,
 	parts []bus.MediaPart,
-) ([]string, error) {
+) ([]string, []bus.MediaPart, error) {
 	const maxGroupSize = 10
 
 	messageIDs := make([]string, 0, len(parts))
@@ -1161,11 +1199,11 @@ func (c *TelegramChannel) sendImageMediaGroups(
 		}
 		groupIDs, err := c.sendSingleImageMediaGroup(ctx, chatID, threadID, store, parts[start:end])
 		if err != nil {
-			return nil, err
+			return messageIDs, append([]bus.MediaPart(nil), parts[start:]...), err
 		}
 		messageIDs = append(messageIDs, groupIDs...)
 	}
-	return messageIDs, nil
+	return messageIDs, nil, nil
 }
 
 func (c *TelegramChannel) sendSingleImageMediaGroup(
@@ -1235,7 +1273,7 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 
 	inputMedia, err := buildInputMedia(true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("telegram prepare media group: %v: %w", err, channels.ErrSendFailed)
 	}
 
 	results, err := c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
@@ -1246,7 +1284,11 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 	if err != nil && telegramIsParseModeError(err) {
 		inputMedia, rebuildErr := buildInputMedia(false)
 		if rebuildErr != nil {
-			return nil, rebuildErr
+			return nil, fmt.Errorf(
+				"telegram prepare media group fallback: %v: %w",
+				rebuildErr,
+				channels.ErrSendFailed,
+			)
 		}
 		results, err = c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
 			ChatID:          tu.ID(chatID),
@@ -2131,11 +2173,69 @@ func telegramRetryDelayFor(err error) time.Duration {
 
 func wrapTelegramSendError(operation string, err error) error {
 	classification := channels.ErrTemporary
-	var apiErr *ta.Error
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == http.StatusTooManyRequests {
+	switch {
+	case errors.Is(err, channels.ErrNotRunning):
+		classification = channels.ErrNotRunning
+	case errors.Is(err, channels.ErrSendFailed):
+		classification = channels.ErrSendFailed
+	case errors.Is(err, channels.ErrRateLimit):
 		classification = channels.ErrRateLimit
 	}
+	var apiErr *ta.Error
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.ErrorCode == http.StatusTooManyRequests:
+			classification = channels.ErrRateLimit
+		case apiErr.ErrorCode >= http.StatusBadRequest && apiErr.ErrorCode < http.StatusInternalServerError:
+			classification = channels.ErrSendFailed
+		}
+	}
 	return fmt.Errorf("%s: %w: %w", operation, classification, err)
+}
+
+func telegramDeliveryWasRejected(err error) bool {
+	return errors.Is(err, channels.ErrNotRunning) ||
+		errors.Is(err, channels.ErrSendFailed) ||
+		errors.Is(err, channels.ErrRateLimit)
+}
+
+func telegramMediaFailure(
+	messageIDs []string,
+	remainder *bus.OutboundMediaMessage,
+	err error,
+) channels.DeliveryResult[bus.OutboundMediaMessage] {
+	var pending []bus.OutboundMediaMessage
+	if remainder != nil && telegramDeliveryWasRejected(err) {
+		pending = []bus.OutboundMediaMessage{*remainder}
+	}
+	return channels.FailedDelivery(
+		messageIDs,
+		pending,
+		telegramRetryDelayFor(err),
+		err,
+	)
+}
+
+func telegramMediaRewindFailure(
+	messageIDs []string,
+	msg bus.OutboundMediaMessage,
+	partIndex int,
+	after string,
+	err error,
+) channels.DeliveryResult[bus.OutboundMediaMessage] {
+	cause := fmt.Errorf("telegram rewind media after %s: %v: %w", after, err, channels.ErrSendFailed)
+	return telegramMediaPartsFailure(messageIDs, msg, partIndex, cause)
+}
+
+func telegramMediaPartsFailure(
+	messageIDs []string,
+	msg bus.OutboundMediaMessage,
+	partIndex int,
+	err error,
+) channels.DeliveryResult[bus.OutboundMediaMessage] {
+	remainder := msg
+	remainder.Parts = append([]bus.MediaPart(nil), msg.Parts[partIndex:]...)
+	return telegramMediaFailure(messageIDs, &remainder, err)
 }
 
 func parseContent(text string, useMarkdownV2 bool) string {
