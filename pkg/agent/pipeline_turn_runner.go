@@ -252,6 +252,23 @@ func (p *Pipeline) runTurnLoop(
 					status:                 turnStatus,
 					suspendedInteractionID: toolOutcome.SuspendedInteractionID,
 				}, turnStatus, nil
+			case ToolControlHalt:
+				finalContent = toolOutcome.FinalContent
+				if strings.TrimSpace(finalContent) == "" {
+					finalContent = "The tool loop was stopped by runtime safety protection."
+				}
+				result, finalizeErr := p.Finalize(
+					ctx,
+					turnCtx,
+					ts,
+					exec,
+					turnStatus,
+					finalContent,
+				)
+				if finalizeErr != nil {
+					turnStatus = TurnEndStatusError
+				}
+				return result, turnStatus, finalizeErr
 			case ToolControlBreak:
 				if toolOutcome.AbortCause == TurnAbortHard {
 					turnStatus = TurnEndStatusAborted

@@ -35,6 +35,7 @@ type Config struct {
 	SameToolFailureHalt int
 	NoProgressWarn      int
 	NoProgressBlock     int
+	IdenticalCallHalt   int
 	MaxSignatures       int
 }
 
@@ -49,6 +50,7 @@ func DefaultConfig() Config {
 		SameToolFailureHalt: 8,
 		NoProgressWarn:      2,
 		NoProgressBlock:     5,
+		IdenticalCallHalt:   4,
 		MaxSignatures:       64,
 	}
 }
@@ -72,6 +74,9 @@ func (c Config) Normalized() Config {
 	}
 	if c.NoProgressBlock < c.NoProgressWarn {
 		c.NoProgressBlock = max(defaults.NoProgressBlock, c.NoProgressWarn)
+	}
+	if c.IdenticalCallHalt <= 0 {
+		c.IdenticalCallHalt = defaults.IdenticalCallHalt
 	}
 	if c.MaxSignatures <= 0 {
 		c.MaxSignatures = defaults.MaxSignatures
@@ -116,6 +121,8 @@ type Controller struct {
 
 	failureStreakTool  string
 	failureStreakCount int
+	lastCallSignature  string
+	identicalCallCount int
 }
 
 func New(config Config) *Controller {
@@ -196,6 +203,8 @@ func (c *Controller) After(observation Observation) Decision {
 	c.remember(sig.key)
 
 	if observation.Failed {
+		c.lastCallSignature = ""
+		c.identicalCallCount = 0
 		delete(c.noProgress, sig.key)
 		count := c.exactFailures[sig.key] + 1
 		c.exactFailures[sig.key] = count
@@ -252,6 +261,27 @@ func (c *Controller) After(observation Observation) Decision {
 			)
 		}
 		return decision
+	}
+	if c.lastCallSignature == sig.key {
+		c.identicalCallCount++
+	} else {
+		c.lastCallSignature = sig.key
+		c.identicalCallCount = 1
+	}
+	if c.identicalCallCount >= c.config.IdenticalCallHalt {
+		return decisionFor(
+			ActionHalt,
+			"identical_call_emergency_halt",
+			tool,
+			sig.argsHash,
+			c.identicalCallCount,
+			c.config.IdenticalCallHalt,
+			fmt.Sprintf(
+				"Stopped the turn after %d consecutive identical successful calls to %s because the operation was not making progress.",
+				c.identicalCallCount,
+				toolLabel(tool),
+			),
+		)
 	}
 
 	delete(c.exactFailures, sig.key)

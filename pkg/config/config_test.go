@@ -905,7 +905,8 @@ func TestDefaultConfig_ToolLoopDetection(t *testing.T) {
 	}
 	if cfg.ExactFailureWarn != 2 || cfg.ExactFailureBlock != 5 ||
 		cfg.SameToolFailureWarn != 3 || cfg.SameToolFailureHalt != 8 ||
-		cfg.NoProgressWarn != 2 || cfg.NoProgressBlock != 5 || cfg.MaxSignatures <= 0 {
+		cfg.NoProgressWarn != 2 || cfg.NoProgressBlock != 5 ||
+		cfg.IdenticalCallHalt != 4 || cfg.MaxSignatures <= 0 {
 		t.Fatalf("unexpected loop detection thresholds: %#v", cfg)
 	}
 }

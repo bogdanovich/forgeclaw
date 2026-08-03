@@ -52,6 +52,7 @@ func RunToolLoop(
 	var finalContent string
 	guard := loopguard.New(config.LoopDetection)
 
+toolLoop:
 	for iteration < config.MaxIterations {
 		iteration++
 
@@ -211,6 +212,7 @@ func RunToolLoop(
 		wg.Wait()
 
 		// Append results in original order
+		var haltDecision loopguard.Decision
 		for i := range results {
 			r := &results[i]
 			if r.result == nil {
@@ -234,6 +236,13 @@ func RunToolLoop(
 				toolMsg.Media = append(toolMsg.Media, r.result.Media...)
 			}
 			messages = append(messages, toolMsg)
+			if r.decision.Action == loopguard.ActionHalt && haltDecision.Action != loopguard.ActionHalt {
+				haltDecision = r.decision
+			}
+		}
+		if haltDecision.Action == loopguard.ActionHalt {
+			finalContent = haltDecision.Message
+			break toolLoop
 		}
 	}
 

@@ -269,6 +269,7 @@ const queuedSteeringDeferredToolResult = "Deferred without execution because a n
 // Returns an explicit outcome indicating what the coordinator should do next:
 //   - ToolControlContinue: all tool results handled, pendingMessages or steering exists, continue turn
 //   - ToolControlBreak: tool loop exited, proceed to coordinator's hardAbort/finalContent/finalize
+//   - ToolControlHalt: finalize exact runtime safety content without another model call
 func (p *Pipeline) ExecuteTools(
 	ctx context.Context,
 	turnCtx context.Context,
@@ -469,10 +470,13 @@ toolLoop:
 					if loopDecision.Action == loopguard.ActionHalt {
 						runner.appendSkippedToolMessages(
 							i+1,
-							"tool loop hard stop",
-							"Skipped because tool-loop protection stopped the current batch.",
+							"tool loop emergency halt",
+							"Skipped because tool-loop protection stopped the current turn.",
 						)
-						break toolLoop
+						exec.messages = runner.messages
+						return ToolLoopOutcome{
+							Control: ToolControlHalt, FinalContent: loopDecision.Message,
+						}
 					}
 
 					runner.captureAfterToolSteering(true)
@@ -533,6 +537,17 @@ toolLoop:
 			}, toolMessagePersistAndIngest)
 			exec.allResponsesHandled = false
 			runner.captureAfterToolSteering(false)
+			if loopDecision.Action == loopguard.ActionHalt {
+				runner.appendSkippedToolMessages(
+					i+1,
+					"tool loop emergency halt",
+					"Skipped because tool-loop protection stopped the current turn.",
+				)
+				exec.messages = runner.messages
+				return ToolLoopOutcome{
+					Control: ToolControlHalt, FinalContent: loopDecision.Message,
+				}
+			}
 			continue
 		}
 
@@ -1057,10 +1072,13 @@ toolLoop:
 		if loopDecision.Action == loopguard.ActionHalt {
 			runner.appendSkippedToolMessages(
 				i+1,
-				"tool loop hard stop",
-				"Skipped because tool-loop protection stopped the current batch.",
+				"tool loop emergency halt",
+				"Skipped because tool-loop protection stopped the current turn.",
 			)
-			break toolLoop
+			exec.messages = runner.messages
+			return ToolLoopOutcome{
+				Control: ToolControlHalt, FinalContent: loopDecision.Message,
+			}
 		}
 
 		runner.captureAfterToolSteering(false)

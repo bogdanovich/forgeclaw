@@ -139,7 +139,9 @@ func TestSameToolFailureHardStopWithChangingArguments(t *testing.T) {
 }
 
 func TestMutatingAndUnknownSuccessesNeverNoProgressWarn(t *testing.T) {
-	controller := New(DefaultConfig())
+	config := DefaultConfig()
+	config.IdenticalCallHalt = 99
+	controller := New(config)
 	for _, semantics := range []Semantics{SemanticsMutating, SemanticsUnknown} {
 		for i := 0; i < 10; i++ {
 			got := controller.After(
@@ -154,6 +156,42 @@ func TestMutatingAndUnknownSuccessesNeverNoProgressWarn(t *testing.T) {
 				t.Fatalf("semantics %q action = %#v", semantics, got)
 			}
 		}
+	}
+}
+
+func TestConsecutiveIdenticalCallsEmergencyHaltForUnknownTool(t *testing.T) {
+	config := DefaultConfig()
+	config.IdenticalCallHalt = 3
+	controller := New(config)
+	observation := Observation{
+		Tool: "mcp_example_stats", Args: map[string]any{"recent": 1},
+		ResultText: "same", Semantics: SemanticsUnknown,
+	}
+	for i := 1; i < config.IdenticalCallHalt; i++ {
+		if got := controller.After(observation); got.Action != ActionAllow {
+			t.Fatalf("call %d decision = %#v", i, got)
+		}
+	}
+	got := controller.After(observation)
+	if got.Action != ActionHalt || got.Code != "identical_call_emergency_halt" ||
+		got.Count != config.IdenticalCallHalt {
+		t.Fatalf("emergency halt = %#v", got)
+	}
+}
+
+func TestConsecutiveIdenticalCallCountResetsOnDifferentCall(t *testing.T) {
+	config := DefaultConfig()
+	config.IdenticalCallHalt = 3
+	controller := New(config)
+	first := Observation{Tool: "mcp_stats", Args: map[string]any{"recent": 1}}
+	second := Observation{Tool: "mcp_stats", Args: map[string]any{"recent": 2}}
+	controller.After(first)
+	controller.After(first)
+	if got := controller.After(second); got.Action != ActionAllow {
+		t.Fatalf("different call did not reset the emergency streak: %#v", got)
+	}
+	if got := controller.After(first); got.Action != ActionAllow {
+		t.Fatalf("reset call decision = %#v", got)
 	}
 }
 
@@ -203,7 +241,8 @@ func TestConfigNormalizationPreservesSwitchesAndOrdersThresholds(t *testing.T) {
 	}
 	if config.ExactFailureBlock < config.ExactFailureWarn ||
 		config.SameToolFailureHalt < config.SameToolFailureWarn ||
-		config.NoProgressBlock < config.NoProgressWarn || config.MaxSignatures <= 0 {
+		config.NoProgressBlock < config.NoProgressWarn || config.IdenticalCallHalt <= 0 ||
+		config.MaxSignatures <= 0 {
 		t.Fatalf("invalid normalized thresholds: %#v", config)
 	}
 }

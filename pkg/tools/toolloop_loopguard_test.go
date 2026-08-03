@@ -54,6 +54,25 @@ type loopGuardScriptedProvider struct {
 	snapshots [][]providers.Message
 }
 
+type emergencyLoopProvider struct {
+	calls int
+}
+
+func (p *emergencyLoopProvider) GetDefaultModel() string { return "loop-test-model" }
+func (p *emergencyLoopProvider) Chat(
+	_ context.Context,
+	_ []providers.Message,
+	_ []providers.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	return &providers.LLMResponse{ToolCalls: []providers.ToolCall{{
+		ID: fmt.Sprintf("emergency-%d", p.calls), Name: "loop_test",
+		Arguments: map[string]any{"value": "same"},
+	}}}, nil
+}
+
 func (p *loopGuardScriptedProvider) GetDefaultModel() string { return "loop-test-model" }
 func (p *loopGuardScriptedProvider) Chat(
 	_ context.Context,
@@ -156,5 +175,29 @@ func TestRunToolLoopRecordsParallelResultsInProviderOrder(t *testing.T) {
 	if strings.Contains(results[0].Content, "same_tool_failure_warning") ||
 		!strings.Contains(results[1].Content, "same_tool_failure_warning") {
 		t.Fatalf("deterministic warning order not preserved: %#v", results)
+	}
+}
+
+func TestRunToolLoopEmergencyHaltStopsFurtherLLMCalls(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := &loopGuardTestTool{}
+	registry.Register(tool)
+	provider := &emergencyLoopProvider{}
+	config := loopguard.DefaultConfig()
+	config.IdenticalCallHalt = 3
+
+	result, err := RunToolLoop(context.Background(), ToolLoopConfig{
+		Provider: provider, Model: "test", Tools: registry, MaxIterations: 100,
+		LoopDetection: config,
+	}, []providers.Message{{Role: "user", Content: "test"}}, "cli", "direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Iterations != config.IdenticalCallHalt ||
+		provider.calls != config.IdenticalCallHalt || tool.count() != config.IdenticalCallHalt {
+		t.Fatalf("result=%#v provider_calls=%d executions=%d", result, provider.calls, tool.count())
+	}
+	if !strings.Contains(result.Content, "Stopped the turn") {
+		t.Fatalf("terminal content = %q", result.Content)
 	}
 }

@@ -1024,6 +1024,104 @@ func TestTurnExecutionsHaveIsolatedLoopGuardState(t *testing.T) {
 	}
 }
 
+func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &unknownSteeringSafetyTestTool{}
+	registry.Register(tool)
+	config := loopguard.DefaultConfig()
+	config.IdenticalCallHalt = 3
+	agent := &AgentInstance{
+		ID: "main", Tools: registry, Sessions: session.NewSessionManager(""),
+		ToolLoopDetection: config,
+	}
+	ts := &turnState{
+		agent: agent, agentID: "main", turnID: "turn-emergency-loop-guard",
+		sessionKey: "session-emergency-loop-guard", opts: processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	emitter := &captureRuntimeEmitter{}
+	pipeline := &Pipeline{Runtime: PipelineRuntimeServices{Events: emitter}}
+
+	for i := 1; i <= config.IdenticalCallHalt; i++ {
+		exec.normalizedToolCalls = []providers.ToolCall{{
+			ID: fmt.Sprintf("call-%d", i), Name: tool.Name(), Arguments: map[string]any{},
+		}}
+		exec.allResponsesHandled = false
+		outcome := pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, i)
+		if i < config.IdenticalCallHalt {
+			if outcome.Control != ToolControlContinue {
+				t.Fatalf("iteration %d outcome = %#v", i, outcome)
+			}
+			continue
+		}
+		if outcome.Control != ToolControlHalt ||
+			!strings.Contains(outcome.FinalContent, "Stopped the turn") {
+			t.Fatalf("terminal outcome = %#v", outcome)
+		}
+	}
+	if tool.executions != config.IdenticalCallHalt {
+		t.Fatalf("tool executions = %d, want %d", tool.executions, config.IdenticalCallHalt)
+	}
+	var decisions []ToolLoopDecisionPayload
+	for _, event := range emitter.events {
+		if event.kind == runtimeevents.KindAgentToolLoopDecision {
+			decisions = append(decisions, event.payload.(ToolLoopDecisionPayload))
+		}
+	}
+	if len(decisions) != 1 || decisions[0].Action != "halt" ||
+		decisions[0].Code != "identical_call_emergency_halt" {
+		t.Fatalf("loop decisions = %#v", decisions)
+	}
+}
+
+func TestPipelineEmergencyHaltPreservesReasonForResponseHandledTool(t *testing.T) {
+	const haltThreshold = 4
+	toolCalls := make([]providers.ToolCall, 0, haltThreshold)
+	for i := 1; i <= haltThreshold; i++ {
+		toolCalls = append(toolCalls, providers.ToolCall{
+			ID:        fmt.Sprintf("call-%d", i),
+			Name:      "handled-loop",
+			Arguments: map[string]any{},
+		})
+	}
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: toolCalls},
+		{Content: "model rewrote the runtime halt reason", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	tool := &fixedToolResultTool{
+		name:   "handled-loop",
+		result: tools.SilentResult("same successful result").WithResponseHandled(),
+	}
+	agent.Tools.Register(tool)
+	agent.ToolLoopDetection = loopguard.DefaultConfig()
+	agent.ToolLoopDetection.IdenticalCallHalt = haltThreshold
+
+	response, err := al.runAgentLoop(t.Context(), agent, processOptions{
+		Dispatch: DispatchRequest{
+			SessionKey:  "session-emergency-handled-loop",
+			UserMessage: "run the handled tool",
+		},
+		DefaultResponse: "default response",
+		NoHistory:       true,
+	})
+	if err != nil {
+		t.Fatalf("runAgentLoop() error = %v", err)
+	}
+	want := "Stopped the turn after 4 consecutive identical successful calls to handled-loop because the operation was not making progress."
+	if response != want {
+		t.Fatalf("response = %q, want exact runtime halt reason %q", response, want)
+	}
+	if provider.callCount != 1 {
+		t.Fatalf("provider calls = %d, want 1 without final rendering", provider.callCount)
+	}
+	if tool.executions != haltThreshold {
+		t.Fatalf("tool executions = %d, want %d", tool.executions, haltThreshold)
+	}
+}
+
 func TestPipelineLoopGuardUsesHookModifiedArgumentsAndResults(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	tool := &pipelineLoopGuardReadTool{}

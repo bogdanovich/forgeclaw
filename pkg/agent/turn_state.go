@@ -91,6 +91,10 @@ const (
 	// ToolControlSuspend exits without final rendering after durable ownership
 	// of a pending human interaction has transferred to the runtime.
 	ToolControlSuspend
+	// ToolControlHalt terminates the turn with exact runtime safety content.
+	// The coordinator must not render another model response or continue queued
+	// work after this outcome.
+	ToolControlHalt
 )
 
 // ToolLoopOutcome is the explicit result of one tool-execution phase.
