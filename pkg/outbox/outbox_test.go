@@ -136,7 +136,7 @@ func TestStoreRejectsInvalidTransitions(t *testing.T) {
 	}
 }
 
-func TestCreateIsIdempotentButRejectsPayloadConflict(t *testing.T) {
+func TestCreateKeepsCanonicalIntentAcrossReplayChanges(t *testing.T) {
 	store := openTestStore(t)
 	intent := newTestIntent(t, "response", 0)
 	if _, err := store.Create(intent); err != nil {
@@ -149,8 +149,23 @@ func TestCreateIsIdempotentButRejectsPayloadConflict(t *testing.T) {
 	conflict := intent
 	conflict.Message = cloneMessage(intent.Message)
 	conflict.Message.Content = "different response"
-	if _, err := store.Create(conflict); err == nil {
-		t.Fatal("Create() accepted conflicting payload for stable identity")
+	conflict.OwnerWorkspace = "/agents/rerouted"
+	conflict.Identity.Channel = "slack"
+	conflict.Identity.ChatID = "other-chat"
+	conflict.Identity.SessionKey = "agent:other:slack:other-chat"
+	conflict.Message.Channel = "slack"
+	conflict.Message.ChatID = "other-chat"
+	conflict.Message.Context.Channel = "slack"
+	conflict.Message.Context.ChatID = "other-chat"
+	conflict.Message.SessionKey = conflict.Identity.SessionKey
+	conflict.Message.Scope = &bus.OutboundScope{Channel: "slack"}
+	replayed, err := store.Create(conflict)
+	if err != nil {
+		t.Fatalf("Create() replay error = %v", err)
+	}
+	if replayed.OwnerWorkspace != intent.OwnerWorkspace || replayed.Identity != intent.Identity ||
+		replayed.Message.Content != intent.Message.Content {
+		t.Fatalf("Create() replay = %#v, want canonical %#v", replayed, intent)
 	}
 }
 
@@ -247,7 +262,7 @@ func TestRecoverReconfirmsCommittedAmbiguousWrite(t *testing.T) {
 
 func TestConstructorsBindPayloadRouteToIdentity(t *testing.T) {
 	identity := testIdentity()
-	message, err := NewMessageIntent(identity, bus.OutboundMessage{
+	message, err := NewMessageIntent("/agents/main", identity, bus.OutboundMessage{
 		Channel: "wrong", ChatID: "wrong", SessionKey: "wrong",
 		Context: bus.InboundContext{Channel: "wrong", ChatID: "wrong"},
 		Scope:   &bus.OutboundScope{Channel: "wrong"},
@@ -258,7 +273,7 @@ func TestConstructorsBindPayloadRouteToIdentity(t *testing.T) {
 	}
 	assertMessageRouteMatchesIdentity(t, identity, *message.Message)
 
-	media, err := NewMediaIntent(identity, bus.OutboundMediaMessage{
+	media, err := NewMediaIntent("/agents/main", identity, bus.OutboundMediaMessage{
 		Channel: "wrong", ChatID: "wrong", SessionKey: "wrong",
 		Context: bus.InboundContext{Channel: "wrong", ChatID: "wrong"},
 		Scope:   &bus.OutboundScope{Channel: "wrong"},
@@ -294,7 +309,7 @@ func TestCreateRejectsPayloadRouteMismatch(t *testing.T) {
 
 	store := openTestStore(t)
 	identity := testIdentity()
-	intent, err := NewMediaIntent(identity, bus.OutboundMediaMessage{
+	intent, err := NewMediaIntent("/agents/main", identity, bus.OutboundMediaMessage{
 		Parts: []bus.MediaPart{{Type: "image", Ref: "media://image"}},
 	}, time.Now())
 	if err != nil {
@@ -359,7 +374,7 @@ func newTestIntent(t *testing.T, content string, ordinal int) Intent {
 	t.Helper()
 	identity := testIdentity()
 	identity.Ordinal = ordinal
-	intent, err := NewMessageIntent(identity, bus.OutboundMessage{
+	intent, err := NewMessageIntent("/agents/main", identity, bus.OutboundMessage{
 		Context: bus.InboundContext{
 			Channel:  "telegram",
 			ChatID:   "chat-1",
