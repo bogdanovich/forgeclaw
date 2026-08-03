@@ -417,6 +417,13 @@ Companion transfer uses the P2 artifact protocol. Gateway-local work may use
 the same logical artifact contract before remote transfer is enabled, but it
 must not invent an incompatible spool or reference format.
 
+Routed screenshot delivery requires a durable outbound transaction. P2 owns
+the retained bytes and exact delivery claim; the outbox intent is the single
+recoverable owner of publication. The runtime admits that intent before it
+claims the artifact, and an exact replay must be able to publish a pending
+intent after interruption without creating a second claim. A non-durable
+direct route must reject screenshot capture before bytes are retained.
+
 Browser uploads do not accept arbitrary host paths. Downloads are not exposed
 as arbitrary filesystem destinations. Both directions remain bound to actor,
 agent, session, target, tab, size, media, digest, retention, and policy.

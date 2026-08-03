@@ -3175,23 +3175,15 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 		})
 
 		t.Run("explicit media/"+scopeCase.name, func(t *testing.T) {
-			commitCalls := 0
 			result := (&tools.ToolResult{}).
 				WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
 					Type: "image", Ref: "media://test-image",
 				}}}).
-				WithOutboundCommit(func(context.Context) error {
-					commitCalls++
-					return nil
-				}).
 				WithImmediateDelivery()
 			if _, outcome, err := al.deliverToolResultToUserWithScopes(
 				t.Context(), ts, result, "image_generation", scopeCase.scopes,
 			); err != nil || outcome != toolResultDeliveryQueued {
 				t.Fatalf("delivery = (%v, %v)", outcome, err)
-			}
-			if commitCalls != 1 {
-				t.Fatalf("outbound commit calls = %d, want 1", commitCalls)
 			}
 			select {
 			case outbound := <-msgBus.OutboundMediaChan():
@@ -3208,6 +3200,39 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 				t.Fatal("immediate media was not queued")
 			}
 		})
+	}
+}
+
+func TestRecoverableToolOutboundRejectsNonDurableRoute(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	defer al.Close()
+	agent := al.registry.GetDefaultAgent()
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, workspace: agent.Workspace,
+		channel: "cli", chatID: "chat-1", sessionKey: "session-1",
+	}
+	commitCalls := 0
+	result := (&tools.ToolResult{}).
+		WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
+			Type: "image", Ref: "media://recoverable",
+		}}}).
+		WithOutboundCommit(func(context.Context) error {
+			commitCalls++
+			return nil
+		}).
+		WithImmediateDelivery()
+	_, outcome, err := al.deliverToolResultToUser(t.Context(), ts, result, "browser_observe")
+	if err == nil || !strings.Contains(err.Error(), "durable outbound transaction is required") ||
+		outcome != toolResultDeliveryNone || commitCalls != 0 {
+		t.Fatalf("delivery = (%v, %v), commit calls = %d", outcome, err, commitCalls)
+	}
+	select {
+	case outbound := <-msgBus.OutboundMediaChan():
+		t.Fatalf("non-durable recoverable media was published: %+v", outbound)
+	default:
 	}
 }
 

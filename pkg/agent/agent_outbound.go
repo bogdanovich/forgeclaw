@@ -601,6 +601,11 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	if out == nil {
 		return nil, toolResultDeliveryNone, nil
 	}
+	if result.CommitOutbound != nil && !hasOutboundTransaction(ctx) {
+		return nil, toolResultDeliveryNone, errors.New(
+			"durable outbound transaction is required for recoverable tool delivery",
+		)
+	}
 	channel := firstNonEmptyString(out.Channel, ts.channel)
 	chatID := firstNonEmptyString(out.ChatID, ts.chatID)
 	replyToMessageID := firstNonEmptyString(out.ReplyToMessageID, ts.opts.Dispatch.ReplyToMessageID())
@@ -631,9 +636,6 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		outboundMedia.TraceSettlement = traceSettlement
 		if !hasOutboundTransaction(ctx) && al.channelManager != nil && channel != "" &&
 			!constants.IsInternalChannel(channel) {
-			if err := commitToolResultOutbound(ctx, result); err != nil {
-				return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool media: %w", err)
-			}
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
 				logger.WarnCF("agent", "Failed to deliver explicit tool media",
 					map[string]any{
@@ -680,9 +682,6 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	outboundMessage.TraceSettlement = traceSettlement
 	if !hasOutboundTransaction(ctx) && al.channelManager != nil && channel != "" &&
 		!constants.IsInternalChannel(channel) {
-		if err := commitToolResultOutbound(ctx, result); err != nil {
-			return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool message: %w", err)
-		}
 		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}

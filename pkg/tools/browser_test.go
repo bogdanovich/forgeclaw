@@ -185,7 +185,8 @@ func browserToolTestContext() context.Context {
 	ctx = WithToolSessionContext(ctx, "browser", "history-session", nil)
 	ctx = WithToolRouteSessionKey(ctx, "telegram:primary:chat:42")
 	ctx = WithToolCallID(ctx, "provider-call/1")
-	return WithToolExecutionIdentity(ctx, "/workspace/private", "execution/1")
+	ctx = WithToolExecutionIdentity(ctx, "/workspace/private", "execution/1")
+	return WithToolRecoverableOutbound(ctx, true)
 }
 
 func decodeBrowserToolResult(t *testing.T, result *ToolResult, target any) {
@@ -241,6 +242,20 @@ func TestBrowserScreenshotIsNotAdvertisedOrCapturedWhenDeliveryIsUnsupported(t *
 		!strings.Contains(result.ContentForLLM(), `"code":"unsupported_platform"`) ||
 		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
 		t.Fatalf("unsupported screenshot result = %#v; source = %#v", result, source)
+	}
+}
+
+func TestBrowserScreenshotRequiresRecoverableOutboundOwnerBeforeCapture(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true}
+	ctx := WithToolRecoverableOutbound(browserToolTestContext(), false)
+	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		ctx,
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	if result == nil || !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), `"code":"delivery_unavailable"`) ||
+		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
+		t.Fatalf("unrecoverable screenshot result = %#v; source = %#v", result, source)
 	}
 }
 
@@ -416,11 +431,14 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
 	)
 	var replay browserObservationView
-	if duplicate.IsError || duplicate.Outbound != nil || duplicate.CommitOutbound != nil ||
+	if duplicate.IsError || duplicate.Outbound == nil || duplicate.CommitOutbound == nil ||
 		source.observeCalls != 1 || json.Unmarshal([]byte(duplicate.ForLLM), &replay) != nil ||
 		!replay.Replayed || replay.Artifact == nil || replay.Artifact.Ref != observation.Artifact.Ref ||
 		replay.Artifact.SnapshotID != observation.Artifact.SnapshotID {
 		t.Fatalf("duplicate screenshot result = %#v", duplicate)
+	}
+	if err := duplicate.CommitOutbound(browserToolTestContext()); err != nil {
+		t.Fatalf("recovery commit outbound error = %v", err)
 	}
 }
 

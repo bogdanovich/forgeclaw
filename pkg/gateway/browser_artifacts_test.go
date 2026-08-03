@@ -87,8 +87,8 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 		replay.SnapshotID != artifact.SnapshotID || replay.SnapshotGeneration != artifact.SnapshotGeneration {
 		t.Fatalf("claimed LookupScreenshot() = %+v, %t, %v", replay, found, err)
 	}
-	if err = source.ClaimScreenshotDelivery(ctx, delivery); !errors.Is(err, browser.ErrConflict) {
-		t.Fatalf("duplicate ClaimScreenshotDelivery() error = %v", err)
+	if err = source.ClaimScreenshotDelivery(ctx, delivery); err != nil {
+		t.Fatalf("idempotent ClaimScreenshotDelivery() error = %v", err)
 	}
 	capture.Data = append(capture.Data, 0)
 	if _, err = source.retainScreenshot(ctx, request, capture); err == nil {

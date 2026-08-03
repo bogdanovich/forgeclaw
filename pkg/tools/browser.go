@@ -412,6 +412,13 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 				"omit_screenshot",
 			)
 		}
+		if !ToolRecoverableOutbound(ctx) {
+			return browserErrorResult(
+				"delivery_unavailable",
+				"Browser screenshots require a durable outbound delivery transaction.",
+				"retry_from_a_routed_turn",
+			)
+		}
 		requestID, err = browserRequestID(ctx)
 		if err != nil {
 			return browserToolError(err)
@@ -424,7 +431,7 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 		}
 		if found {
 			limits := tool.runtime.config.Limits.Effective()
-			return tool.screenshotResult(browserObservationView{
+			return tool.screenshotResult(ctx, browserObservationView{
 				BrowserSessionID: artifact.SessionID, TabID: artifact.TabID,
 				SnapshotID: artifact.SnapshotID, SnapshotGeneration: artifact.SnapshotGeneration,
 				Truncated: false, Replayed: true, Artifact: &artifact,
@@ -460,17 +467,20 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 		return browserToolError(err)
 	}
 	view.Artifact = &artifact
-	return tool.screenshotResult(view, owner, requestID, artifact)
+	return tool.screenshotResult(ctx, view, owner, requestID, artifact)
 }
 
 func (tool *BrowserObserveTool) screenshotResult(
+	ctx context.Context,
 	view browserObservationView,
 	owner browser.Owner,
 	requestID string,
 	artifact browser.ScreenshotArtifact,
 ) *ToolResult {
 	result := tool.runtime.result(view)
-	if result.IsError || artifact.DeliveryState != browser.ScreenshotDeliveryPending ||
+	if result.IsError || !ToolRecoverableOutbound(ctx) ||
+		(artifact.DeliveryState != browser.ScreenshotDeliveryPending &&
+			artifact.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed) ||
 		artifact.MediaRef == "" {
 		return result
 	}

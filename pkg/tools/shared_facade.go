@@ -113,6 +113,10 @@ func WithToolExecutionIdentity(ctx context.Context, workspace, executionID strin
 	return toolshared.WithToolExecutionIdentity(ctx, workspace, executionID)
 }
 
+func WithToolRecoverableOutbound(ctx context.Context, recoverable bool) context.Context {
+	return toolshared.WithToolRecoverableOutbound(ctx, recoverable)
+}
+
 func WithToolApprovalContinuation(ctx context.Context, resumed bool) context.Context {
 	return toolshared.WithToolApprovalContinuation(ctx, resumed)
 }
@@ -127,6 +131,10 @@ func ToolChannel(ctx context.Context) string {
 
 func ToolChatID(ctx context.Context) string {
 	return toolshared.ToolChatID(ctx)
+}
+
+func ToolRecoverableOutbound(ctx context.Context) bool {
+	return toolshared.ToolRecoverableOutbound(ctx)
 }
 
 func ToolTopicID(ctx context.Context) string {

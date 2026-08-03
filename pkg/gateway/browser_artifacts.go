@@ -105,9 +105,8 @@ func (source *gatewayBrowserToolSource) ClaimScreenshotDelivery(
 	if claimErr != nil && !(claimed && record.DeliveryAt != 0 && fileutil.IsCommittedWriteError(claimErr)) {
 		return claimErr
 	}
-	if !claimed {
-		return browser.ErrConflict
-	}
+	// An exact duplicate claim is idempotent so a durable outbox intent can
+	// resume publication after process interruption without reopening delivery.
 	return nil
 }
 

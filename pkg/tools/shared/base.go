@@ -68,21 +68,22 @@ type PromptMetadataProvider interface {
 type toolCtxKey struct{ name string }
 
 var (
-	ctxKeyChannel          = &toolCtxKey{"channel"}
-	ctxKeyChatID           = &toolCtxKey{"chatID"}
-	ctxKeyTopicID          = &toolCtxKey{"topicID"}
-	ctxKeyMessageID        = &toolCtxKey{"messageID"}
-	ctxKeyReplyToMessageID = &toolCtxKey{"replyToMessageID"}
-	ctxKeyInboundContext   = &toolCtxKey{"inboundContext"}
-	ctxKeyAgentID          = &toolCtxKey{"agentID"}
-	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
-	ctxKeyRouteSessionKey  = &toolCtxKey{"routeSessionKey"}
-	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
-	ctxKeyToolCallID       = &toolCtxKey{"toolCallID"}
-	ctxKeyExecutionID      = &toolCtxKey{"executionID"}
-	ctxKeyWorkspace        = &toolCtxKey{"workspace"}
-	ctxKeyApprovalResume   = &toolCtxKey{"approvalResume"}
-	ctxKeyApprovalBypass   = &toolCtxKey{"approvalBypass"}
+	ctxKeyChannel             = &toolCtxKey{"channel"}
+	ctxKeyChatID              = &toolCtxKey{"chatID"}
+	ctxKeyTopicID             = &toolCtxKey{"topicID"}
+	ctxKeyMessageID           = &toolCtxKey{"messageID"}
+	ctxKeyReplyToMessageID    = &toolCtxKey{"replyToMessageID"}
+	ctxKeyInboundContext      = &toolCtxKey{"inboundContext"}
+	ctxKeyAgentID             = &toolCtxKey{"agentID"}
+	ctxKeySessionKey          = &toolCtxKey{"sessionKey"}
+	ctxKeyRouteSessionKey     = &toolCtxKey{"routeSessionKey"}
+	ctxKeySessionScope        = &toolCtxKey{"sessionScope"}
+	ctxKeyToolCallID          = &toolCtxKey{"toolCallID"}
+	ctxKeyExecutionID         = &toolCtxKey{"executionID"}
+	ctxKeyWorkspace           = &toolCtxKey{"workspace"}
+	ctxKeyApprovalResume      = &toolCtxKey{"approvalResume"}
+	ctxKeyApprovalBypass      = &toolCtxKey{"approvalBypass"}
+	ctxKeyRecoverableOutbound = &toolCtxKey{"recoverableOutbound"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -158,6 +159,12 @@ func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
 func WithToolExecutionIdentity(ctx context.Context, workspace, executionID string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyWorkspace, workspace)
 	return context.WithValue(ctx, ctxKeyExecutionID, executionID)
+}
+
+// WithToolRecoverableOutbound marks a tool execution whose outbound results
+// are owned by a durable, replayable delivery transaction.
+func WithToolRecoverableOutbound(ctx context.Context, recoverable bool) context.Context {
+	return context.WithValue(ctx, ctxKeyRecoverableOutbound, recoverable)
 }
 
 // WithToolApprovalContinuation marks execution resumed from a one-time human
@@ -302,6 +309,13 @@ func ToolExecutionID(ctx context.Context) string {
 		return ""
 	}
 	return v
+}
+
+// ToolRecoverableOutbound reports whether durable delivery admission can
+// recover an outbound tool result after process interruption.
+func ToolRecoverableOutbound(ctx context.Context) bool {
+	recoverable, _ := ctx.Value(ctxKeyRecoverableOutbound).(bool)
+	return recoverable
 }
 
 // ToolWorkspace extracts the workspace namespace from ctx.
