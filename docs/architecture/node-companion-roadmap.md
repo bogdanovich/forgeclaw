@@ -7,11 +7,11 @@ Active post-MVP roadmap after the node companion MVP defined in
 deployed. This roadmap does not expand that MVP or authorize implementation of
 every item below.
 
-P0, P1, and P2 are complete. P2 deployment evidence is recorded in
+P0, P1, P2, and P3 are complete. P2 deployment evidence is recorded in
 [`node-companion-p2-deployment-evidence.md`](../operations/node-companion-p2-deployment-evidence.md).
-P3 is admitted under
-[`node-companion-p3-admission.md`](node-companion-p3-admission.md). P4 and later
-milestones remain unadmitted.
+P3 completion evidence is recorded in
+[`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md).
+P4 and later milestones remain unadmitted.
 
 The local interactive client slice of the Future P1 follow-up is complete and
 deployed, with evidence in
@@ -140,9 +140,11 @@ complete under
 [`node-companion-p2-admission.md`](node-companion-p2-admission.md), with its
 merged and deployed proof recorded in
 [`node-companion-p2-deployment-evidence.md`](../operations/node-companion-p2-deployment-evidence.md).
-P3 is admitted under
-[`node-companion-p3-admission.md`](node-companion-p3-admission.md). P4 and later
-work remain unadmitted.
+P3 is complete under
+[`node-companion-p3-admission.md`](node-companion-p3-admission.md), with its
+merged and deployed proof recorded in
+[`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md).
+P4 and later work remain unadmitted.
 
 ### Current limitation
 
@@ -647,11 +649,12 @@ P2 is complete only when:
 
 ## P3: Typed Service Administration
 
-P3 implementation is admitted with exact scope, platform decision, authority
-model, delivery order, completion gates, and mandatory stop conditions in
+P3 is complete under the exact scope, platform decision, authority model,
+delivery order, completion gates, and mandatory stop conditions in
 [`node-companion-p3-admission.md`](node-companion-p3-admission.md). Linux
-systemd is the admitted vertical slice. macOS launchd and every later roadmap
-milestone remain unadmitted.
+systemd is the deployed vertical slice. Its proof is recorded in
+[`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md).
+macOS launchd and every later roadmap milestone remain unadmitted.
 
 Add typed commands for:
 
@@ -668,9 +671,9 @@ The privileged helper may reuse its authenticated request envelope and peer
 validation from P2, but service handlers remain separate from file handlers.
 The helper never accepts a shell command or arbitrary system-manager flags.
 
-Completion requires Linux systemd coverage, explicit macOS launchd scope, real
-post-action verification, bounded logs, cancellation/unknown semantics, and
-one deployed operator use case.
+The deployed operator slice proves bounded reads, exact approved restart,
+post-action verification, recovery without replay, helper isolation,
+fail-closed diagnostics, and reversible rollback. No P4 work is implied.
 
 ## P4: Fleet Operations And Companion Updates
 

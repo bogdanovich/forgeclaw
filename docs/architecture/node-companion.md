@@ -825,6 +825,11 @@ mutation did not execute.
 | Agent target policy and model-facing discovery | #326, #327 | `pkg/config`, `pkg/tools/nodes.go` | target visibility, alias resolution, default target, agent isolation, and reload tests | Visible only when the workspace enables nodes and grants targets |
 | Model-facing invocation, status, approval continuation, and authority binding | #329, #331, #340, #342, #346, #348, #355 | `pkg/tools/node_invocation.go`, `pkg/gateway/node_invocations.go`, `pkg/nodes/gateway_invocations.go` | workspace, agent, session, actor, tool-call, approval, dispatch-boundary, recovery, and output-schema tests | Registered as `nodes_invoke` and `nodes_status` when nodes are enabled |
 | Redacted passive observations and complete real-process vertical slice | #372 | `pkg/events`, `pkg/tools/node_invocation.go`, `pkg/gateway/node_invocation_vertical_e2e_test.go` | model tool -> approval -> WSS -> companion -> `system.exec.v1` -> model result E2E | Event bus observations are available wherever runtime events are configured |
+| Typed service authority and bounded discovery | #483 | `pkg/nodes`, `pkg/config`, `pkg/tools`, `pkg/nodes/companion` | service schema, policy, target-profile, stale-discovery, and unsupported-platform tests | Available only for an explicitly bound Linux service profile |
+| Bounded systemd status and logs | #492 | `pkg/nodes/companion` | exact argv, normalization, output ceilings, cancellation, and real-process tests | Deployed for the named P3 canary profile |
+| Root-owned service helper and verified actions | #498 | `cmd/mintclaw-node-service-helper`, `pkg/nodes/companion` | peer/cgroup/profile binding, cancellation, response-loss, post-action, and redaction tests | Root helper exposes one exact reversible canary service |
+| Generic model-to-service vertical slice | #504 | `pkg/nodes`, `pkg/tools`, `pkg/gateway`, `pkg/nodes/companion` | approval, WSS, recovery, unknown/no-replay, events, race, and Linux real-process E2E | Live status, logs, and approved restart completed through `p3-canary` |
+| Fail-closed node invocation trace content | #509 | `pkg/agent` | diagnostic message, tool-call, and runtime-log redaction regression tests | Deployed; post-fix trace scan found no service output or raw unit names |
 
 The matrix records merged implementation evidence. It does not imply that a
 particular installation has enabled node access. Deployment deliberately
@@ -900,9 +905,13 @@ administrator helper are implemented under the
 [Node Companion P2 File Transfer Admission](node-companion-p2-admission.md).
 Its operational proof is specified in the
 [P2 deployment runbook](../operations/node-companion-p2-deployment.md).
-Later milestones cover directory transfer, service administration, fleet
-operations, additional executors, SSH, interactive application capabilities,
-platforms, and compatibility adapters.
+Typed Linux systemd service administration is implemented under
+[Node Companion P3 Typed Service Administration Admission](node-companion-p3-admission.md),
+with operational proof in the
+[P3 deployment evidence](../operations/node-companion-p3-deployment-evidence.md).
+Later milestones cover directory transfer, fleet operations, additional
+executors, SSH, interactive application capabilities, platforms, and
+compatibility adapters.
 
 The roadmap is not part of the MVP definition above and does not authorize
 implementation without a fresh milestone decision.
@@ -946,7 +955,8 @@ or uncertain transfers and deliveries have no automatic replay path.
 The implemented MVP does not include:
 
 - model-facing cancellation;
-- remote service status, logs, restart, or privileged helper commands;
+- service managers other than Linux systemd, arbitrary unit names, unbounded
+  logs, manager passthrough, or service actions outside an operator profile;
 - an owner shell, PTY, background remote jobs, or streamed execution;
 - directory, archive, resumable, symlink, special-file, macOS-privileged, or
   Windows-privileged transfer;

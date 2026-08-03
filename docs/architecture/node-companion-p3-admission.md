@@ -2,7 +2,8 @@
 
 ## Status And Decision
 
-Status: admitted after Node Companion P2 completion
+Status: complete; merged and deployed evidence is recorded in
+[`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md)
 
 P3 adds one bounded Linux systemd vertical slice through the existing node
 transport, target policy, discovery, durable invocation, approval, recovery,
@@ -472,8 +473,7 @@ control-plane service for the mutation drill.
 
 ## Dependency-Ordered Delivery
 
-After this docs-only admission PR merges, implementation proceeds in focused
-non-stacked PRs from latest `origin/main`:
+Implementation proceeded in focused non-stacked PRs from latest `origin/main`:
 
 1. **Typed service domain and discovery.** Add bounded service policy and
    descriptor projection, schemas, default-deny config, exact target-profile
@@ -497,6 +497,12 @@ non-stacked PRs from latest `origin/main`:
    requirement matrix, deny-by-default rollout, reversible canary unit,
    backups, rollback rehearsal, redaction scan, merged-main validation, and
    the final evidence record.
+
+The production redaction canary found one `nodes_invoke` result preview that
+retained service-log content. The required fail-closed correction merged as a
+small security PR before this closeout record. It added no store, protocol,
+helper, execution path, or other architecture. The checkpoint and final proof
+are recorded in the deployment evidence above.
 
 Do not add a prerequisite PR outside this sequence without an explicit
 architecture checkpoint and operator approval. Prefer deleting or narrowing
