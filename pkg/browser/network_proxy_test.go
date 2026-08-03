@@ -215,6 +215,10 @@ func TestBrowserNetworkPolicyAnyHTTPAdmitsEveryValidAddressScope(t *testing.T) {
 			t.Errorf("scoped destination(%q) = %v, %v", authority, scoped, scopedErr)
 		}
 	}
+	encoded, encodedErr := policy.destination(context.Background(), "http", "[fe80::1%25Ether%20Net]:8080")
+	if encodedErr != nil || len(encoded) != 1 || encoded[0] != "[fe80::1%Ether Net]:8080" {
+		t.Errorf("percent-encoded scoped destination = %v, %v", encoded, encodedErr)
+	}
 	destinations, err := policy.destination(context.Background(), "https", "mixed.internal")
 	want := "8.8.8.8:443,10.0.0.8:443,127.0.0.1:443,169.254.169.254:443,[fe80::1]:443"
 	if err != nil || strings.Join(destinations, ",") != want || lookupCalls != 1 {

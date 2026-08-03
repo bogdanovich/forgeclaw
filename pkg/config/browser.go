@@ -390,15 +390,15 @@ func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 		port = ""
 	}
 	normalizedHost := lowerHost
-	if strings.Contains(lowerHost, ":") {
-		normalizedHost = strings.ReplaceAll(normalizedHost, "%", "%25")
-	}
 	if port != "" {
 		normalizedHost = net.JoinHostPort(normalizedHost, port)
 	} else if strings.Contains(lowerHost, ":") {
 		normalizedHost = "[" + normalizedHost + "]"
 	}
-	return scheme + "://" + normalizedHost, nil
+	// URL.String applies RFC 6874 escaping to the complete decoded IPv6 zone.
+	// Escaping only '%' would leave other valid percent-decoded characters,
+	// such as spaces, as invalid URL text.
+	return (&url.URL{Scheme: scheme, Host: normalizedHost}).String(), nil
 }
 
 // browserIPv4Candidate mirrors the WHATWG "ends in a number" discriminator.
