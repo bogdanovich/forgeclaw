@@ -1610,15 +1610,15 @@ func setOutboundIdentityPayload(payload map[string]any, msg bus.OutboundMessage)
 	if strings.TrimSpace(msg.SessionKey) != "" {
 		payload[PayloadKeySessionKey] = strings.TrimSpace(msg.SessionKey)
 	}
-	requestID := strings.TrimSpace(msg.ReplyToMessageID)
+	requestID := strings.TrimSpace(msg.Context.Raw[bus.OutboundMetadataKeyRequestID])
 	if requestID == "" {
-		requestID = strings.TrimSpace(msg.Context.Raw[bus.OutboundMetadataKeyRequestID])
+		requestID = strings.TrimSpace(msg.Context.MessageID)
+	}
+	if requestID == "" {
+		requestID = strings.TrimSpace(msg.ReplyToMessageID)
 	}
 	if requestID == "" {
 		requestID = strings.TrimSpace(msg.Context.ReplyToMessageID)
-	}
-	if requestID == "" {
-		requestID = strings.TrimSpace(msg.Context.MessageID)
 	}
 	if requestID != "" {
 		payload["request_id"] = requestID

@@ -29,6 +29,74 @@ func userMessageContains(msg providers.Message, text string) bool {
 	return msg.Role == "user" && strings.Contains(msg.Content, text)
 }
 
+func TestRunTurnAndDrainSteeringPreservesInitialRequestCorrelation(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	initial := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:          "mintclaw",
+			ChatID:           "mintclaw:live-session",
+			ChatType:         "direct",
+			SenderID:         "mintclaw-user",
+			MessageID:        "live-request-1",
+			ReplyToMessageID: "origin-message-1",
+			Raw:              map[string]string{"session_id": "live-session"},
+		},
+		SessionKey: "session-1",
+	}
+	target := &continuationTarget{
+		SessionKey: "session-1",
+		Channel:    "mintclaw",
+		ChatID:     "mintclaw:live-session",
+		AgentID:    defaultAgent.ID,
+		Workspace:  defaultAgent.Workspace,
+	}
+
+	admissionCh := make(chan finalResponseAdmission, 1)
+	go func() {
+		admissionCh <- al.runTurnAndDrainSteering(
+			context.Background(),
+			initial,
+			func() (string, error) { return "final reply", nil },
+			target,
+		)
+	}()
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Context.MessageID != "live-request-1" {
+			t.Fatalf("message ID = %q, want live-request-1", outbound.Context.MessageID)
+		}
+		if outbound.Context.ReplyToMessageID != "origin-message-1" {
+			t.Fatalf("reply-to message ID = %q, want origin-message-1", outbound.Context.ReplyToMessageID)
+		}
+		if outbound.Context.SenderID != "mintclaw-user" || outbound.Context.ChatType != "direct" {
+			t.Fatalf("inbound identity = (%q, %q), want (mintclaw-user, direct)",
+				outbound.Context.SenderID, outbound.Context.ChatType)
+		}
+		if outbound.Context.Raw["session_id"] != "live-session" ||
+			outbound.Context.Raw[metadataKeyMessageKind] != messageKindFinalReply {
+			t.Fatalf("outbound metadata = %#v", outbound.Context.Raw)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected final outbound")
+	}
+
+	select {
+	case admission := <-admissionCh:
+		if !admission.permitsInboundAck() {
+			t.Fatalf("admission = %+v, want accepted final response", admission)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected final response admission")
+	}
+}
+
 // --- steeringQueue unit tests ---
 
 func TestSteeringQueue_PushDequeue_OneAtATime(t *testing.T) {

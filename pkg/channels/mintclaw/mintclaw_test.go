@@ -172,6 +172,46 @@ func TestSend_FinalMessageIncludesCorrelationMetadata(t *testing.T) {
 	}
 }
 
+func TestSend_FinalMessageUsesInboundMessageIDOverReplyTarget(t *testing.T) {
+	ch := newTestMintClawChannel(t)
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Stop(context.Background())
+	clientConn, received, cleanup := newTestMintClawWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&mintclawConn{id: "conn-reply-target", conn: clientConn, sessionID: "sess-reply-target"})
+
+	ctx := bus.InboundContext{
+		Channel:          "mintclaw",
+		ChatID:           "mintclaw:sess-reply-target",
+		MessageID:        "request-final",
+		ReplyToMessageID: "origin-message",
+	}
+	bus.OutboundMetadata{
+		MessageKind:  bus.OutboundMessageKindFinalReply,
+		OutboundKind: bus.OutboundKindFinal,
+	}.ApplyToContext(&ctx)
+	msg, err := bus.NormalizeOutboundMessage(bus.OutboundMessage{
+		Content: "done",
+		Context: ctx,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.ReplyToMessageID != "origin-message" {
+		t.Fatalf("normalized reply target = %q, want origin-message", msg.ReplyToMessageID)
+	}
+	if _, err := ch.Send(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+
+	got := <-received
+	if got.Payload["request_id"] != "request-final" {
+		t.Fatalf("wire request ID = %q, want request-final", got.Payload["request_id"])
+	}
+}
+
 func TestScopedStreamSegmentIsNotMarkedAsTurnFinal(t *testing.T) {
 	ch := newTestMintClawChannel(t)
 	ch.config.Streaming.Enabled = true
