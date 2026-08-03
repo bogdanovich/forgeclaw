@@ -39,6 +39,7 @@ type fakePlaywrightClient struct {
 	calls       []playwrightCall
 	callErrors  map[string]error
 	callResults map[string]*sdkmcp.CallToolResult
+	onCall      func(string)
 	closeErr    error
 	closeCalls  int
 }
@@ -68,6 +69,9 @@ func (client *fakePlaywrightClient) CallTool(
 		cloned[key] = value
 	}
 	client.calls = append(client.calls, playwrightCall{tool: tool, arguments: cloned})
+	if client.onCall != nil {
+		client.onCall(tool)
+	}
 	if err := client.callErrors[tool]; err != nil {
 		return nil, err
 	}
@@ -75,6 +79,43 @@ func (client *fakePlaywrightClient) CallTool(
 		return result, nil
 	}
 	return playwrightTextResult("ok"), nil
+}
+
+func TestPlaywrightWorkerDoesNotAttributeAmbientProxyDenialToSnapshot(t *testing.T) {
+	proxy := &browserNetworkProxy{}
+	client := &fakePlaywrightClient{
+		callResults: map[string]*sdkmcp.CallToolResult{
+			"browser_snapshot": playwrightTextResult(
+				"### Page\n- Page URL: about:blank\n- Page Title: \n### Snapshot\n```yaml\n\n```",
+			),
+		},
+		onCall: func(string) { proxy.denials.Add(1) },
+	}
+	worker := &playwrightWorker{
+		client: client, networkProxy: proxy, limits: config.BrowserLimitsConfig{}.Effective(),
+	}
+	observation, err := worker.Observe(context.Background())
+	if err != nil || !validInitialBlankObservation(observation) || proxy.Denials() != 1 {
+		t.Fatalf("Observe() = %+v, %v; denials = %d", observation, err, proxy.Denials())
+	}
+}
+
+func TestPlaywrightWorkerAttributesProxyDenialToAction(t *testing.T) {
+	proxy := &browserNetworkProxy{}
+	client := &fakePlaywrightClient{
+		callResults: map[string]*sdkmcp.CallToolResult{
+			"browser_navigate": playwrightTextResult("ok"),
+		},
+		onCall: func(string) { proxy.denials.Add(1) },
+	}
+	worker := &playwrightWorker{
+		client: client, networkProxy: proxy, limits: config.BrowserLimitsConfig{}.Effective(),
+	}
+	if err := worker.Execute(context.Background(), DriverAction{
+		Kind: DriverNavigate, URL: "https://example.com",
+	}); !errors.Is(err, ErrDenied) {
+		t.Fatalf("Execute() error = %v, want ErrDenied", err)
+	}
 }
 
 func (client *fakePlaywrightClient) Close() error {
@@ -1286,6 +1327,75 @@ func TestPlaywrightWorkerRealBrowserAnyHTTPLoopbackFixture(t *testing.T) {
 	}
 	if err = worker.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestPlaywrightWorkerRealBrowserConsecutivePersistentSessions(t *testing.T) {
+	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
+		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")
+	}
+	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(writer, "<!doctype html><title>Persistent Fixture</title><main>reached</main>")
+	}))
+	defer fixture.Close()
+
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+	server := root.Tools.MCP.Servers["playwright"]
+	driverTemp := t.TempDir()
+	server.ExclusiveLockFile = filepath.Join(driverTemp, "playwright.lock")
+	server.Args = []string{
+		"-y", "@playwright/mcp@0.0.78", "--headless", "--browser=chrome",
+		"--user-data-dir=" + filepath.Join(driverTemp, "profile"),
+		"--output-mode=stdout", "--output-dir=" + filepath.Join(driverTemp, "output"),
+	}
+	root.Tools.MCP.Servers["playwright"] = server
+	factory, err := NewPlaywrightWorkerFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	first, err := factory.Open(ctx, WorkerOpenRequest{
+		SessionID: "persistent_first", Target: "gateway", Profile: "managed", DryRun: true,
+		Limits: config.BrowserLimitsConfig{},
+	})
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	firstWorker := first.Owner.(*playwrightWorker)
+	if _, err = firstWorker.Observe(ctx); err != nil {
+		t.Fatalf("first initial Observe() error = %v", err)
+	}
+	if err = firstWorker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixture.URL}); err != nil {
+		t.Fatalf("first navigate error = %v", err)
+	}
+	if _, err = firstWorker.Observe(ctx); err != nil {
+		t.Fatalf("first fixture Observe() error = %v", err)
+	}
+	if err = firstWorker.Close(ctx); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+
+	second, err := factory.Open(ctx, WorkerOpenRequest{
+		SessionID: "persistent_second", Target: "gateway", Profile: "managed", DryRun: true,
+		Limits: config.BrowserLimitsConfig{},
+	})
+	if err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	secondWorker := second.Owner.(*playwrightWorker)
+	t.Cleanup(func() { _ = secondWorker.Close(context.Background()) })
+	observation, err := secondWorker.Observe(ctx)
+	if err != nil || observation.URL != initialBlankOrigin || observation.Origin != initialBlankOrigin {
+		t.Fatalf("second initial Observe() = %+v, %v", observation, err)
 	}
 }
 

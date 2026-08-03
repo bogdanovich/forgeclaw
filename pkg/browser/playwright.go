@@ -539,7 +539,11 @@ func (worker *playwrightWorker) callAndConsume(
 ) (string, error) {
 	denialsBefore := worker.networkProxy.Denials()
 	result, err := worker.client.CallTool(ctx, tool, arguments)
-	if worker.networkProxy.Denials() > denialsBefore {
+	// A snapshot can overlap browser/profile background traffic. The proxy still
+	// enforces every request, while the broker independently validates the
+	// observed page origin. Do not attribute an unrelated denied background
+	// request to the read-only snapshot itself.
+	if tool != "browser_snapshot" && worker.networkProxy.Denials() > denialsBefore {
 		return "", ErrDenied
 	}
 	if err != nil || result == nil {
