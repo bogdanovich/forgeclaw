@@ -349,19 +349,28 @@ func prepareServicePlan(
 	wantOK bool,
 ) {
 	t.Helper()
+	if len(descriptor.ServiceProfiles) != 1 {
+		t.Fatalf("service test descriptor profiles = %d", len(descriptor.ServiceProfiles))
+	}
+	profile := descriptor.ServiceProfiles[0].Alias
+	projected, ok := nodes.ProjectServiceDescriptorForProfile(descriptor, profile)
+	if !ok {
+		t.Fatal("project service test descriptor")
+	}
 	_, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
 		InvocationID:     "inv_test",
 		IdempotencyKey:   "idem_test",
 		NodeID:           nodes.ID("node_test"),
 		CatalogHash:      strings.Repeat("a", 64),
 		Command:          descriptor.Name,
+		ServiceProfile:   profile,
 		Input:            json.RawMessage(input),
 		AgentID:          "main",
 		SessionID:        "session",
 		ActorID:          "actor",
 		TimeoutSeconds:   30,
 		OutputLimitBytes: 4096,
-	}, descriptor, "local", "policy-v1", time.Unix(1, 0), time.Minute)
+	}, projected, "local", "policy-v1", time.Unix(1, 0), time.Minute)
 	if (err == nil) != wantOK {
 		t.Fatalf("PrepareExecutionPlan(%s) error = %v, want OK %v", input, err, wantOK)
 	}

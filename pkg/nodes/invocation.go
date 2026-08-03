@@ -67,6 +67,7 @@ type InvocationRequest struct {
 	NodeID           ID              `json:"node_id"`
 	CatalogHash      string          `json:"catalog_hash"`
 	Command          string          `json:"command"`
+	ServiceProfile   string          `json:"service_profile,omitempty"`
 	Input            json.RawMessage `json:"input"`
 	AgentID          string          `json:"agent_id"`
 	SessionID        string          `json:"session_id"`
@@ -92,6 +93,11 @@ func (request InvocationRequest) Validate() error {
 	if len(request.Command) == 0 || len(request.Command) > MaxCommandNameLen ||
 		!commandPattern.MatchString(request.Command) {
 		return fmt.Errorf("%w: malformed command", ErrInvalidInvocation)
+	}
+	if request.ServiceProfile != "" {
+		if err := (Alias(request.ServiceProfile)).Validate(); err != nil {
+			return fmt.Errorf("%w: malformed service profile", ErrInvalidInvocation)
+		}
 	}
 	if request.TimeoutSeconds <= 0 || request.TimeoutSeconds > MaxInvocationTimeout {
 		return fmt.Errorf("%w: timeout is outside bounds", ErrInvalidInvocation)
@@ -136,6 +142,20 @@ func PrepareExecutionPlan(
 	if descriptor.Name != request.Command {
 		return ExecutionPlan{}, fmt.Errorf(
 			"%w: descriptor does not match command",
+			ErrInvalidInvocation,
+		)
+	}
+	if len(descriptor.ServiceProfiles) == 0 {
+		if request.ServiceProfile != "" {
+			return ExecutionPlan{}, fmt.Errorf(
+				"%w: service profile supplied for non-service command",
+				ErrInvalidInvocation,
+			)
+		}
+	} else if len(descriptor.ServiceProfiles) != 1 ||
+		request.ServiceProfile != descriptor.ServiceProfiles[0].Alias {
+		return ExecutionPlan{}, fmt.Errorf(
+			"%w: descriptor does not match service profile",
 			ErrInvalidInvocation,
 		)
 	}
@@ -346,6 +366,19 @@ func (policy LocalCommandPolicy) authorize(
 	descriptor, advertised := runtimeCatalog.command(plan.Command)
 	if !advertised {
 		return fmt.Errorf("%w: command is not advertised by local runtime", ErrCommandDenied)
+	}
+	if plan.ServiceProfile != "" || len(descriptor.ServiceProfiles) > 0 {
+		projected, available := ProjectServiceDescriptorForProfile(
+			descriptor,
+			plan.ServiceProfile,
+		)
+		if !available {
+			return fmt.Errorf(
+				"%w: service profile is not advertised by local runtime",
+				ErrCommandDenied,
+			)
+		}
+		descriptor = projected
 	}
 	descriptorHash, hashErr := descriptor.Hash()
 	if hashErr != nil ||

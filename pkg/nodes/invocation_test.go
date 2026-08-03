@@ -76,6 +76,101 @@ func TestExecutionPlanBindsCanonicalDescriptor(t *testing.T) {
 	}
 }
 
+func TestExecutionPlanBindsTargetServiceProfileEndToEnd(t *testing.T) {
+	full := serviceActionDescriptorFixture()
+	full.ModelContract = &CommandModelContract{
+		Availability:      ModelUnavailable,
+		TimeoutSecondsMax: 60,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		AuthorityDigest:   strings.Repeat("a", 64),
+		ApprovalMode:      "each_command",
+		Guidance:          []string{},
+		Examples:          []json.RawMessage{},
+	}
+	fullCatalog := invocationCatalog(full)
+	catalogHash, err := fullCatalog.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, ok := ProjectServiceDescriptorForProfile(full, "server-services")
+	if !ok {
+		t.Fatal("project service profile")
+	}
+	request := InvocationRequest{
+		InvocationID:     "inv_service",
+		IdempotencyKey:   "idem_service",
+		NodeID:           ID("node_test"),
+		CatalogHash:      catalogHash,
+		Command:          full.Name,
+		ServiceProfile:   "server-services",
+		Input:            json.RawMessage(`{"service":"vpn","action":"restart"}`),
+		AgentID:          "main",
+		SessionID:        "session_test",
+		ActorID:          "user_test",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 1024,
+	}
+	plan, err := PrepareExecutionPlan(
+		request,
+		projected,
+		"local",
+		"policy-1",
+		time.Unix(100, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := LocalCommandPolicy{
+		Revision:          "policy-1",
+		AllowedCommands:   []string{full.Name},
+		MaximumRisk:       RiskPrivileged,
+		MaxTimeoutSeconds: 60,
+		MaxOutputBytes:    4096,
+	}
+	authorizeErr := policy.Authorize(
+		plan,
+		fullCatalog,
+		plan.NodeID,
+		plan.Executor,
+		time.Unix(100, 0),
+	)
+	if authorizeErr != nil {
+		t.Fatalf("Authorize() rejected target-bound service plan: %v", authorizeErr)
+	}
+
+	missing := request
+	missing.ServiceProfile = ""
+	_, missingErr := PrepareExecutionPlan(
+		missing,
+		projected,
+		"local",
+		"policy-1",
+		time.Unix(100, 0),
+		time.Minute,
+	)
+	if !errors.Is(missingErr, ErrInvalidInvocation) {
+		t.Fatalf("missing service profile error = %v", missingErr)
+	}
+
+	tampered := plan
+	tampered.ServiceProfile = "other-services"
+	tampered.PlanHash, err = tampered.computeHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.Authorize(
+		tampered,
+		fullCatalog,
+		tampered.NodeID,
+		tampered.Executor,
+		time.Unix(100, 0),
+	); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("changed service profile Authorize() error = %v", err)
+	}
+}
+
 func TestInvocationRequestRejectsNonCanonicalCatalogHash(t *testing.T) {
 	t.Parallel()
 

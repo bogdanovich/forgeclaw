@@ -246,6 +246,9 @@ type NodeInvocationEventPayload struct {
 	GatewayState nodes.GatewayInvocationState `json:"gateway_state"`
 	State        string                       `json:"state"`
 	ErrorCode    string                       `json:"error_code,omitempty"`
+	Service      string                       `json:"service,omitempty"`
+	Action       nodes.ServiceAction          `json:"action,omitempty"`
+	LogEntries   int                          `json:"log_entries,omitempty"`
 }
 
 func NewNodeInvokeTool(cfg *config.Config, source NodeInvocationSource) *NodeInvokeTool {
@@ -379,7 +382,10 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 			Action:     nodeActionRefreshDiscovery,
 		})
 	}
-	if record.Plan.Command == "shell.exec.v1" &&
+	requiresApproval := record.Plan.Command == "shell.exec.v1" ||
+		(record.Descriptor.ModelContract != nil &&
+			record.Descriptor.ModelContract.ApprovalMode == "each_command")
+	if requiresApproval &&
 		!ToolApprovalContinuation(ctx) &&
 		!ToolApprovalBypass(ctx) {
 		return nodeDenialToolResult(nodeDenialResult{
@@ -1002,18 +1008,6 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			nil,
 		)
 	}
-	// Service descriptors require the target-bound profile to remain part of
-	// companion authorization. Discovery can safely project that authority,
-	// but generic dispatch stays closed until the execution plan carries the
-	// same binding end to end.
-	if len(descriptor.ServiceProfiles) > 0 {
-		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
-			nodeDenialCommandUnavailable,
-			nodeConstraintCommandPolicy,
-			nodeActionRefreshDiscovery,
-			nil,
-		)
-	}
 	if resolved.requiresReapproval {
 		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
 			nodeDenialReapprovalRequired,
@@ -1021,6 +1015,21 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			nodeActionAskOperator,
 			nil,
 		)
+	}
+	if len(descriptor.ServiceProfiles) > 0 {
+		var projected bool
+		descriptor, projected = nodes.ProjectServiceDescriptorForProfile(
+			descriptor,
+			resolved.binding.ServiceProfile,
+		)
+		if !projected {
+			return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+				nodeDenialCommandUnavailable,
+				nodeConstraintCommandPolicy,
+				nodeActionRefreshDiscovery,
+				nil,
+			)
+		}
 	}
 	currentRevision, err := runtime.access.discoveryRevision(
 		agentID,
@@ -1075,6 +1084,16 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			nodeActionRefreshDiscovery,
 			err,
 		)
+	}
+	if len(descriptor.ServiceProfiles) > 0 {
+		var projected bool
+		descriptor, projected = nodes.ProjectServiceDescriptorForProfile(
+			descriptor,
+			resolved.binding.ServiceProfile,
+		)
+		if !projected {
+			return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
+		}
 	}
 	profile := nodes.ExecutionProfile{
 		Executor:       resolved.snapshot.Executor,
@@ -1169,6 +1188,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		NodeID:           resolved.snapshot.ID,
 		CatalogHash:      resolved.snapshot.CatalogHash,
 		Command:          command,
+		ServiceProfile:   serviceProfileForInvocation(descriptor),
 		Input:            inputJSON,
 		AgentID:          principal.AgentID,
 		SessionID:        principal.SessionID,
@@ -1260,9 +1280,27 @@ func (runtime *nodeInvocationToolRuntime) validatePreparationAuthority(
 	if current.Registration == nil || current.Snapshot.ID == "" {
 		return errDiscoveryStale
 	}
-	descriptor, advertised := nodeCatalogDescriptor(current.Snapshot.Catalog, command)
+	_, advertised := nodeCatalogDescriptor(current.Snapshot.Catalog, command)
 	if !advertised {
 		return errDiscoveryStale
+	}
+	descriptor, err := current.Registration.ApprovedCommand(command)
+	if err != nil {
+		return errDiscoveryStale
+	}
+	if len(descriptor.ServiceProfiles) > 0 {
+		binding, exists := runtime.access.targets[target]
+		if !exists {
+			return errDiscoveryStale
+		}
+		var projected bool
+		descriptor, projected = nodes.ProjectServiceDescriptorForProfile(
+			descriptor,
+			binding.ServiceProfile,
+		)
+		if !projected {
+			return errDiscoveryStale
+		}
 	}
 	revision, err := runtime.access.discoveryRevision(
 		agentID,
@@ -1276,15 +1314,21 @@ func (runtime *nodeInvocationToolRuntime) validatePreparationAuthority(
 	if err != nil || revision != requestedRevision {
 		return errDiscoveryStale
 	}
-	if !current.Connected ||
-		(descriptor.ModelContract != nil &&
-			descriptor.ModelContract.Availability == nodes.ModelUnavailable) {
+	if !current.Connected {
 		return errDiscoveryStale
 	}
-	if _, err := current.Registration.ApprovedCommand(command); err != nil {
+	if descriptor.ModelContract != nil &&
+		descriptor.ModelContract.Availability == nodes.ModelUnavailable {
 		return errDiscoveryStale
 	}
 	return nil
+}
+
+func serviceProfileForInvocation(descriptor nodes.CommandDescriptor) string {
+	if len(descriptor.ServiceProfiles) == 1 {
+		return descriptor.ServiceProfiles[0].Alias
+	}
+	return ""
 }
 
 func nodeCatalogDescriptor(
@@ -1351,6 +1395,7 @@ func publishNodeInvocationEvent(
 		State:        state,
 		ErrorCode:    errorCode,
 	}
+	payload.Service, payload.Action, payload.LogEntries = serviceInvocationObservation(record.Plan)
 	severity := runtimeevents.SeverityInfo
 	if observation == NodeInvocationObservationUncertain ||
 		observation == NodeInvocationObservationRejected {
@@ -1367,6 +1412,15 @@ func publishNodeInvocationEvent(
 	}
 	if payload.ErrorCode != "" {
 		attrs["error_code"] = payload.ErrorCode
+	}
+	if payload.Service != "" {
+		attrs["service"] = payload.Service
+	}
+	if payload.Action != "" {
+		attrs["action"] = payload.Action
+	}
+	if payload.LogEntries > 0 {
+		attrs["log_entries"] = payload.LogEntries
 	}
 	eventBus.PublishNonBlocking(runtimeevents.Event{
 		Kind:   runtimeevents.KindNodeInvocationObserved,
@@ -1389,6 +1443,31 @@ func publishNodeInvocationEvent(
 		Payload:     payload,
 		Attrs:       attrs,
 	})
+}
+
+func serviceInvocationObservation(
+	plan nodes.ExecutionPlan,
+) (string, nodes.ServiceAction, int) {
+	if !nodes.IsServiceCommand(plan.Command) {
+		return "", "", 0
+	}
+	var input struct {
+		Service string              `json:"service"`
+		Action  nodes.ServiceAction `json:"action"`
+		Entries float64             `json:"entries"`
+	}
+	if err := json.Unmarshal(plan.Input, &input); err != nil ||
+		(nodes.Alias(input.Service)).Validate() != nil {
+		return "", "", 0
+	}
+	entries := 0
+	if input.Entries > 0 && input.Entries <= nodes.MaxServiceLogEntries {
+		entries = int(input.Entries)
+	}
+	if !input.Action.Valid() {
+		input.Action = ""
+	}
+	return input.Service, input.Action, entries
 }
 
 func validateRetainedNodeInvocation(

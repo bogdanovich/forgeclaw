@@ -75,6 +75,9 @@ func NewIdentityProof(
 	if err := profile.ValidateOptional(); err != nil {
 		return IdentityProof{}, err
 	}
+	if err := validateCompanionCatalog(catalog); err != nil {
+		return IdentityProof{}, err
+	}
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 	nodeID, err := DeriveID(publicKey)
 	if err != nil {
@@ -156,6 +159,9 @@ func (proof IdentityProof) validateClaims() error {
 	if err := proof.Catalog.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidIdentityProof, err)
 	}
+	if err := validateCompanionCatalog(proof.Catalog); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidIdentityProof, err)
+	}
 	catalogHash, err := proof.Catalog.Hash()
 	if err != nil || catalogHash != proof.CatalogHash {
 		return fmt.Errorf("%w: catalog hash does not match catalog", ErrInvalidIdentityProof)
@@ -165,6 +171,20 @@ func (proof IdentityProof) validateClaims() error {
 		PolicyRevision: proof.PolicyRevision,
 	}).ValidateOptional(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidIdentityProof, err)
+	}
+	return nil
+}
+
+func validateCompanionCatalog(catalog CapabilityCatalog) error {
+	for _, descriptor := range catalog.Commands {
+		for _, profile := range descriptor.ServiceProfiles {
+			if profile.ActionApproval != "required" {
+				return fmt.Errorf(
+					"%w: companion supplied gateway-only service approval state",
+					ErrInvalidCapability,
+				)
+			}
+		}
 	}
 	return nil
 }

@@ -296,7 +296,12 @@ func (server *serviceHelperServer) handleConnection(
 			Profile: request.Profile, Service: request.Service,
 		})
 		if statusErr != nil {
-			server.writeError(connection, request.RequestID, request.ExpiresAt, "REQUEST_FAILED")
+			server.writeError(
+				connection,
+				request.RequestID,
+				request.ExpiresAt,
+				serviceHelperFailureCode(statusErr),
+			)
 			return
 		}
 		response.Status = &status
@@ -306,7 +311,12 @@ func (server *serviceHelperServer) handleConnection(
 			Entries: request.Entries, SinceSeconds: request.SinceSeconds,
 		})
 		if logsErr != nil {
-			server.writeError(connection, request.RequestID, request.ExpiresAt, "REQUEST_FAILED")
+			server.writeError(
+				connection,
+				request.RequestID,
+				request.ExpiresAt,
+				serviceHelperFailureCode(logsErr),
+			)
 			return
 		}
 		response.Logs = &logs
@@ -319,7 +329,12 @@ func (server *serviceHelperServer) handleConnection(
 			func() bool { return server.accept(request.RequestID, active) },
 		)
 		if actionErr != nil {
-			server.writeError(connection, request.RequestID, request.ExpiresAt, "REQUEST_FAILED")
+			server.writeError(
+				connection,
+				request.RequestID,
+				request.ExpiresAt,
+				serviceHelperFailureCode(actionErr),
+			)
 			return
 		}
 		response.Action = &result
@@ -328,6 +343,13 @@ func (server *serviceHelperServer) handleConnection(
 		return
 	}
 	_ = writeServiceHelperConnectionResponse(connection, request.ExpiresAt, response)
+}
+
+func serviceHelperFailureCode(err error) string {
+	if errors.Is(err, errCommandCancellationConfirmed) {
+		return "REQUEST_CANCELED"
+	}
+	return "REQUEST_FAILED"
 }
 
 func (server *serviceHelperServer) validateRequestAuthority(request serviceHelperRequest) error {

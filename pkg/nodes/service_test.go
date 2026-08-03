@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestCommandDescriptorBindsSchemasToServiceAuthority(t *testing.T) {
@@ -41,19 +40,12 @@ func TestServiceActionSchemaDeduplicatesAuthorityAcrossProfiles(t *testing.T) {
 	if err := descriptor.Validate(); err != nil {
 		t.Fatalf("two-profile descriptor: %v", err)
 	}
-	_, err := PrepareExecutionPlan(InvocationRequest{
-		InvocationID:     "inv_duplicate_pair",
-		IdempotencyKey:   "idem_duplicate_pair",
-		NodeID:           ID("node_test"),
-		CatalogHash:      strings.Repeat("a", 64),
-		Command:          descriptor.Name,
-		Input:            json.RawMessage(`{"service":"vpn","action":"restart"}`),
-		AgentID:          "main",
-		SessionID:        "session",
-		ActorID:          "actor",
-		TimeoutSeconds:   30,
-		OutputLimitBytes: 4096,
-	}, descriptor, "local", "policy-v1", time.Unix(1, 0), time.Minute)
+	_, input, err := canonicalInvocationInputValue(
+		json.RawMessage(`{"service":"vpn","action":"restart"}`),
+	)
+	if err == nil {
+		err = validateInvocationInput(descriptor.InputSchema, input)
+	}
 	if err != nil {
 		t.Fatalf("authorized duplicate pair was unusable: %v", err)
 	}
@@ -96,6 +88,43 @@ func TestServiceActionSchemaFitsMaximumSingleProfileAuthority(t *testing.T) {
 	}
 	if err := descriptor.Validate(); err != nil {
 		t.Fatalf("maximum single-profile authority: %v", err)
+	}
+}
+
+func TestProjectServiceLogsPreservesStricterContractOutputLimit(t *testing.T) {
+	profiles := []ServiceProfileDescriptor{{
+		Alias:    "server-services",
+		Revision: "server-services-v1",
+		Manager:  "systemd",
+		Services: []ServiceDescriptor{{Alias: "vpn", Logs: true}},
+		LogLimits: ServiceLogLimits{
+			EntriesMax: 100, BytesMax: 256 * 1024, AgeSecondsMax: 3600,
+		},
+		ActionApproval: "required",
+	}}
+	descriptor := CommandDescriptor{
+		Name:         "service.logs.v1",
+		InputSchema:  ServiceCommandInputSchema("service.logs.v1", profiles),
+		OutputSchema: ServiceCommandOutputSchema("service.logs.v1"),
+		Risk:         RiskRead,
+		ModelContract: &CommandModelContract{
+			Availability: ModelUnavailable, TimeoutSecondsMax: 30,
+			OutputBytesMax: 64 * 1024, ResultKind: "json",
+			AuthorityDigest: strings.Repeat("a", 64),
+			Guidance:        []string{}, Examples: []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
+	}
+	projected, ok := ProjectServiceDescriptorForProfile(descriptor, "server-services")
+	if !ok {
+		t.Fatal("project service logs descriptor")
+	}
+	if projected.ModelContract.OutputBytesMax != 64*1024 {
+		t.Fatalf(
+			"projected output limit = %d, want %d",
+			projected.ModelContract.OutputBytesMax,
+			64*1024,
+		)
 	}
 }
 

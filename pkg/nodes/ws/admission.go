@@ -454,11 +454,25 @@ func validateInvocationApproval(
 	nodeID nodes.ID,
 	plan nodes.ExecutionPlan,
 ) error {
-	descriptorHash, err := approval.Descriptor.Hash()
+	descriptor := approval.Descriptor
+	if len(descriptor.ServiceProfiles) > 0 {
+		var projected bool
+		descriptor, projected = nodes.ProjectServiceDescriptorForProfile(
+			descriptor,
+			plan.ServiceProfile,
+		)
+		if !projected {
+			return fmt.Errorf(
+				"%w: execution plan does not match approved command",
+				nodes.ErrCommandDenied,
+			)
+		}
+	}
+	descriptorHash, err := descriptor.Hash()
 	if err != nil {
 		return err
 	}
-	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
+	if plan.NodeID != nodeID || plan.Risk != descriptor.Risk ||
 		plan.DescriptorHash != descriptorHash ||
 		plan.CatalogHash != approval.CatalogHash {
 		return fmt.Errorf(

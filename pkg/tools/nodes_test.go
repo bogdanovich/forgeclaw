@@ -364,6 +364,53 @@ func TestNodeDiscoveryProjectsOnlyConfiguredServiceProfile(t *testing.T) {
 	}
 }
 
+func TestNodeDiscoveryBindsConfiguredServiceApprovalBypass(t *testing.T) {
+	descriptor := serviceActionInvocationTestDescriptor()
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID: "private-node-id", State: nodes.StateConnected, Catalog: catalog,
+		CatalogHash: catalogHash, Executor: "local", PolicyRevision: "node-policy-v1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef: map[string]nodes.Snapshot{"builder-node": snapshot},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot: snapshot, AllowedCommands: []string{descriptor.Name},
+				ApprovedCatalogHash: catalogHash, ApprovedAt: 1,
+			},
+		},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+	}
+	cfg := nodeDiscoveryTestConfig()
+	target := cfg.Execution.Targets["build"]
+	target.ServiceProfile = "server-services"
+	cfg.Execution.Targets["build"] = target
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	args := map[string]any{
+		"action": "describe", "target": "build", "command": descriptor.Name,
+	}
+	required := decodeNodeResult(t, NewNodeDiscoveryTool(cfg, source).Execute(ctx, args))
+	requiredRevision := required["discovery_revision"]
+	requiredCommand := required["command"].(map[string]any)
+	if requiredCommand["service"].(map[string]any)["action_approval"] != "required" {
+		t.Fatalf("required service approval = %#v", requiredCommand)
+	}
+
+	cfg.Tools.Approval.BypassNodeTargets = []string{"build"}
+	bypassed := decodeNodeResult(t, NewNodeDiscoveryTool(cfg, source).Execute(ctx, args))
+	bypassedCommand := bypassed["command"].(map[string]any)
+	service := bypassedCommand["service"].(map[string]any)
+	execution := bypassedCommand["execution"].(map[string]any)
+	if service["action_approval"] != "operator_bypass_configured" ||
+		execution["approval"] != "operator_bypass_configured" {
+		t.Fatalf("bypassed service approval = %#v", bypassedCommand)
+	}
+	if bypassed["discovery_revision"] == requiredRevision {
+		t.Fatal("approval bypass change did not invalidate service discovery")
+	}
+}
+
 func TestNodeDiscoveryAdmitsMaximumServiceActionProjection(t *testing.T) {
 	actions := []nodes.ServiceAction{
 		nodes.ServiceActionDisable,
@@ -438,6 +485,7 @@ func TestNodeDiscoveryAdmitsMaximumServiceActionProjection(t *testing.T) {
 	target := cfg.Execution.Targets["build"]
 	target.ServiceProfile = profiles[0].Alias
 	cfg.Execution.Targets["build"] = target
+	cfg.Tools.Approval.BypassNodeTargets = []string{"build"}
 	result := NewNodeDiscoveryTool(cfg, source).Execute(
 		WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},

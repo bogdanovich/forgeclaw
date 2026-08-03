@@ -31,10 +31,11 @@ type NodeDiscoveryTool struct {
 }
 
 type nodeTargetAccess struct {
-	source        NodeDiscoverySource
-	targets       map[string]config.ExecutionTarget
-	defaultPolicy *config.TargetPolicy
-	agentPolicies map[string]*config.TargetPolicy
+	source                NodeDiscoverySource
+	targets               map[string]config.ExecutionTarget
+	defaultPolicy         *config.TargetPolicy
+	agentPolicies         map[string]*config.TargetPolicy
+	approvalBypassTargets map[string]struct{}
 }
 
 type nodeListEntry struct {
@@ -118,15 +119,19 @@ func NewNodeDiscoveryTool(cfg *config.Config, source NodeDiscoverySource) *NodeD
 
 func newNodeTargetAccess(cfg *config.Config, source NodeDiscoverySource) *nodeTargetAccess {
 	access := &nodeTargetAccess{
-		source:        source,
-		targets:       make(map[string]config.ExecutionTarget),
-		agentPolicies: make(map[string]*config.TargetPolicy),
+		source:                source,
+		targets:               make(map[string]config.ExecutionTarget),
+		agentPolicies:         make(map[string]*config.TargetPolicy),
+		approvalBypassTargets: make(map[string]struct{}),
 	}
 	if cfg == nil {
 		return access
 	}
 	for name, target := range cfg.Execution.Targets {
 		access.targets[name] = target
+	}
+	for _, target := range cfg.Tools.Approval.BypassNodeTargets {
+		access.approvalBypassTargets[target] = struct{}{}
 	}
 	access.defaultPolicy = cloneTargetPolicy(cfg.Agents.Defaults.TargetPolicy)
 	for i := range cfg.Agents.List {
@@ -240,6 +245,7 @@ func (tool *NodeDiscoveryTool) describe(
 		entry.Availability,
 		binding.FileProfile,
 		binding.ServiceProfile,
+		tool.access.bypassesApproval(target),
 	)
 	if command == "" {
 		return nodeJSONResult(description)
@@ -256,10 +262,14 @@ func (tool *NodeDiscoveryTool) describe(
 	if !ok {
 		return ErrorResult("command is unavailable on this target")
 	}
-	if !commandProjectionFits(descriptor) {
+	contractDescriptor := projectServiceApprovalForTarget(
+		descriptor,
+		tool.access.bypassesApproval(target),
+	)
+	if !commandProjectionFits(contractDescriptor) {
 		return ErrorResult("command discovery is incomplete because its safe projection exceeds limits")
 	}
-	contract := projectedNodeCommandContract(descriptor, entry.Availability)
+	contract := projectedNodeCommandContract(contractDescriptor, entry.Availability)
 	revision, revisionErr := tool.access.discoveryRevision(
 		ToolAgentID(ctx),
 		target,
@@ -331,6 +341,7 @@ func (access *nodeTargetAccess) resolve(
 			targetAvailability,
 			binding.FileProfile,
 			binding.ServiceProfile,
+			access.bypassesApproval(target),
 		)
 		entry.CommandCount = len(commands)
 		if connected {
@@ -361,6 +372,7 @@ func visibleNodeCommands(
 	targetAvailability string,
 	fileProfile string,
 	serviceProfile string,
+	approvalBypass bool,
 ) []nodeCommandSummary {
 	if registration == nil || len(registration.AllowedCommands) == 0 {
 		return []nodeCommandSummary{}
@@ -383,6 +395,7 @@ func visibleNodeCommands(
 		if !available {
 			continue
 		}
+		projected = projectServiceApprovalForTarget(projected, approvalBypass)
 		commands = append(commands, nodeCommandSummary{
 			Name:             projected.Name,
 			Risk:             projected.Risk,
@@ -394,6 +407,22 @@ func visibleNodeCommands(
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	return commands
+}
+
+func projectServiceApprovalForTarget(
+	descriptor nodes.CommandDescriptor,
+	approvalBypass bool,
+) nodes.CommandDescriptor {
+	if !approvalBypass || descriptor.Name != "service.action.v1" ||
+		len(descriptor.ServiceProfiles) != 1 || descriptor.ModelContract == nil {
+		return descriptor
+	}
+	descriptor.ServiceProfiles = nodes.CloneServiceProfileDescriptors(descriptor.ServiceProfiles)
+	descriptor.ServiceProfiles[0].ActionApproval = "operator_bypass_configured"
+	contract := *descriptor.ModelContract
+	contract.ApprovalMode = ""
+	descriptor.ModelContract = &contract
+	return descriptor
 }
 
 func projectDescriptorForTarget(
@@ -454,41 +483,7 @@ func projectServiceDescriptorForTarget(
 	descriptor nodes.CommandDescriptor,
 	serviceProfile string,
 ) (nodes.CommandDescriptor, bool) {
-	if len(descriptor.ServiceProfiles) == 0 {
-		return descriptor, true
-	}
-	if serviceProfile == "" || descriptor.ModelContract == nil {
-		return nodes.CommandDescriptor{}, false
-	}
-	for _, profile := range descriptor.ServiceProfiles {
-		if profile.Alias != serviceProfile {
-			continue
-		}
-		descriptor.ServiceProfiles = []nodes.ServiceProfileDescriptor{profile}
-		descriptor.InputSchema = nodes.ServiceCommandInputSchema(
-			descriptor.Name,
-			descriptor.ServiceProfiles,
-		)
-		contract := *descriptor.ModelContract
-		contract.Availability = nodes.ModelAvailable
-		contract.Constraints.ProfileAliases = nil
-		if descriptor.Name == "service.logs.v1" {
-			contract.OutputBytesMax = profile.LogLimits.BytesMax
-		}
-		if descriptor.Name == "service.action.v1" {
-			if profile.ActionApproval == "required" {
-				contract.ApprovalMode = "each_command"
-			} else {
-				contract.ApprovalMode = ""
-			}
-		}
-		descriptor.ModelContract = &contract
-		if err := descriptor.Validate(); err != nil {
-			return nodes.CommandDescriptor{}, false
-		}
-		return descriptor, true
-	}
-	return nodes.CommandDescriptor{}, false
+	return nodes.ProjectServiceDescriptorForProfile(descriptor, serviceProfile)
 }
 
 func visibleNodeCommand(
@@ -630,6 +625,10 @@ func makeNodeCommandContract(
 			LogLimits:      profile.LogLimits,
 			ActionApproval: profile.ActionApproval,
 		}
+		if descriptor.Name == "service.action.v1" &&
+			profile.ActionApproval == "operator_bypass_configured" {
+			contract.Execution.Approval = profile.ActionApproval
+		}
 	}
 	return contract
 }
@@ -679,6 +678,10 @@ func projectedFileToolInputSchema(command string) json.RawMessage {
 }
 
 func descriptorApprovalMode(descriptor nodes.CommandDescriptor) string {
+	if descriptor.Name == "service.action.v1" && len(descriptor.ServiceProfiles) == 1 &&
+		descriptor.ServiceProfiles[0].ActionApproval == "operator_bypass_configured" {
+		return descriptor.ServiceProfiles[0].ActionApproval
+	}
 	if descriptor.ModelContract != nil && descriptor.ModelContract.ApprovalMode != "" {
 		return descriptor.ModelContract.ApprovalMode
 	}
@@ -707,6 +710,7 @@ type discoveryRevisionInput struct {
 	TargetExecutor       string      `json:"target_executor"`
 	TargetFileProfile    string      `json:"target_file_profile,omitempty"`
 	TargetServiceProfile string      `json:"target_service_profile,omitempty"`
+	TargetApprovalBypass bool        `json:"target_approval_bypass,omitempty"`
 	TargetBindingDigest  string      `json:"target_binding_digest"`
 	NodeIdentityDigest   string      `json:"node_identity_digest"`
 	Command              string      `json:"command"`
@@ -752,6 +756,7 @@ func (access *nodeTargetAccess) discoveryRevision(
 		TargetExecutor:       binding.Executor,
 		TargetFileProfile:    binding.FileProfile,
 		TargetServiceProfile: binding.ServiceProfile,
+		TargetApprovalBypass: access.bypassesApproval(target),
 		TargetBindingDigest:  base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
 		NodeIdentityDigest:   base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),
 		Command:              command,
@@ -772,6 +777,11 @@ func (access *nodeTargetAccess) discoveryRevision(
 	}
 	digest := sha256.Sum256(data)
 	return "dr_v1_" + base64.RawURLEncoding.EncodeToString(digest[:]), nil
+}
+
+func (access *nodeTargetAccess) bypassesApproval(target string) bool {
+	_, bypass := access.approvalBypassTargets[target]
+	return bypass
 }
 
 func catalogHash(catalog nodes.CapabilityCatalog) string {
