@@ -45,6 +45,7 @@ type toolFeedbackEntry struct {
 	terminal           bool
 	terminalUntil      time.Time
 	terminalPending    int
+	terminalRetained   int
 	terminalSucceeded  bool
 	retired            bool
 	sending            bool
@@ -146,6 +147,7 @@ func (c *ToolFeedbackCoordinator) deliver(
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
 		entry.terminalPending = 0
+		entry.terminalRetained = 0
 		entry.terminalSucceeded = false
 		entry.terminalGeneration++
 	}
@@ -362,11 +364,15 @@ func (c *ToolFeedbackCoordinator) beginTerminal(key string, retain bool) *toolFe
 		if !entry.terminal {
 			entry.terminalGeneration++
 			entry.terminalPending = 0
+			entry.terminalRetained = 0
 			entry.terminalSucceeded = false
 		}
 		entry.terminal = true
 		entry.terminalUntil = time.Time{}
 		entry.terminalPending++
+		if retain {
+			entry.terminalRetained++
+		}
 		generation := entry.terminalGeneration
 		entry.mu.Unlock()
 
@@ -396,6 +402,14 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	terminal.completed = true
 	if entry.terminalPending > 0 {
 		entry.terminalPending--
+	}
+	if terminal.retain && entry.terminalRetained > 0 {
+		entry.terminalRetained--
+	}
+	if success && !terminal.retain && entry.terminalRetained > 0 {
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
+		return
 	}
 	if !success {
 		if entry.terminalSucceeded || entry.terminalPending > 0 {
@@ -439,6 +453,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
 		entry.terminalPending = 0
+		entry.terminalRetained = 0
 		entry.terminalSucceeded = false
 		if !pendingCleanup {
 			entry.retired = true

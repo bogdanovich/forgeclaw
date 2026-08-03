@@ -3141,78 +3141,66 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 		}}},
 	}
 
-	t.Run("explicit text", func(t *testing.T) {
-		result := (&tools.ToolResult{}).
-			WithOutboundDelivery(toolshared.OutboundDelivery{Text: "checking services"}).
-			WithImmediateDelivery()
-		if _, outcome, err := al.deliverToolResultToUser(
-			t.Context(),
-			ts,
-			result,
-			"message",
-		); err != nil ||
-			outcome != toolResultDeliveryQueued {
-			t.Fatalf("delivery = (%v, %v)", outcome, err)
-		}
-		select {
-		case outbound := <-msgBus.OutboundChan():
-			if metadata := bus.OutboundMetadataFromMessage(outbound); !metadata.IsInterim() {
-				t.Fatalf("outbound metadata = %#v, want interim", metadata)
+	wantScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-1")
+	scopeCases := []struct {
+		name   string
+		scopes []runtimeevents.TraceScope
+	}{
+		{name: "derived scope"},
+		{name: "pre-scoped", scopes: []runtimeevents.TraceScope{wantScope}},
+	}
+	for _, scopeCase := range scopeCases {
+		t.Run("explicit text/"+scopeCase.name, func(t *testing.T) {
+			result := (&tools.ToolResult{}).
+				WithOutboundDelivery(toolshared.OutboundDelivery{Text: "checking services"}).
+				WithImmediateDelivery()
+			if _, outcome, err := al.deliverToolResultToUserWithScopes(
+				t.Context(), ts, result, "message", scopeCase.scopes,
+			); err != nil || outcome != toolResultDeliveryQueued {
+				t.Fatalf("delivery = (%v, %v)", outcome, err)
 			}
-			wantScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-1")
-			if outbound.TraceSettlement || !slices.Equal(
-				outbound.TraceScopes,
-				[]runtimeevents.TraceScope{wantScope},
-			) {
-				t.Fatalf(
-					"outbound trace = (%v, %v), want non-settling %v",
-					outbound.TraceScopes,
-					outbound.TraceSettlement,
-					wantScope,
-				)
+			select {
+			case outbound := <-msgBus.OutboundChan():
+				if metadata := bus.OutboundMetadataFromMessage(outbound); !metadata.IsInterim() {
+					t.Fatalf("outbound metadata = %#v, want interim", metadata)
+				}
+				if outbound.TraceSettlement ||
+					!slices.Equal(outbound.TraceScopes, []runtimeevents.TraceScope{wantScope}) {
+					t.Fatalf("outbound trace = (%v, %v), want non-settling %v",
+						outbound.TraceScopes, outbound.TraceSettlement, wantScope)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("immediate text was not queued")
 			}
-		case <-time.After(time.Second):
-			t.Fatal("immediate text was not queued")
-		}
-	})
+		})
 
-	t.Run("explicit media", func(t *testing.T) {
-		result := (&tools.ToolResult{}).
-			WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
-				Type: "image", Ref: "media://test-image",
-			}}}).
-			WithImmediateDelivery()
-		if _, outcome, err := al.deliverToolResultToUser(
-			t.Context(),
-			ts,
-			result,
-			"image_generation",
-		); err != nil ||
-			outcome != toolResultDeliveryQueued {
-			t.Fatalf("delivery = (%v, %v)", outcome, err)
-		}
-		select {
-		case outbound := <-msgBus.OutboundMediaChan():
-			metadata := bus.OutboundMetadataFromContext(outbound.Context)
-			if !metadata.IsInterim() {
-				t.Fatalf("outbound metadata = %#v, want interim", metadata)
+		t.Run("explicit media/"+scopeCase.name, func(t *testing.T) {
+			result := (&tools.ToolResult{}).
+				WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
+					Type: "image", Ref: "media://test-image",
+				}}}).
+				WithImmediateDelivery()
+			if _, outcome, err := al.deliverToolResultToUserWithScopes(
+				t.Context(), ts, result, "image_generation", scopeCase.scopes,
+			); err != nil || outcome != toolResultDeliveryQueued {
+				t.Fatalf("delivery = (%v, %v)", outcome, err)
 			}
-			wantScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-1")
-			if outbound.TraceSettlement || !slices.Equal(
-				outbound.TraceScopes,
-				[]runtimeevents.TraceScope{wantScope},
-			) {
-				t.Fatalf(
-					"outbound trace = (%v, %v), want non-settling %v",
-					outbound.TraceScopes,
-					outbound.TraceSettlement,
-					wantScope,
-				)
+			select {
+			case outbound := <-msgBus.OutboundMediaChan():
+				metadata := bus.OutboundMetadataFromContext(outbound.Context)
+				if !metadata.IsInterim() {
+					t.Fatalf("outbound metadata = %#v, want interim", metadata)
+				}
+				if outbound.TraceSettlement ||
+					!slices.Equal(outbound.TraceScopes, []runtimeevents.TraceScope{wantScope}) {
+					t.Fatalf("outbound trace = (%v, %v), want non-settling %v",
+						outbound.TraceScopes, outbound.TraceSettlement, wantScope)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("immediate media was not queued")
 			}
-		case <-time.After(time.Second):
-			t.Fatal("immediate media was not queued")
-		}
-	})
+		})
+	}
 }
 
 func TestDeliverFinalTurnToolTextCarriesTraceSettlement(t *testing.T) {

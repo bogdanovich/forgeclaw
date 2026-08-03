@@ -491,7 +491,7 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
 		}
 	}
-	traceSettlement := len(traceScopes) > 0
+	traceSettlement := len(traceScopes) > 0 && !result.ImmediateDelivery
 	if result.ImmediateDelivery && len(traceScopes) == 0 {
 		traceScopes = []runtimeevents.TraceScope{
 			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),

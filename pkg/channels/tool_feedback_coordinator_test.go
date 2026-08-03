@@ -716,6 +716,46 @@ func TestToolFeedbackCoordinator_TransientCleanupFailureDoesNotBlockLaterFeedbac
 	}
 }
 
+func TestToolFeedbackCoordinator_RetainedTerminalWinsOverOverlappingTransient(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	var deleted []string
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(_ context.Context, _ string, messageID string) error {
+			deleted = append(deleted, messageID)
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "between terminals", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("pending-final Deliver() = (%v, %v), sends %d, want suppressed", ids, err, sends)
+	}
+	coordinator.CompleteTerminal(t.Context(), retained, true)
+	if !slices.Equal(deleted, []string{"progress-1"}) {
+		t.Fatalf("deleted = %v, want retained final cleanup", deleted)
+	}
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "after final", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want tombstone suppression", ids, err, sends)
+	}
+}
+
 func TestToolFeedbackCoordinator_SeparateDeliveryAndStopDoNotDeadlock(t *testing.T) {
 	for range 100 {
 		coordinator := newTestToolFeedbackCoordinator(true)
