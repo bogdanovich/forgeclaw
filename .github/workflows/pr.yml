@@ -71,8 +71,32 @@ jobs:
       - name: Run go generate
         run: go generate ./...
 
-      - name: Run go test
-        run: go test -tags goolm,stdjson ./...
+      - name: Compile default Go test graph
+        shell: bash
+        run: time go test -tags goolm,stdjson -run '^$' ./...
+
+      - name: Run Go tests with timing
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 -json -tags goolm,stdjson ./... | tee /tmp/mintclaw-go-test.json
+
+      - name: Publish Go test timings
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f /tmp/mintclaw-go-test.json ]]; then
+            go run ./scripts/testtimings < /tmp/mintclaw-go-test.json | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run targeted race regressions
+        run: >-
+          go test -count=1 -race -tags goolm,stdjson
+          -run
+          '^(TestConcurrentBuildSystemPromptWithCache|TestFinish_ConcurrentCalls|TestDeliverSubTurnResult_RaceWithFinish|TestSteeringQueue_ConcurrentAccess|TestCronService_ConcurrentAccess|TestConcurrent_AddAndRead|TestConcurrent_SummarizeRace)$'
+          ./pkg/agent
+          ./pkg/cron
+          ./pkg/memory
 
   integration:
     name: Integration Tests
@@ -80,6 +104,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run real companion vertical tests
+        run: bash ./scripts/run-go-integration-tests.sh
 
       - name: Run Docker-backed integration suites
         run: bash ./scripts/run-integration-tests.sh

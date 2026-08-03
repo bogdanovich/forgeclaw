@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build (linux || darwin) && integration
 
 package gateway
 
@@ -935,6 +935,12 @@ func closeVerticalSliceAdmission(t *testing.T, admission *nodews.AdmissionHandle
 
 func buildVerticalSliceCompanion(t *testing.T, outputDir string) string {
 	t.Helper()
+	if binaryPath := os.Getenv("MINTCLAW_NODE_TEST_BINARY"); binaryPath != "" {
+		if _, err := os.Stat(binaryPath); err != nil {
+			t.Fatalf("stat shared companion binary: %v", err)
+		}
+		return binaryPath
+	}
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve gateway E2E test source")
