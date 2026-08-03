@@ -29,10 +29,6 @@ and extend execution to explicitly paired machines.
 
 ## Why MintClaw
 
-<p align="center">
-  <img src="assets/brand/mintclaw-logo-768.png" alt="MintClaw logo" width="176">
-</p>
-
 - **Work that survives interruption.** Async tasks, inbound work, user
   interactions, session goals, and remote-node operations have explicit
   persisted state and restart behavior.
