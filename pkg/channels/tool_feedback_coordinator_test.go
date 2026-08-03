@@ -681,6 +681,41 @@ func TestToolFeedbackCoordinator_TransientTerminalDoesNotBlockLaterUnscopedFeedb
 	}
 }
 
+func TestToolFeedbackCoordinator_TransientCleanupFailureDoesNotBlockLaterFeedback(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			return ErrTemporary
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	if _, err := coordinator.Deliver(
+		t.Context(), "telegram:chat-1", "chat-1", "checking", operations, send,
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	terminal := coordinator.BeginTransientTerminal("telegram:chat-1")
+	coordinator.CompleteTerminal(t.Context(), terminal, true)
+
+	ids, err := coordinator.Deliver(
+		t.Context(), "telegram:chat-1", "chat-1", "checking ports", operations, send,
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
+		t.Fatalf("later Deliver() = (%v, %v), sends %d, want progress-2", ids, err, sends)
+	}
+	if deleteCalls < 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and delivery retry", deleteCalls)
+	}
+}
+
 func TestToolFeedbackCoordinator_SeparateDeliveryAndStopDoNotDeadlock(t *testing.T) {
 	for range 100 {
 		coordinator := newTestToolFeedbackCoordinator(true)

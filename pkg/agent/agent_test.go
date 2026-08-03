@@ -3134,7 +3134,8 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 	defer al.Close()
 	agent := al.registry.GetDefaultAgent()
 	ts := &turnState{
-		agent: agent, agentID: agent.ID, channel: "cli", chatID: "chat-1", sessionKey: "session-1",
+		agent: agent, agentID: agent.ID, workspace: agent.Workspace, turnID: "turn-1",
+		channel: "cli", chatID: "chat-1", sessionKey: "session-1",
 		opts: processOptions{Dispatch: DispatchRequest{InboundContext: &bus.InboundContext{
 			Channel: "cli", ChatID: "chat-1", SenderID: "user-1",
 		}}},
@@ -3157,6 +3158,18 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 		case outbound := <-msgBus.OutboundChan():
 			if metadata := bus.OutboundMetadataFromMessage(outbound); !metadata.IsInterim() {
 				t.Fatalf("outbound metadata = %#v, want interim", metadata)
+			}
+			wantScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-1")
+			if outbound.TraceSettlement || !slices.Equal(
+				outbound.TraceScopes,
+				[]runtimeevents.TraceScope{wantScope},
+			) {
+				t.Fatalf(
+					"outbound trace = (%v, %v), want non-settling %v",
+					outbound.TraceScopes,
+					outbound.TraceSettlement,
+					wantScope,
+				)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("immediate text was not queued")
@@ -3183,6 +3196,18 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 			metadata := bus.OutboundMetadataFromContext(outbound.Context)
 			if !metadata.IsInterim() {
 				t.Fatalf("outbound metadata = %#v, want interim", metadata)
+			}
+			wantScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-1")
+			if outbound.TraceSettlement || !slices.Equal(
+				outbound.TraceScopes,
+				[]runtimeevents.TraceScope{wantScope},
+			) {
+				t.Fatalf(
+					"outbound trace = (%v, %v), want non-settling %v",
+					outbound.TraceScopes,
+					outbound.TraceSettlement,
+					wantScope,
+				)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("immediate media was not queued")

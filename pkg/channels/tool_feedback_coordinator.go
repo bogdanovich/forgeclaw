@@ -435,8 +435,14 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	c.retryPendingCleanup(ctx, entry)
 	entry.mu.Lock()
 	pendingCleanup := len(entry.pendingCleanup) != 0
-	if !pendingCleanup && !terminal.retain {
-		entry.retired = true
+	if !terminal.retain {
+		entry.terminal = false
+		entry.terminalUntil = time.Time{}
+		entry.terminalPending = 0
+		entry.terminalSucceeded = false
+		if !pendingCleanup {
+			entry.retired = true
+		}
 	}
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
@@ -728,7 +734,8 @@ func (c *ToolFeedbackCoordinator) maintainTerminal(terminal *toolFeedbackTermina
 	entry := terminal.entry
 	entry.opMu.Lock()
 	entry.mu.Lock()
-	if entry.retired || !entry.terminal || !entry.terminalSucceeded ||
+	if entry.retired ||
+		(terminal.retain && (!entry.terminal || !entry.terminalSucceeded)) ||
 		entry.terminalGeneration != terminal.generation {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
@@ -748,6 +755,11 @@ func (c *ToolFeedbackCoordinator) maintainTerminal(terminal *toolFeedbackTermina
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		c.scheduleTerminalMaintenance(terminal, delay)
+		return
+	}
+	if !terminal.retain && (entry.terminal || entry.sending || entry.current.messageID != "") {
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
 		return
 	}
 	entry.retired = true
