@@ -325,6 +325,11 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 		},
 		{name: "bound endpoint environment", env: map[string]string{"PLAYWRIGHT_MCP_ENDPOINT": "ws://127.0.0.1:3000"}},
 		{name: "extension environment", env: map[string]string{"PLAYWRIGHT_MCP_EXTENSION": "true"}},
+		{
+			name: "case-variant CDP endpoint environment",
+			env:  map[string]string{"Playwright_Mcp_Cdp_Endpoint": "http://127.0.0.1:9222"},
+		},
+		{name: "case-variant extension environment", env: map[string]string{"playwright_mcp_extension": "true"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

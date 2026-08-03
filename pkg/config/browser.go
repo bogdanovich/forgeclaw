@@ -51,6 +51,7 @@ var browserSpecialPurposePrefixes = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("168.63.129.16/32"),
 	netip.MustParsePrefix("169.254.0.0/16"),
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.0.0.0/24"),
@@ -451,7 +452,7 @@ func parseBrowserIPv4Number(part string) (uint64, bool) {
 
 // IsPublicBrowserIP applies the browser network boundary to a resolved
 // address. It denies every block in IANA's IPv4 and IPv6 special-purpose
-// registries, in addition to non-unicast addresses.
+// registries, cloud-provider metadata endpoints, and non-unicast addresses.
 func IsPublicBrowserIP(ip net.IP) bool {
 	address, ok := netip.AddrFromSlice(ip)
 	if !ok {

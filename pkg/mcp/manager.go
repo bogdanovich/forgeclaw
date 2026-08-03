@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,6 +117,58 @@ func loadEnvFile(path string) (map[string]string, error) {
 	}
 
 	return envVars, nil
+}
+
+type commandEnvironmentValue struct {
+	name  string
+	value string
+}
+
+func mergeCommandEnvironment(
+	parent []string,
+	fileValues map[string]string,
+	explicitValues map[string]string,
+	caseInsensitive bool,
+) []string {
+	merged := make(map[string]commandEnvironmentValue)
+	normalize := func(name string) string {
+		if caseInsensitive {
+			return strings.ToLower(name)
+		}
+		return name
+	}
+	set := func(name, value string) {
+		merged[normalize(name)] = commandEnvironmentValue{name: name, value: value}
+	}
+	for _, entry := range parent {
+		if index := strings.Index(entry, "="); index > 0 {
+			set(entry[:index], entry[index+1:])
+		}
+	}
+	setMap := func(values map[string]string) {
+		names := make([]string, 0, len(values))
+		for name := range values {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			set(name, values[name])
+		}
+	}
+	setMap(fileValues)
+	setMap(explicitValues)
+
+	keys := make([]string, 0, len(merged))
+	for key := range merged {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	environment := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := merged[key]
+		environment = append(environment, value.name+"="+value.value)
+	}
+	return environment
 }
 
 // ServerConnection represents a connection to an MCP server
@@ -501,25 +555,12 @@ func connectServer(
 		// Create command with context
 		cmd := exec.CommandContext(ctx, expandHomeCommandPath(cfg.Command), cfg.Args...)
 
-		// Build environment variables with proper override semantics
-		// Use a map to ensure config variables override file variables
-		envMap := make(map[string]string)
-
-		// Start with parent process environment
-		for _, e := range cmd.Environ() {
-			if idx := strings.Index(e, "="); idx > 0 {
-				envMap[e[:idx]] = e[idx+1:]
-			}
-		}
-
-		// Load environment variables from file if specified
+		var envVars map[string]string
 		if cfg.EnvFile != "" {
-			envVars, err := loadEnvFile(cfg.EnvFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load env file %s: %w", cfg.EnvFile, err)
-			}
-			for k, v := range envVars {
-				envMap[k] = v
+			var loadErr error
+			envVars, loadErr = loadEnvFile(cfg.EnvFile)
+			if loadErr != nil {
+				return nil, fmt.Errorf("failed to load env file %s: %w", cfg.EnvFile, loadErr)
 			}
 			logger.DebugCF("mcp", "Loaded environment variables from file",
 				map[string]any{
@@ -529,17 +570,7 @@ func connectServer(
 				})
 		}
 
-		// Environment variables from config override those from file
-		for k, v := range cfg.Env {
-			envMap[k] = v
-		}
-
-		// Convert map to slice
-		env := make([]string, 0, len(envMap))
-		for k, v := range envMap {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
+		cmd.Env = mergeCommandEnvironment(cmd.Environ(), envVars, cfg.Env, runtime.GOOS == "windows")
 		commandTransport = &isolatedCommandTransport{ServerName: name, Command: cmd}
 		transport = commandTransport
 	default:

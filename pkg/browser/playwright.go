@@ -47,6 +47,18 @@ var (
 	playwrightSnapshotLinkPattern = regexp.MustCompile(`^- \[Snapshot\]\(.+\)$`)
 )
 
+var playwrightManagedEnvironmentNames = []string{
+	"PLAYWRIGHT_MCP_ALLOWED_ORIGINS",
+	"PLAYWRIGHT_MCP_BLOCKED_ORIGINS",
+	"PLAYWRIGHT_MCP_CAPS",
+	"PLAYWRIGHT_MCP_CONFIG",
+	"PLAYWRIGHT_MCP_PROXY_SERVER",
+	"PLAYWRIGHT_MCP_PROXY_BYPASS",
+	"PLAYWRIGHT_MCP_CDP_ENDPOINT",
+	"PLAYWRIGHT_MCP_ENDPOINT",
+	"PLAYWRIGHT_MCP_EXTENSION",
+}
+
 type DriverActionKind string
 
 const (
@@ -206,18 +218,8 @@ func validatePlaywrightManagedPolicy(server config.MCPServerConfig) error {
 			)
 		}
 	}
-	for _, variable := range []string{
-		"PLAYWRIGHT_MCP_ALLOWED_ORIGINS",
-		"PLAYWRIGHT_MCP_BLOCKED_ORIGINS",
-		"PLAYWRIGHT_MCP_CAPS",
-		"PLAYWRIGHT_MCP_CONFIG",
-		"PLAYWRIGHT_MCP_PROXY_SERVER",
-		"PLAYWRIGHT_MCP_PROXY_BYPASS",
-		"PLAYWRIGHT_MCP_CDP_ENDPOINT",
-		"PLAYWRIGHT_MCP_ENDPOINT",
-		"PLAYWRIGHT_MCP_EXTENSION",
-	} {
-		if _, exists := server.Env[variable]; exists {
+	for variable := range server.Env {
+		if playwrightManagedEnvironmentName(variable) {
 			return fmt.Errorf(
 				"browser driver policy and capabilities must be managed, not %s",
 				variable,
@@ -225,6 +227,15 @@ func validatePlaywrightManagedPolicy(server config.MCPServerConfig) error {
 		}
 	}
 	return nil
+}
+
+func playwrightManagedEnvironmentName(name string) bool {
+	for _, managed := range playwrightManagedEnvironmentNames {
+		if strings.EqualFold(name, managed) {
+			return true
+		}
+	}
+	return false
 }
 
 func playwrightServerWithNetworkPolicy(

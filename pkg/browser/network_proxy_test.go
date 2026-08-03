@@ -136,6 +136,35 @@ func TestBrowserNetworkPolicyDeniesUnlistedAndNonPublicDestinations(t *testing.T
 	}
 }
 
+func TestBrowserNetworkPolicyDeniesAzureWireServerWithoutDialing(t *testing.T) {
+	var lookups atomic.Int64
+	var dials atomic.Int64
+	policy, err := newBrowserNetworkPolicy(
+		config.BrowserProfileConfig{NetworkMode: config.BrowserNetworkPublicWeb},
+		func(context.Context, string, string) ([]net.IP, error) {
+			lookups.Add(1)
+			return []net.IP{net.ParseIP("168.63.129.16")}, nil
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("unexpected dial")
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, authority := range []string{"168.63.129.16", "wireserver.example"} {
+		if destination, destinationErr := policy.destination(
+			context.Background(), "http", authority,
+		); !errors.Is(destinationErr, ErrDenied) {
+			t.Fatalf("destination(%q) = %v, %v, want ErrDenied", authority, destination, destinationErr)
+		}
+	}
+	if lookups.Load() != 1 || dials.Load() != 0 {
+		t.Fatalf("lookups = %d, dials = %d, want 1, 0", lookups.Load(), dials.Load())
+	}
+}
+
 func TestBrowserNetworkProxyEnforcesRedirectsAndFreshDNS(t *testing.T) {
 	var secretRequests atomic.Int64
 	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

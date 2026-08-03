@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -213,6 +214,48 @@ SHARED_VAR=from_file`
 	}
 	if merged["NEW_VAR"] != "from_config" {
 		t.Errorf("Expected NEW_VAR=from_config, got %s", merged["NEW_VAR"])
+	}
+}
+
+func TestMergeCommandEnvironmentUsesWindowsIdentityAndExplicitPrecedence(t *testing.T) {
+	parent := []string{
+		"Path=parent-path",
+		"playwright_mcp_cdp_endpoint=http://parent.example",
+		"PARENT_ONLY=parent",
+	}
+	fileValues := map[string]string{
+		"PATH":                        "file-path",
+		"Playwright_Mcp_Cdp_Endpoint": "http://file.example",
+		"FILE_ONLY":                   "file",
+	}
+	explicitValues := map[string]string{
+		"PLAYWRIGHT_MCP_CDP_ENDPOINT": "",
+		"path":                        "explicit-path",
+	}
+	want := []string{
+		"FILE_ONLY=file",
+		"PARENT_ONLY=parent",
+		"path=explicit-path",
+		"PLAYWRIGHT_MCP_CDP_ENDPOINT=",
+	}
+	for range 20 {
+		got := mergeCommandEnvironment(parent, fileValues, explicitValues, true)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("mergeCommandEnvironment() = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestMergeCommandEnvironmentKeepsUnixCaseDistinct(t *testing.T) {
+	got := mergeCommandEnvironment(
+		[]string{"Name=parent", "NAME=parent-upper"},
+		map[string]string{"Name": "file"},
+		map[string]string{"NAME": "explicit"},
+		false,
+	)
+	want := []string{"NAME=explicit", "Name=file"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeCommandEnvironment() = %q, want %q", got, want)
 	}
 }
 
