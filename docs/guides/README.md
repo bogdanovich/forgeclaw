@@ -12,4 +12,5 @@ Task-oriented guides for setup, configuration, and common MintClaw workflows.
 - [Spawn & Async Tasks](spawn-tasks.md): background work, long-running tasks, and sub-agent orchestration.
 - [MintClaw Hardware Compatibility List](hardware-compatibility.md): tested boards and platform notes.
 - [Node Companion](node-companion.md): build and run the slim Linux/macOS remote node process.
+- [Choosing MintClaw](choosing-mintclaw.md): compare MintClaw with PicoClaw, OpenClaw, ZeroClaw, and Hermes Agent.
 - [Using Antigravity Provider in MintClaw](ANTIGRAVITY_USAGE.md): Google Cloud Code Assist setup and usage.

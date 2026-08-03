@@ -1,466 +1,166 @@
 <div align="center">
 
-<h1>MintClaw</h1>
+<img src="assets/brand/mintclaw-wordmark-1600.png" alt="MintClaw" width="720">
 
-<h3>A fast, hackable agent runtime for personal automation, MCP tools, and multi-agent workflows.</h3>
+### A durable, operator-controlled agent runtime for personal automation
+
+Keep work moving across chat turns, restarts, subagents, and paired machines.
 
 <p>
-  <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go 1.25+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-35c98a" alt="MIT License"></a>
 </p>
 
 <p>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#why-mintclaw">Why MintClaw</a> ·
+  <a href="#how-it-compares">Compare</a> ·
+  <a href="docs/README.md">Documentation</a>
 </p>
 
 </div>
 
 ---
 
-MintClaw is an independent Go agent runtime for personal automation. It combines
-durable task state, deterministic tool delivery, MCP integrations, media
-handling, multi-agent workflows, and bounded context management in one project.
+MintClaw is a Go-native personal agent runtime for workflows that need to stay
+understandable and recoverable after the current chat turn ends. Connect the
+models, chat apps, MCP servers, and skills you already use; delegate work to
+durable background tasks; steer an active run; pause for an authorized human;
+and extend execution to explicitly paired machines.
 
-## Features
+MintClaw is a downstream fork of [PicoClaw](https://github.com/sipeed/picoclaw).
+It keeps the practical Go foundation while intentionally diverging around
+workflow durability, delivery ownership, multi-agent control, context
+management, and operations. Treat MintClaw as its own runtime rather than as a
+drop-in PicoClaw build.
 
-- **Go-native agent runtime** with chat channels, local tools, MCP servers, providers, hooks, cron, and subagents.
-- **Durable workflow state** through task-registry-backed `spawn_status`, `task_status`, and cron records.
-- **Unified tool delivery intents** for intermediate user-visible output, final handled output, parent-only handoffs, and silent tool results.
-- **Media-aware workflows** including generated images, file delivery, multimodal input, and reduced duplicate final replies.
-- **Context-management hardening** through Seahorse compaction improvements and fail-closed oversized-context behavior.
-- **Provider and search extensions** including OpenAI OAuth support and additional web-search/provider behavior.
+## Why MintClaw
 
-## Project Status
+<p align="center">
+  <img src="assets/brand/mintclaw-logo-768.png" alt="MintClaw logo" width="176">
+</p>
 
-> [!CAUTION]
-> **Security Notice**
->
-> * **NOTE:** MintClaw is in early rapid development. There may be unresolved security issues. Do not deploy to production before v1.0.
-> * **NOTE:** MintClaw has recently merged many PRs. Recent builds may use 10-20MB RAM. Resource optimization is planned after feature stabilization.
+- **Work that survives interruption.** Async tasks, inbound work, user
+  interactions, session goals, and remote-node operations have explicit
+  persisted state and restart behavior.
+- **Control while the agent is working.** Steering lets a newer message change
+  direction between tool calls, with undispatched side effects skipped safely
+  and represented in model context.
+- **Human checkpoints without holding the process open.** A foreground turn or
+  background task can pause for authorized input or approval and resume the
+  exact call after an answer—even across a restart.
+- **Compositional multi-agent workflows.** Spawned and delegated work has
+  durable status, bounded delivery destinations, model policy, and parent/user
+  handoff semantics.
+- **Remote execution with explicit authority.** The slim `mintclaw-node`
+  companion pairs over WSS and is constrained by both gateway and node-local
+  policy, with approval and no-blind-replay behavior for uncertain operations.
+- **Open extension surfaces.** Use built-in tools, MCP servers, workspace
+  skills, provider routing, scheduled jobs, chat channels, the CLI, or the Web
+  launcher without tying the runtime to one model vendor.
 
-## Install
+## How it compares
 
-### Build from source
+These projects overlap, but they optimize for different jobs. This is a design
+comparison, not a benchmark.
 
-Prerequisites:
+| Project | Design center | A good starting point when... |
+| --- | --- | --- |
+| **MintClaw** | Go runtime with explicit durable workflow and operator-control semantics | Long-running personal automation must remain inspectable and recoverable across subagents, human decisions, restarts, and paired machines. |
+| [**PicoClaw**](https://github.com/sipeed/picoclaw) | Ultra-efficient Go assistant and MintClaw's upstream lineage | Small footprint, inexpensive hardware, and staying close to the upstream PicoClaw project matter most. |
+| [**OpenClaw**](https://github.com/openclaw/openclaw) | Node.js personal-assistant platform with companion apps and a large extension surface | You want its native app, voice, Canvas, channel, and ecosystem experience. |
+| [**ZeroClaw**](https://github.com/zeroclaw-labs/zeroclaw) | Modular Rust agent infrastructure with feature-selected builds | Rust, supervised risk profiles, OS sandboxing, hardware peripherals, or its SOP engine fit your deployment. |
+| [**Hermes Agent**](https://github.com/NousResearch/hermes-agent) | Learning-oriented Python agent with rich terminal and desktop experiences | Built-in skill evolution, conversation recall, or Nous Portal integration is the priority. |
 
-- Go 1.25+
-- Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
+See [Choosing MintClaw](docs/guides/choosing-mintclaw.md) for the sourced,
+maintained comparison, MintClaw's concrete divergence from PicoClaw, and the
+trade-offs behind each choice.
+
+## Quick start
+
+### Build the CLI
+
+Prerequisites: Go 1.25+. Node.js 22+ and pnpm 10.33.0+ are needed only for the
+Web launcher.
 
 ```bash
 git clone https://github.com/bogdanovich/mintclaw.git
-
 cd mintclaw
 make deps
-
-# Install frontend dependencies
-(cd web/frontend && pnpm install --frozen-lockfile)
-
-# Build the core binary for the current platform
 make build
 
-# Build the Web UI Launcher (required for WebUI mode)
+./build/mintclaw onboard
+./build/mintclaw agent -m "What should we automate first?"
+```
+
+`onboard` creates the local configuration and workspace. Add a provider key,
+then use interactive CLI mode with `./build/mintclaw agent` or start chat-app
+integrations with `./build/mintclaw gateway`.
+
+### Launch the Web console
+
+```bash
+(cd web/frontend && pnpm install --frozen-lockfile)
 make build-launcher
-
-# Build core binaries for all Makefile-managed platforms
-make build-all
-
-# Build for Raspberry Pi Zero 2 W
-# 32-bit: make build-linux-arm
-# 64-bit: make build-linux-arm64
-make build-pi-zero
-
-# Build and install
-make install
-```
-
-## 🚀 Quick Start Guide
-
-### 🌐 WebUI Launcher (Recommended for Desktop)
-
-The WebUI Launcher provides a browser-based interface for configuration and chat. This is the easiest way to get started — no command-line knowledge required.
-
-```bash
-mintclaw-launcher
-# Open http://localhost:18800 in your browser
-```
-
-> [!TIP]
-> **Remote access / Docker / VM:** Add the `-public` flag to listen on all interfaces:
-> ```bash
-> mintclaw-launcher -public
-> ```
-
-**Getting started:**
-
-Open the WebUI, then: **1)** Configure a Provider (add your LLM API key) -> **2)** Configure a Channel (e.g., Telegram) -> **3)** Start the Gateway -> **4)** Chat!
-
-For more details, see the local documentation in `docs/`.
-
-<details>
-<summary><b>Docker (alternative)</b></summary>
-
-```bash
-# 1. Clone this repo
-git clone https://github.com/bogdanovich/mintclaw.git
-cd mintclaw
-
-# 2. First run — auto-generates docker/data/config.json then exits
-#    (only triggers when both config.json and workspace/ are missing)
-docker compose -f docker/docker-compose.yml --profile launcher up
-# The container prints "First-run setup complete." and stops.
-
-# 3. Set your API keys
-vim docker/data/config.json
-
-# 4. Start
-docker compose -f docker/docker-compose.yml --profile launcher up -d
+./build/mintclaw-launcher
 # Open http://localhost:18800
 ```
 
-> **Docker / VM users:** The Gateway listens on `127.0.0.1` by default. Set `MINTCLAW_GATEWAY_HOST=0.0.0.0` or use the `-public` flag to make it accessible from the host.
-
-```bash
-# Check logs
-docker compose -f docker/docker-compose.yml logs -f
-
-# Stop
-docker compose -f docker/docker-compose.yml --profile launcher down
-
-# Update
-docker compose -f docker/docker-compose.yml pull
-docker compose -f docker/docker-compose.yml --profile launcher up -d
-```
-
-</details>
-
-<details>
-<summary><b>macOS — First Launch Security Warning</b></summary>
-
-macOS may block `mintclaw-launcher` on first launch because it is downloaded from the internet and not notarized through the Mac App Store.
-
-**Step 1:** Double-click `mintclaw-launcher`. macOS may report that it cannot
-verify the developer because release artifacts are intentionally unsigned.
-
-**Step 2:** Open **System Settings** → **Privacy & Security** → scroll to
-**Security** → click **Open Anyway**, then confirm the action.
-
-After this one-time step, `mintclaw-launcher` will open normally on subsequent launches.
-
-</details>
-
-<a id="-run-on-old-android-phones"></a>
-### 📱 Android
-
-Give your decade-old phone a second life. Turn it into a small always-on AI assistant.
-
-Use Termux for the supported Android command-line setup. See the
-[Android Termux Guide](docs/guides/android-termux.md) for the complete
-installation checklist.
-
-<details>
-<summary><b>Terminal Launcher (for resource-constrained environments)</b></summary>
-
-For minimal environments where only the `mintclaw` core binary is available (no Launcher UI), you can configure everything via the command line and a JSON config file.
-
-**1. Initialize**
-
-```bash
-mintclaw onboard
-```
-
-This creates `~/.mintclaw/config.json` and the workspace directory.
-
-**2. Configure** (`~/.mintclaw/config.json`)
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "model_name": "gpt-5.4"
-    }
-  },
-  "model_list": [
-    {
-      "model_name": "gpt-5.4",
-      "model": "openai/gpt-5.4"
-      // api_key is now loaded from .security.yml
-    }
-  ]
-}
-```
-
-> See `config/config.example.json` in the repo for a complete configuration template with all available options.
->
-> Please note: config.example.json format is version 0, with sensitive codes in it, and will be auto migrated to version 1+, then, the config.json will only store insensitive data, the sensitive codes will be stored in .security.yml, if you need manually modify the codes, please see `docs/security/security_configuration.md` for more details.
-
-
-**3. Chat**
-
-```bash
-# One-shot question
-mintclaw agent -m "What is 2+2?"
-
-# Interactive mode
-mintclaw agent
-
-# Start gateway for chat app integration
-mintclaw gateway
-```
-
-</details>
-
-## 🔌 Providers (LLM)
-
-MintClaw supports 30+ LLM providers through the `model_list` configuration. Use the `protocol/model` format:
-
-| Provider | Protocol | API Key | Notes |
-|----------|----------|---------|-------|
-| [OpenAI](https://platform.openai.com/api-keys) | `openai/` | Required | GPT-5.4, GPT-4o, o3, etc. |
-| [Anthropic](https://console.anthropic.com/settings/keys) | `anthropic/` | Required | Claude Opus 4.6, Sonnet 4.6, etc. |
-| [Google Gemini](https://aistudio.google.com/apikey) | `gemini/` | Required | Gemini 3 Flash, 2.5 Pro, etc. |
-| [OpenRouter](https://openrouter.ai/keys) | `openrouter/` | Required | 200+ models, unified API |
-| [Zhipu (GLM)](https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys) | `zhipu/` | Required | GLM-4.7, GLM-5, etc. |
-| [DeepSeek](https://platform.deepseek.com/api_keys) | `deepseek/` | Required | DeepSeek-V3, DeepSeek-R1 |
-| [Volcengine](https://console.volcengine.com) | `volcengine/` | Required | Doubao, Ark models |
-| [Qwen](https://dashscope.console.aliyun.com/apiKey) | `qwen/` | Required | Qwen3, Qwen-Max, etc. |
-| [Groq](https://console.groq.com/keys) | `groq/` | Required | Fast inference (Llama, Mixtral) |
-| [Moonshot (Kimi)](https://platform.moonshot.cn/console/api-keys) | `moonshot/` | Required | Kimi models |
-| [Minimax](https://platform.minimaxi.com/user-center/basic-information/interface-key) | `minimax/` | Required | MiniMax models |
-| [Mistral](https://console.mistral.ai/api-keys) | `mistral/` | Required | Mistral Large, Codestral |
-| [NVIDIA NIM](https://build.nvidia.com/) | `nvidia/` | Required | NVIDIA hosted models |
-| [Cerebras](https://cloud.cerebras.ai/) | `cerebras/` | Required | Fast inference |
-| [NEAR AI Cloud](https://near.ai/) | `nearai/` | Required | TEE inference, OpenAI-compatible |
-| [Novita AI](https://novita.ai/) | `novita/` | Required | Various open models |
-| [Xiaomi MiMo](https://platform.xiaomimimo.com/) | `mimo/` | Required | MiMo models |
-| [Ollama](https://ollama.com/) | `ollama/` | Not needed | Local models, self-hosted |
-| [vLLM](https://docs.vllm.ai/) | `vllm/` | Not needed | Local deployment, OpenAI-compatible |
-| [LiteLLM](https://docs.litellm.ai/) | `litellm/` | Varies | Proxy for 100+ providers |
-| [Azure OpenAI](https://portal.azure.com/) | `azure/` | API key or Entra ID** | Enterprise Azure deployment |
-| [GitHub Copilot](https://github.com/features/copilot) | `github-copilot/` | OAuth | Device code login |
-| [Antigravity](https://console.cloud.google.com/) | `antigravity/` | OAuth | Google Cloud AI |
-| [AWS Bedrock](https://console.aws.amazon.com/bedrock)* | `bedrock/` | AWS credentials | Claude, Llama, Mistral on AWS |
-
-> \* AWS Bedrock requires build tag: `go build -tags bedrock`. Set `api_base` to a region name (e.g., `us-east-1`) for automatic endpoint resolution across all AWS partitions (aws, aws-cn, aws-us-gov). When using a full endpoint URL instead, you must also configure `AWS_REGION` via environment variable or AWS config/profile.
->
-> \*\* Azure OpenAI uses `api_key` when set. If `api_key` is omitted, the provider falls back to Microsoft Entra ID via `DefaultAzureCredential` (env vars, workload identity, managed identity, Azure CLI, etc.). The Entra ID path requires build tag: `go build -tags azidentity`.
-
-<details>
-<summary><b>Local deployment (Ollama, vLLM, etc.)</b></summary>
-
-**Ollama:**
-```json
-{
-  "model_list": [
-    {
-      "model_name": "local-llama",
-      "model": "ollama/llama3.1:8b",
-      "api_base": "http://localhost:11434/v1"
-    }
-  ]
-}
-```
-
-**vLLM:**
-```json
-{
-  "model_list": [
-    {
-      "model_name": "local-vllm",
-      "model": "vllm/your-model",
-      "api_base": "http://localhost:8000/v1"
-    }
-  ]
-}
-```
-
-For full provider configuration details, see [Providers & Models](docs/guides/providers.md).
-
-</details>
-
-## 💬 Channels (Chat Apps)
-
-Talk to your MintClaw through 19+ messaging platforms:
-
-| Channel | Setup | Protocol | Docs |
-|---------|-------|----------|------|
-| **Telegram** | Easy (bot token) | Long polling | [Guide](docs/channels/telegram/README.md) |
-| **Discord** | Easy (bot token + intents) | WebSocket | [Guide](docs/channels/discord/README.md) |
-| **WhatsApp** | Easy (QR scan or bridge URL) | Native / Bridge | [Guide](docs/guides/chat-apps.md#whatsapp) |
-| **Weixin** | Easy (Native QR scan) | iLink API | [Guide](docs/guides/chat-apps.md#weixin) |
-| **QQ** | Easy (AppID + AppSecret) | WebSocket | [Guide](docs/channels/qq/README.md) |
-| **Slack** | Easy (bot + app token) | Socket Mode | [Guide](docs/channels/slack/README.md) |
-| **Matrix** | Medium (homeserver + token) | Sync API | [Guide](docs/channels/matrix/README.md) |
-| **Delta Chat** | Easy (account script or email/password) | JSON-RPC (email/E2EE) | [Guide](docs/channels/deltachat/README.md) |
-| **DingTalk** | Medium (client credentials) | Stream | [Guide](docs/channels/dingtalk/README.md) |
-| **Feishu / Lark** | Medium (App ID + Secret) | WebSocket/SDK | [Guide](docs/channels/feishu/README.md) |
-| **LINE** | Medium (credentials + webhook) | Webhook | [Guide](docs/channels/line/README.md) |
-| **WeCom** | Easy (QR login or manual) | WebSocket | [Guide](docs/channels/wecom/README.md) |
-| **VK** | Easy (group token) | Long Poll | [Guide](docs/channels/vk/README.md) |
-| **IRC** | Medium (server + nick) | IRC protocol | [Guide](docs/guides/chat-apps.md#irc) |
-| **OneBot** | Medium (WebSocket URL) | OneBot v11 | [Guide](docs/channels/onebot/README.md) |
-| **MQTT** | Easy (broker + agent_id) | MQTT pub/sub | [Guide](docs/channels/mqtt/README.md) |
-| **MaixCam** | Easy (enable) | TCP socket | [Guide](docs/channels/maixcam/README.md) |
-| **MintClaw** | Easy (enable) | Native protocol | Built-in |
-| **MintClaw Client** | Easy (WebSocket URL) | WebSocket | Built-in |
-
-> All webhook-based channels share a single Gateway HTTP server (`gateway.host`:`gateway.port`, default `127.0.0.1:18790`). Feishu uses WebSocket/SDK mode and does not use the shared HTTP server.
-
-> Log verbosity is controlled by `gateway.log_level` (default: `warn`). Supported values: `debug`, `info`, `warn`, `error`, `fatal`. Can also be set via `MINTCLAW_LOG_LEVEL`. See [Configuration](docs/guides/configuration.md#gateway-log-level) for details.
-
-For detailed channel setup instructions, see [Chat Apps Configuration](docs/guides/chat-apps.md).
-
-## 🔧 Tools
-
-### 🔍 Web Search
-
-MintClaw can search the web to provide up-to-date information. Configure in `tools.web`:
-
-| Search Engine | API Key | Free Tier | Link |
-|--------------|---------|-----------|------|
-| DuckDuckGo | Not needed | Unlimited | Built-in fallback |
-| [Gemini Google Search](https://aistudio.google.com/apikey) | Required | Varies | Gemini with Google Search grounding |
-| [Baidu Search](https://cloud.baidu.com/doc/qianfan-api/s/Wmbq4z7e5) | Required | 1500/month (daily allocation) | AI-powered, China-optimized |
-| [Tavily](https://tavily.com) | Required | 1000 queries/month | Optimized for AI Agents |
-| [Brave Search](https://brave.com/search/api) | Required | 2000 queries/month | Fast and private |
-| [Kagi Search](https://help.kagi.com/kagi/api/search.html) | Required | Paid/limited by API setup | Premium search results |
-| [Perplexity](https://www.perplexity.ai) | Required | Paid | AI-powered search |
-| [SearXNG](https://github.com/searxng/searxng) | Not needed | Self-hosted | Free metasearch engine |
-| [GLM Search](https://open.bigmodel.cn/) | Required | Varies | Zhipu web search |
-
-### ⚙️ Other Tools
-
-MintClaw includes built-in tools for file operations, code execution, scheduling, and more. See [Tools Configuration](docs/reference/tools_configuration.md) for details.
-
-## 🎯 Skills
-
-Skills are modular capabilities that extend your Agent. They are loaded from `SKILL.md` files in your workspace.
-
-**Install skills from ClawHub:**
-
-```bash
-mintclaw skills search "web scraping"
-mintclaw skills install <skill-name>
-```
-
-**Configure skill registries**:
-
-Add to your `config.json`:
-```json
-{
-  "tools": {
-    "skills": {
-      "registries": {
-        "clawhub": {
-          "auth_token": "your-clawhub-token"
-        },
-        "github": {
-          "base_url": "https://github.com",
-          "auth_token": "your-github-token",
-          "proxy": ""
-        }
-      }
-    }
-  }
-}
-```
-
-`tools.skills.github.*` is deprecated. Use `tools.skills.registries.github.*` instead.
-
-For more details, see [Tools Configuration - Skills](docs/reference/tools_configuration.md#skills-tool).
-
-## 🔗 MCP (Model Context Protocol)
-
-MintClaw natively supports [MCP](https://modelcontextprotocol.io/) — connect any MCP server to extend your Agent's capabilities with external tools and data sources.
-
-```json
-{
-  "tools": {
-    "mcp": {
-      "enabled": true,
-      "servers": {
-        "filesystem": {
-          "enabled": true,
-          "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-        }
-      }
-    }
-  }
-}
-```
-
-You can manage common MCP setups directly from the CLI instead of editing JSON by hand:
-
-```bash
-mintclaw mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
-mintclaw mcp list
-mintclaw mcp test filesystem
-```
-
-`mintclaw mcp` is a configuration manager: it updates `config.json` under `tools.mcp.servers`, but it does not keep the server process running itself.
-
-Use `mintclaw mcp edit` when you need advanced fields that are not covered by `mintclaw mcp add`.
-For example, `mintclaw mcp add` supports `--deferred` and `--env-file`, while `mintclaw mcp edit` is still useful for direct JSON editing and uncommon MCP settings.
-
-For full MCP configuration (stdio, SSE, HTTP transports, Tool Discovery), see [Tools Configuration - MCP](docs/reference/tools_configuration.md#mcp-tool). For CLI usage and examples, see [MCP Server CLI](docs/reference/mcp-cli.md).
-
-## 🖥️ CLI Reference
-
-| Command                   | Description                      |
-| ------------------------- | -------------------------------- |
-| `mintclaw onboard`        | Initialize config & workspace    |
-| `mintclaw auth weixin --allow-from USER_ID` | Connect WeChat account via QR with an explicit sender policy |
-| `mintclaw agent -m "..."` | Chat with the agent              |
-| `mintclaw agent`          | Interactive chat mode            |
-| `mintclaw agent --stateless -m "..."` | Run without loading or saving conversation history |
-| `mintclaw gateway`        | Start the gateway                |
-| `mintclaw status`         | Show status                      |
-| `mintclaw version`        | Show version info                |
-| `mintclaw model`          | View or switch the default model |
-| `mintclaw mcp list`       | List configured MCP servers      |
-| `mintclaw mcp add ...`    | Add or update an MCP server entry |
-| `mintclaw mcp test`       | Probe a configured MCP server    |
-| `mintclaw mcp edit`       | Open config for advanced MCP editing |
-| `mintclaw mcp remove`     | Remove an MCP server entry       |
-| `mintclaw cron list`      | List all scheduled jobs          |
-| `mintclaw cron add ...`   | Add a scheduled job              |
-| `mintclaw cron disable`   | Disable a scheduled job          |
-| `mintclaw cron remove`    | Remove a scheduled job           |
-| `mintclaw skills list`    | List installed skills            |
-| `mintclaw skills install` | Install a skill                  |
-| `mintclaw migrate`        | Migrate data from older versions |
-| `mintclaw auth login`     | Authenticate with providers      |
-
-### ⏰ Scheduled Tasks / Reminders
-
-MintClaw supports scheduled reminders and recurring tasks through the `cron` tool:
-
-* **One-time reminders**: "Remind me in 10 minutes" -> triggers once after 10min
-* **Recurring tasks**: "Remind me every 2 hours" -> triggers every 2 hours
-* **Cron expressions**: "Remind me at 9am daily" -> uses cron expression
-
-See [docs/reference/cron.md](docs/reference/cron.md) for current schedule types, execution modes, command-job gates, and persistence details.
-
-## 📚 Documentation
-
-For detailed guides beyond this README:
-
-| Topic | Description |
-|-------|-------------|
-| [Docker & Quick Start](docs/guides/docker.md) | Docker Compose setup, Launcher/Agent modes |
-| [Chat Apps](docs/guides/chat-apps.md) | All 18+ channel setup guides |
-| [Configuration](docs/guides/configuration.md) | Environment variables, workspace layout, security sandbox |
-| [MCP Server CLI](docs/reference/mcp-cli.md) | Add, list, test, edit, and remove MCP server entries from the CLI |
-| [Scheduled Tasks and Cron Jobs](docs/reference/cron.md) | Cron schedule types, deliver modes, command gates, job storage |
-| [Providers & Models](docs/guides/providers.md) | 30+ LLM providers, model routing, model_list configuration |
-| [Spawn & Async Tasks](docs/guides/spawn-tasks.md) | Quick tasks, long tasks with spawn, async sub-agent orchestration |
-| [Hooks](docs/architecture/hooks/README.md) | Event-driven hook system: observers, interceptors, approval hooks |
-| [Steering](docs/architecture/steering.md) | Inject messages into a running agent loop between tool calls |
-| [SubTurn](docs/architecture/subturn.md) | Subagent coordination, concurrency control, lifecycle |
-| [Troubleshooting](docs/operations/troubleshooting.md) | Common issues and solutions |
-| [Tools Configuration](docs/reference/tools_configuration.md) | Per-tool enable/disable, exec policies, MCP, Skills |
-| [Hardware Compatibility](docs/guides/hardware-compatibility.md) | Tested boards, minimum requirements |
+The first visit creates a dashboard password. Do not expose the launcher to an
+untrusted network; see the [Web launcher security notes](docs/guides/configuration.md#web-launcher-dashboard).
+
+Prefer containers? Follow the [Docker and launcher guide](docs/guides/docker.md).
+Running on an older Android phone? Use the [Termux guide](docs/guides/android-termux.md).
+
+> [!CAUTION]
+> MintClaw is under rapid development and may contain unresolved security
+> issues. Review sender allowlists and tool policies, keep the launcher private,
+> and run `mintclaw doctor --strict` before exposing a deployment. Do not treat a
+> pre-1.0 build as a hardened multi-user service.
+
+## What you can build
+
+- An always-on assistant reached through Telegram, Discord, WhatsApp, Slack,
+  Matrix, and other supported chat apps.
+- A personal operations agent that schedules work, delegates long tasks, asks
+  for decisions, and reports completion to the right conversation.
+- A model-agnostic tool host using local tools, web search, MCP servers, and
+  installable workspace skills.
+- A small multi-machine setup where a central gateway invokes only approved
+  capabilities on paired Linux or macOS nodes.
+- A context-aware assistant using Seahorse-backed history, bounded prompt
+  assembly, session routing, and durable per-conversation goals.
+
+## Run it your way
+
+| Surface | Best for | Start here |
+| --- | --- | --- |
+| CLI | One-shot work, interactive chat, scripting, and diagnostics | `mintclaw onboard`, `mintclaw agent`, `mintclaw doctor` |
+| Web launcher | Browser-based setup, configuration, and chat | [Docker and launcher guide](docs/guides/docker.md) |
+| Gateway | Always-on chat apps, scheduled work, and live agent sessions | [Chat apps](docs/guides/chat-apps.md) |
+| Docker | Reproducible server or local deployment | [Docker Compose](docs/guides/docker.md#docker-compose) |
+| Android / Termux | Reuse an ARM64 phone as a small always-on host | [Android Termux guide](docs/guides/android-termux.md) |
+| Node companion | Add policy-constrained execution on another machine | [Node companion guide](docs/guides/node-companion.md) |
+
+## Documentation
+
+The README stays intentionally high level. Detailed provider lists, channel
+setup, tool configuration, and CLI behavior live in the documentation.
+
+| Need | Documentation |
+| --- | --- |
+| Install and configure | [Docker and quick start](docs/guides/docker.md) · [Configuration](docs/guides/configuration.md) |
+| Connect models and chat apps | [Providers and models](docs/guides/providers.md) · [Chat apps](docs/guides/chat-apps.md) |
+| Run durable workflows | [Spawn and async tasks](docs/guides/spawn-tasks.md) · [Human interaction](docs/guides/human-interaction.md) · [Cron](docs/reference/cron.md) |
+| Extend the runtime | [Tools](docs/reference/tools_configuration.md) · [MCP CLI](docs/reference/mcp-cli.md) · [Node companion](docs/guides/node-companion.md) |
+| Understand behavior | [Architecture](docs/architecture/README.md) · [Sessions](docs/guides/session-guide.md) · [Steering](docs/architecture/steering.md) |
+| Operate safely | [Doctor](docs/reference/doctor.md) · [Security](docs/security/README.md) · [Troubleshooting](docs/operations/troubleshooting.md) |
+
+The full documentation index is at [docs/README.md](docs/README.md).
 
 ## Contributing
 
-For local development guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for
+the local development workflow and validation requirements.
+
+MintClaw is available under the [MIT License](LICENSE).
