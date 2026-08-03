@@ -206,6 +206,31 @@ func (c *Coordinator) Get(deliveryID string) (Intent, error) {
 	return c.store.Get(deliveryID)
 }
 
+// Recover classifies persisted crash states and claims every intent that is
+// safe for this process to publish again.
+func (c *Coordinator) Recover() ([]Admission, error) {
+	if c == nil || c.store == nil {
+		return nil, errors.New("outbox coordinator is unavailable")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return nil, err
+	}
+	intents, err := c.store.Recover()
+	if err != nil {
+		return nil, err
+	}
+	admissions := make([]Admission, 0, len(intents))
+	for _, intent := range intents {
+		admission := c.claimDispatchLocked(intent)
+		if admission.Dispatch {
+			admissions = append(admissions, admission)
+		}
+	}
+	return admissions, nil
+}
+
 func (c *Coordinator) transitionPublished(
 	deliveryID string,
 	requireAttempt bool,
@@ -336,6 +361,10 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 	if err != nil {
 		return Admission{}, err
 	}
+	return c.claimDispatchLocked(intent), nil
+}
+
+func (c *Coordinator) claimDispatchLocked(intent Intent) Admission {
 	dispatchable := intent.Status == StatusPending || intent.Status == StatusDefinitelyFailed
 	_, leased := c.leases[intent.ID]
 	published := c.published[intent.ID]
@@ -347,7 +376,7 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 		lease = DispatchLease{deliveryID: intent.ID, generation: generation}
 	}
 	inFlight := dispatchable && leased
-	return Admission{Intent: intent, Dispatch: dispatch, InFlight: inFlight, Lease: lease}, nil
+	return Admission{Intent: intent, Dispatch: dispatch, InFlight: inFlight, Lease: lease}
 }
 
 func (c *Coordinator) validateOpenLocked() error {
