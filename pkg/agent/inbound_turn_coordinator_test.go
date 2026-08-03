@@ -433,8 +433,9 @@ func TestSteeringAckFailureRejectsRootSettlement(t *testing.T) {
 		rejectedFinalResponseAdmission(err),
 	)
 	acked, released, _ := trackingBus.ownership()
-	if containsExactly(acked, "spool-root") || !containsExactly(released, "spool-root") {
-		t.Fatalf("root ownership after steering ack failure = acked:%v released:%v", acked, released)
+	if containsExactly(acked, "spool-root") ||
+		!containsExactly(released, "spool-steering", "spool-root") {
+		t.Fatalf("ownership after steering ack failure = acked:%v released:%v", acked, released)
 	}
 }
 

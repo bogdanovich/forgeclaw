@@ -451,6 +451,11 @@ func (al *AgentLoop) ackAcceptedSteeringMessagesChecked(ctx context.Context, msg
 			continue
 		}
 		if err := al.ackInboundMessage(ctx, bus.InboundMessage{SpoolID: msg.InboundSpoolID}); err != nil {
+			al.releaseInboundMessage(
+				context.Background(),
+				bus.InboundMessage{SpoolID: msg.InboundSpoolID},
+				err,
+			)
 			ackErr = errors.Join(ackErr, err)
 		}
 	}
