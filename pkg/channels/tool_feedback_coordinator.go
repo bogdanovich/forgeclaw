@@ -465,6 +465,9 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	if entry.terminalSuccess == toolFeedbackTerminalSuccessTransient && entry.terminalRetained > 0 {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
+		if pendingCleanup {
+			c.scheduleTerminalMaintenance(transientToolFeedbackTerminal(terminal), toolFeedbackCleanupRetryDelay)
+		}
 		return
 	}
 	retained := entry.terminalSuccess == toolFeedbackTerminalSuccessRetained
@@ -481,18 +484,22 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
 
-	maintenanceTerminal := terminal
-	if !retained && terminal.retain {
-		maintenanceTerminal = &toolFeedbackTerminal{
-			key: terminal.key, entry: entry, generation: terminal.generation,
-		}
-	}
+	maintenanceTerminal := transientToolFeedbackTerminal(terminal)
 	if pendingCleanup {
 		c.scheduleTerminalMaintenance(maintenanceTerminal, toolFeedbackCleanupRetryDelay)
 	} else if retained {
 		c.scheduleTerminalMaintenance(terminal, toolFeedbackTerminalTombstoneTTL)
 	} else {
 		c.removeEntry(terminal.key, entry)
+	}
+}
+
+func transientToolFeedbackTerminal(terminal *toolFeedbackTerminal) *toolFeedbackTerminal {
+	if terminal == nil || !terminal.retain {
+		return terminal
+	}
+	return &toolFeedbackTerminal{
+		key: terminal.key, entry: terminal.entry, generation: terminal.generation,
 	}
 }
 

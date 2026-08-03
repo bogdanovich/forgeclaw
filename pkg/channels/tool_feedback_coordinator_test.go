@@ -800,6 +800,58 @@ func TestToolFeedbackCoordinator_TransientSuccessSurvivesRetainedFailure(t *test
 	}
 }
 
+func TestToolFeedbackCoordinator_TransientCleanupRetriesWhileRetainedPending(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	retried := make(chan struct{})
+	var retryOnce sync.Once
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if deleteCalls == 1 {
+				return ErrTemporary
+			}
+			retryOnce.Do(func() { close(retried) })
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+
+	select {
+	case <-retried:
+	case <-time.After(toolFeedbackCleanupRetryDelay + 2*time.Second):
+		t.Fatal("transient cleanup was not retried while retained terminal remained pending")
+	}
+	if deleteCalls != 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and timer-driven retry", deleteCalls)
+	}
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "before final outcome", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("pending-final Deliver() = (%v, %v), sends %d, want retained barrier", ids, err, sends)
+	}
+
+	coordinator.CompleteTerminal(t.Context(), retained, false)
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "after failed final", operations, send,
+	); err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
+		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want new progress-2", ids, err, sends)
+	}
+}
+
 func TestToolFeedbackCoordinator_RetainedTerminalJoinsTransientCleanup(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()
