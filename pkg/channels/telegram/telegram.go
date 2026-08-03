@@ -335,6 +335,7 @@ func (c *TelegramChannel) SendMessageResult(
 		Acceptance: result.Acceptance,
 		Remaining:  remaining,
 		RetryAfter: result.RetryAfter,
+		RetryAt:    result.RetryAt,
 		Attempts:   result.Attempts,
 		Err:        result.Err,
 	}
@@ -924,15 +925,15 @@ func (c *TelegramChannel) sendMediaAttempt(
 	var messageIDs []string
 	leadingCaption := channels.FirstPartCaption(msg.Parts)
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {
-		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
-		if leadingErr != nil {
-			var remainder *bus.OutboundMediaMessage
-			if len(leadingIDs) == 0 {
-				remainder = &msg
+		leadingResult := c.sendCaptionTextResult(ctx, chatID, threadID, leadingCaption)
+		if !leadingResult.Delivered() {
+			remainder := channels.ClearMediaCaptions(msg)
+			if len(remainder.Parts) > 0 && len(leadingResult.Remaining) > 0 {
+				remainder.Parts[0].Caption = strings.Join(leadingResult.Remaining, "\n")
 			}
-			return telegramMediaFailure(leadingIDs, remainder, leadingErr)
+			return telegramMediaFailure(leadingResult.MessageIDs, &remainder, leadingResult.Err)
 		}
-		messageIDs = append(messageIDs, leadingIDs...)
+		messageIDs = append(messageIDs, leadingResult.MessageIDs...)
 		msg = channels.ClearMediaCaptions(msg)
 	}
 
@@ -1354,12 +1355,22 @@ func (c *TelegramChannel) sendCaptionText(
 	threadID int,
 	text string,
 ) ([]string, error) {
+	result := c.sendCaptionTextResult(ctx, chatID, threadID, text)
+	return result.MessageIDs, result.Err
+}
+
+func (c *TelegramChannel) sendCaptionTextResult(
+	ctx context.Context,
+	chatID int64,
+	threadID int,
+	text string,
+) channels.DeliveryResult[string] {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return nil, nil
+		return channels.SuccessfulDelivery[string](nil)
 	}
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
-	return c.sendTextChunks(ctx, text, sendChunkParams{
+	return c.sendTextChunkQueue(ctx, []string{text}, sendChunkParams{
 		chatID:        chatID,
 		threadID:      threadID,
 		useMarkdownV2: useMarkdownV2,
@@ -2193,19 +2204,13 @@ func wrapTelegramSendError(operation string, err error) error {
 	return fmt.Errorf("%s: %w: %w", operation, classification, err)
 }
 
-func telegramDeliveryWasRejected(err error) bool {
-	return errors.Is(err, channels.ErrNotRunning) ||
-		errors.Is(err, channels.ErrSendFailed) ||
-		errors.Is(err, channels.ErrRateLimit)
-}
-
 func telegramMediaFailure(
 	messageIDs []string,
 	remainder *bus.OutboundMediaMessage,
 	err error,
 ) channels.DeliveryResult[bus.OutboundMediaMessage] {
 	var pending []bus.OutboundMediaMessage
-	if remainder != nil && telegramDeliveryWasRejected(err) {
+	if remainder != nil {
 		pending = []bus.OutboundMediaMessage{*remainder}
 	}
 	return channels.FailedDelivery(

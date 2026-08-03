@@ -2209,7 +2209,8 @@ func (m *Manager) failPendingOutbound(
 			if !ok {
 				return
 			}
-			m.publishOutboundFailed(name, msg, err, false)
+			failureErr := m.persistDurableRejection(msg.DeliveryID, err)
+			m.publishOutboundFailed(name, msg, failureErr, false)
 		default:
 			return
 		}
@@ -2587,7 +2588,8 @@ func (m *Manager) failPendingOutboundMedia(
 			if !ok {
 				return
 			}
-			m.publishOutboundMediaFailed(name, msg, err)
+			failureErr := m.persistDurableRejection(msg.DeliveryID, err)
+			m.publishOutboundMediaFailed(name, msg, failureErr)
 		default:
 			return
 		}

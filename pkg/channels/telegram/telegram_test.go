@@ -911,6 +911,102 @@ func TestSendMediaResultPreservesPartialGroupOutcomeAndRetryAfter(t *testing.T) 
 	}
 }
 
+func TestSendMediaResultPreservesKnownRemainderForAmbiguousGroupFailure(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	callIndex := 0
+	caller := &stubCaller{
+		callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
+			callIndex++
+			if callIndex == 1 {
+				return successMediaGroupResponse(t, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), nil
+			}
+			return nil, &ta.Error{ErrorCode: http.StatusInternalServerError, Description: "server error"}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	parts := make([]bus.MediaPart, 0, 11)
+	tmpDir := t.TempDir()
+	for index := 0; index < 11; index++ {
+		path := filepath.Join(tmpDir, "image-"+strconv.Itoa(index)+".png")
+		require.NoError(t, os.WriteFile(path, []byte("image"), 0o644))
+		ref, err := store.Store(
+			path,
+			media.MediaMeta{Filename: filepath.Base(path), ContentType: "image/png"},
+			"scope-ambiguous-media",
+		)
+		require.NoError(t, err)
+		parts = append(parts, bus.MediaPart{Type: "image", Ref: ref})
+	}
+	result := ch.SendMediaResult(t.Context(), []bus.OutboundMediaMessage{{
+		ChatID: "12345",
+		Parts:  parts,
+	}})
+
+	if result.Acceptance != channels.DeliveryAcceptanceUnknown || !errors.Is(result.Err, channels.ErrTemporary) {
+		t.Fatalf("typed Telegram media outcome = %+v", result)
+	}
+	if len(result.MessageIDs) != 10 || len(result.Remaining) != 1 || len(result.Remaining[0].Parts) != 1 {
+		t.Fatalf("typed Telegram ambiguous progress = %+v", result)
+	}
+}
+
+func TestSendMediaResultPreservesMediaAfterPartialLongCaptionRejection(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	callIndex := 0
+	caller := &stubCaller{
+		callFn: func(_ context.Context, url string, _ *ta.RequestData) (*ta.Response, error) {
+			if !strings.Contains(url, "sendMessage") {
+				t.Fatalf("unexpected API call: %s", url)
+			}
+			callIndex++
+			if callIndex == 1 {
+				return successResponseWithMessageID(t, 501), nil
+			}
+			return nil, &ta.Error{
+				ErrorCode:   http.StatusTooManyRequests,
+				Description: "Too Many Requests",
+				Parameters:  &ta.ResponseParameters{RetryAfter: 7},
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "image.png")
+	require.NoError(t, os.WriteFile(path, []byte("image"), 0o644))
+	ref, err := store.Store(
+		path,
+		media.MediaMeta{Filename: filepath.Base(path), ContentType: "image/png"},
+		"scope-caption-remainder",
+	)
+	require.NoError(t, err)
+	longCaption := strings.Repeat("long caption segment ", 400)
+	result := ch.SendMediaResult(t.Context(), []bus.OutboundMediaMessage{{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: longCaption,
+		}},
+	}})
+
+	if result.Acceptance != channels.DeliveryRejected || result.RetryAfter != 7*time.Second ||
+		!errors.Is(result.Err, channels.ErrRateLimit) {
+		t.Fatalf("typed Telegram caption outcome = %+v", result)
+	}
+	if len(result.MessageIDs) != 1 || len(result.Remaining) != 1 || len(result.Remaining[0].Parts) != 1 {
+		t.Fatalf("typed Telegram caption progress = %+v", result)
+	}
+	remainingCaption := channels.FirstPartCaption(result.Remaining[0].Parts)
+	if remainingCaption == "" || remainingCaption == longCaption {
+		t.Fatalf("remaining caption length = %d, want non-empty unsent tail", len(remainingCaption))
+	}
+}
+
 func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	longCaption := strings.Repeat("a", telegramCaptionLimit) + " tail overflow"

@@ -406,6 +406,38 @@ func TestDurableQueuedMediaPersistsTypedAdapterRetryAfter(t *testing.T) {
 	}
 }
 
+func TestCancellationDrainPersistsDurableDispatchRejections(t *testing.T) {
+	coordinator := openDurableTestCoordinator(t)
+	manager := newTestManager()
+	manager.outboundOutbox = coordinator
+	cause := context.Canceled
+
+	message := admitDurableTestMessage(t, coordinator, "source-canceled-text")
+	messageQueue := make(chan bus.OutboundMessage, 1)
+	messageQueue <- message
+	close(messageQueue)
+	manager.failPendingOutbound("test", messageQueue, cause)
+
+	mediaMessage := admitDurableTestMedia(t, coordinator, "source-canceled-media")
+	mediaQueue := make(chan bus.OutboundMediaMessage, 1)
+	mediaQueue <- mediaMessage
+	close(mediaQueue)
+	manager.failPendingOutboundMedia("test", mediaQueue, cause)
+
+	for _, deliveryID := range []string{message.DeliveryID, mediaMessage.DeliveryID} {
+		intent, err := coordinator.Get(deliveryID)
+		if err != nil {
+			t.Fatalf("Get(%q) error = %v", deliveryID, err)
+		}
+		if intent.Status != outbox.StatusDefinitelyFailed || intent.Attempts != 0 {
+			t.Fatalf("drained intent = %+v, want definitely failed without an adapter attempt", intent)
+		}
+		if !strings.Contains(intent.LastError, context.Canceled.Error()) {
+			t.Fatalf("drained intent error = %q, want cancellation", intent.LastError)
+		}
+	}
+}
+
 func openDurableTestCoordinator(t *testing.T) *outbox.Coordinator {
 	t.Helper()
 	coordinator, err := outbox.OpenCoordinator(t.TempDir())

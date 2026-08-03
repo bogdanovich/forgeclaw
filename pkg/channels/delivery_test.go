@@ -163,6 +163,41 @@ func TestDeliverWithRetryHonorsRetryAfterAndCancellation(t *testing.T) {
 	if result.Attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", result.Attempts)
 	}
+	if result.RetryAt.IsZero() {
+		t.Fatal("retry deadline was not anchored")
+	}
+}
+
+func TestDeliverWithRetryAnchorsRetryDeadlineBeforeWaiting(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	started := time.Now().UTC()
+	result := DeliverWithRetry(
+		ctx,
+		[]string{"payload"},
+		DeliveryRetryPolicy{MaxRetries: 1},
+		func(_ context.Context, pending []string) DeliveryResult[string] {
+			return FailedDelivery(nil, pending, 200*time.Millisecond, ErrRateLimit)
+		},
+		nil,
+	)
+
+	if !errors.Is(result.Err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", result.Err)
+	}
+	if result.RetryAt.Before(started.Add(150*time.Millisecond)) ||
+		result.RetryAt.After(started.Add(300*time.Millisecond)) {
+		t.Fatalf("retry deadline = %v, want adapter-time deadline near %v", result.RetryAt, started.Add(200*time.Millisecond))
+	}
+	if remaining := time.Until(result.RetryAt); remaining > 150*time.Millisecond {
+		t.Fatalf("retry deadline retained %v after waiting, want at most 150ms", remaining)
+	}
 }
 
 func TestDeliverWithRetryRejectsEmptyPayload(t *testing.T) {

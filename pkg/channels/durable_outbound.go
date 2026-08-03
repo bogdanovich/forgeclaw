@@ -97,7 +97,9 @@ func durableOutcome[T any](result DeliveryResult[T], priorMessageIDs []string) O
 		PlatformMessageIDs: messageIDs,
 		Err:                result.Err,
 	}
-	if result.RetryAfter > 0 {
+	if !result.RetryAt.IsZero() {
+		outcome.RetryAfter = result.RetryAt.UTC()
+	} else if result.RetryAfter > 0 {
 		outcome.RetryAfter = time.Now().UTC().Add(result.RetryAfter)
 	}
 	switch {
