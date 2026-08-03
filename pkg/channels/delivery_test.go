@@ -193,7 +193,11 @@ func TestDeliverWithRetryAnchorsRetryDeadlineBeforeWaiting(t *testing.T) {
 	}
 	if result.RetryAt.Before(started.Add(150*time.Millisecond)) ||
 		result.RetryAt.After(started.Add(300*time.Millisecond)) {
-		t.Fatalf("retry deadline = %v, want adapter-time deadline near %v", result.RetryAt, started.Add(200*time.Millisecond))
+		t.Fatalf(
+			"retry deadline = %v, want adapter-time deadline near %v",
+			result.RetryAt,
+			started.Add(200*time.Millisecond),
+		)
 	}
 	if remaining := time.Until(result.RetryAt); remaining > 150*time.Millisecond {
 		t.Fatalf("retry deadline retained %v after waiting, want at most 150ms", remaining)
