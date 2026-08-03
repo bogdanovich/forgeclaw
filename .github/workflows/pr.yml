@@ -91,7 +91,7 @@ jobs:
 
       - name: Run targeted race regressions
         run: >-
-          go test -race -tags goolm,stdjson
+          go test -count=1 -race -tags goolm,stdjson
           -run
           '^(TestConcurrentBuildSystemPromptWithCache|TestFinish_ConcurrentCalls|TestDeliverSubTurnResult_RaceWithFinish|TestSteeringQueue_ConcurrentAccess|TestCronService_ConcurrentAccess|TestConcurrent_AddAndRead|TestConcurrent_SummarizeRace)$'
           ./pkg/agent
