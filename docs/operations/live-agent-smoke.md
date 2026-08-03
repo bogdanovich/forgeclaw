@@ -17,6 +17,74 @@ The bearer token is read from configuration and is never printed. The client
 creates an isolated protocol session by default. `--session` may be supplied
 when a deliberately stable session is needed.
 
+## Transport and invocation model
+
+`mintclaw agent live` is a one-shot CLI client for the same authenticated
+MintClaw WebSocket transport that interactive clients use. It is not a second
+transport and it does not start another agent runtime. The difference is the
+client lifecycle:
+
+- an interactive client normally keeps one WebSocket connection open and
+  exchanges multiple messages;
+- `agent live` opens a connection, sends one request, waits for its correlated
+  terminal outcome, and exits; and
+- each later `agent live` command opens a new connection, even when it resumes
+  the same durable agent session.
+
+This bounded lifecycle makes the command suitable for scripts, smoke tests,
+and operator automation while preserving the gateway's normal routing,
+approval, tool, and trace behavior.
+
+### `agent --stateless` compared with `agent live`
+
+These commands solve different problems:
+
+| Command | Agent runtime | Conversation state | Live gateway-owned resources |
+| --- | --- | --- | --- |
+| `mintclaw agent --stateless -m '...'` | Creates a separate local `AgentLoop` in the CLI process | Does not load or save conversation history | Cannot use connected node sessions and other runtime state owned by the already running gateway |
+| `mintclaw agent live --message '...'` | Sends the request to the already running gateway's `AgentLoop` | Uses a new isolated session by default, or resumes the durable session selected by `--session` | Uses the gateway's live tools, node registry, approval state, delivery ownership, and diagnostic tracing |
+
+`--stateless` controls conversation persistence for a direct local turn; it
+does not mean "send an isolated request to the live gateway." Conversely,
+`agent live` controls where the turn runs, and currently has no `--stateless`
+flag. Omit `--session` when a fresh live conversation is sufficient, but note
+that the resulting turn is still processed and recorded by the live gateway's
+normal durable runtime.
+
+## Continue an existing session
+
+Without `--session`, every invocation generates a new `live-smoke-<UUID>`
+protocol session and therefore starts with an isolated conversation context.
+Pass the same explicit session ID to sequential invocations when the next
+message should be appended to the same durable agent history:
+
+```sh
+mintclaw agent live \
+  --config /home/server/.mintclaw/main/config.json \
+  --session vpn-maintenance-2026-08 \
+  --message 'Check the current state of the vpn node.' \
+  --timeout 3m \
+  --json
+
+mintclaw agent live \
+  --config /home/server/.mintclaw/main/config.json \
+  --session vpn-maintenance-2026-08 \
+  --message 'Now report free disk space on the same node.' \
+  --timeout 3m \
+  --json
+```
+
+The two commands use separate WebSocket connections, but the stable session
+ID maps them to the same routed conversation, so the second turn can use the
+first turn's context. A session ID is a routing identifier, not an
+authentication credential; authentication still comes from the configured
+channel token.
+
+Use the generated default session for independent smoke tests. Use a stable,
+purpose-specific ID for a deliberate multi-turn operator workflow, and submit
+turns sequentially when their order matters rather than running concurrent
+commands against the same session.
+
 ## Basic live-agent check
 
 ```sh
