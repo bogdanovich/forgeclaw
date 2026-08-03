@@ -601,6 +601,11 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	if out == nil {
 		return nil, toolResultDeliveryNone, nil
 	}
+	if result.CommitOutbound != nil && !hasOutboundTransaction(ctx) {
+		return nil, toolResultDeliveryNone, errors.New(
+			"durable outbound transaction is required for recoverable tool delivery",
+		)
+	}
 	channel := firstNonEmptyString(out.Channel, ts.channel)
 	chatID := firstNonEmptyString(out.ChatID, ts.chatID)
 	replyToMessageID := firstNonEmptyString(out.ReplyToMessageID, ts.opts.Dispatch.ReplyToMessageID())
@@ -623,6 +628,7 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			SessionKey: ts.sessionKey,
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      append([]bus.MediaPart(nil), out.Media...),
+			Recovery:   out.Recovery,
 		}
 		applyToolResultOutboundMetadata(result, &outboundMedia.Context)
 		if err := bus.SetOutboundMediaTraceScopes(&outboundMedia, traceScopes); err != nil {
@@ -645,7 +651,12 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			return buildProviderAttachmentsFromMediaParts(out.Media), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
-			if _, err := al.publishTransactionMedia(ctx, ts.workspace, outboundMedia); err != nil {
+			if _, err := al.publishTransactionMediaAtBoundary(
+				ctx, ts.workspace, outboundMedia,
+				func(commitCtx context.Context) error {
+					return commitToolResultOutbound(commitCtx, result)
+				},
+			); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
 			return nil, toolResultDeliveryQueued, nil
@@ -678,7 +689,12 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		return nil, toolResultDeliveryDirect, nil
 	}
 	if al.bus != nil {
-		if _, err := al.publishTransactionMessage(ctx, ts.workspace, outboundMessage); err != nil {
+		if _, err := al.publishTransactionMessageAtBoundary(
+			ctx, ts.workspace, outboundMessage,
+			func(commitCtx context.Context) error {
+				return commitToolResultOutbound(commitCtx, result)
+			},
+		); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}
 		return nil, toolResultDeliveryQueued, nil

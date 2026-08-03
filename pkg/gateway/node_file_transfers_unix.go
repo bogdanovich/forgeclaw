@@ -21,6 +21,8 @@ import (
 
 const nodeTransferDeliveryTempAttempts = 16
 
+func (*gatewayBrowserToolSource) ScreenshotAvailable() bool { return true }
+
 func openNodeTransferMedia(path string) (*os.File, os.FileInfo, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -49,24 +51,35 @@ func copyNodeTransferDelivery(
 	workspace string,
 	name string,
 ) (string, error) {
+	path, _, err := copyNodeTransferDeliveryTracked(ctx, source, artifact, workspace, name)
+	return path, err
+}
+
+func copyNodeTransferDeliveryTracked(
+	ctx context.Context,
+	source *os.File,
+	artifact nodes.TransferArtifactRecord,
+	workspace string,
+	name string,
+) (string, bool, error) {
 	if source == nil {
-		return "", nodes.ErrTransferArtifactNotFound
+		return "", false, nodes.ErrTransferArtifactNotFound
 	}
 	directory, err := openNodeTransferDeliveryDirectory(workspace)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer directory.Close()
 	destination := filepath.Join(directory.Name(), name)
 	if existing, existingErr := openNodeTransferDeliveryFile(directory, name); existingErr == nil {
 		defer existing.Close()
-		return destination, verifyNodeTransferDelivery(existing, artifact)
+		return destination, false, verifyNodeTransferDelivery(existing, artifact)
 	} else if !errors.Is(existingErr, os.ErrNotExist) {
-		return "", existingErr
+		return "", false, existingErr
 	}
 	temp, tempName, err := createNodeTransferDeliveryTemp(directory)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	removeTemp := true
 	defer func() {
@@ -90,17 +103,17 @@ func copyNodeTransferDelivery(
 		if copyErr == nil {
 			copyErr = nodes.ErrTransferDigestMismatch
 		}
-		return "", copyErr
+		return "", false, copyErr
 	}
 	var extra [1]byte
 	if count, readErr := source.Read(extra[:]); count != 0 || !errors.Is(readErr, io.EOF) {
-		return "", nodes.ErrTransferSizeExceeded
+		return "", false, nodes.ErrTransferSizeExceeded
 	}
 	if err := temp.Sync(); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := temp.Close(); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := unix.Renameat(
 		int(directory.Fd()),
@@ -108,13 +121,25 @@ func copyNodeTransferDelivery(
 		int(directory.Fd()),
 		name,
 	); err != nil {
-		return "", err
+		return "", false, err
 	}
 	removeTemp = false
 	if err := directory.Sync(); err != nil {
-		return "", err
+		return destination, true, err
 	}
-	return destination, nil
+	return destination, true, nil
+}
+
+func removeNodeTransferDelivery(workspace, name string) error {
+	directory, err := openNodeTransferDeliveryDirectory(workspace)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err = unix.Unlinkat(int(directory.Fd()), name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return directory.Sync()
 }
 
 func openNodeTransferDeliveryDirectory(workspace string) (*os.File, error) {

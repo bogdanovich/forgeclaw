@@ -24,6 +24,8 @@ func startGatewayOutboundReconciler(
 	coordinator *outbox.Coordinator,
 	msgBus *bus.MessageBus,
 	admissions []outbox.Admission,
+	nodeRuntime *nodeAdmissionRuntime,
+	artifactWorkspace string,
 ) (*gatewayOutboundReconciler, error) {
 	if parent == nil {
 		parent = context.Background()
@@ -44,7 +46,9 @@ func startGatewayOutboundReconciler(
 			firstDelayed = index
 			break
 		}
-		if err := publishRecoveredAdmission(reconcileCtx, coordinator, msgBus, admission); err != nil {
+		if err := publishRecoveredAdmission(
+			reconcileCtx, coordinator, msgBus, admission, nodeRuntime, artifactWorkspace,
+		); err != nil {
 			cancel()
 			releaseRecoveredAdmissions(coordinator, pending[index+1:])
 			return nil, fmt.Errorf("publish recovered outbound intent %q: %w", admission.Intent.ID, err)
@@ -61,7 +65,9 @@ func startGatewayOutboundReconciler(
 				releaseRecoveredAdmissions(coordinator, delayed[index:])
 				return
 			}
-			if err := publishRecoveredAdmission(reconcileCtx, coordinator, msgBus, admission); err != nil {
+			if err := publishRecoveredAdmission(
+				reconcileCtx, coordinator, msgBus, admission, nodeRuntime, artifactWorkspace,
+			); err != nil {
 				logger.ErrorCF("gateway", "Failed to publish scheduled outbound recovery", map[string]any{
 					"delivery_id": admission.Intent.ID,
 					"error":       err.Error(),
@@ -123,9 +129,16 @@ func publishRecoveredAdmission(
 	coordinator *outbox.Coordinator,
 	msgBus *bus.MessageBus,
 	admission outbox.Admission,
+	nodeRuntime *nodeAdmissionRuntime,
+	artifactWorkspace string,
 ) error {
 	if !admission.Dispatch {
 		return errors.New("recovered outbound admission does not own dispatch")
+	}
+	if err := restoreRecoveredOutboundPrerequisite(
+		nodeRuntime, artifactWorkspace, admission.Intent,
+	); err != nil {
+		return errors.Join(err, coordinator.ReleaseAdmission(admission.Lease))
 	}
 	if err := coordinator.PrepareAdmission(admission.Lease); err != nil {
 		return err
@@ -152,6 +165,21 @@ func publishRecoveredAdmission(
 		return errors.Join(publishErr, coordinator.ReleaseAdmission(admission.Lease))
 	}
 	return coordinator.CommitAdmission(admission.Lease)
+}
+
+func restoreRecoveredOutboundPrerequisite(
+	nodeRuntime *nodeAdmissionRuntime,
+	artifactWorkspace string,
+	intent outbox.Intent,
+) error {
+	if intent.Media == nil || intent.Media.Recovery == nil {
+		return nil
+	}
+	return recoverBrowserScreenshotDelivery(
+		nodeRuntime,
+		artifactWorkspace,
+		*intent.Media.Recovery,
+	)
 }
 
 func releaseRecoveredAdmissions(coordinator *outbox.Coordinator, admissions []outbox.Admission) {

@@ -47,6 +47,72 @@ var (
 	elementRoleRegexp       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 )
 
+type DriverScreenshot struct {
+	Data        []byte
+	ContentType string
+}
+
+type ScreenshotRequest struct {
+	Owner              Owner
+	RequestID          string
+	SessionID          string
+	TabID              string
+	SnapshotID         string
+	SnapshotGeneration uint64
+}
+
+type ScreenshotDeliveryRequest struct {
+	Owner     Owner
+	RequestID string
+	SessionID string
+	Ref       string
+	MediaRef  string
+}
+
+const (
+	ScreenshotDeliveryPending        = "pending"
+	ScreenshotDeliveryAlreadyClaimed = "already_claimed"
+)
+
+type ScreenshotArtifact struct {
+	Ref                string              `json:"ref"`
+	Kind               string              `json:"kind"`
+	ContentType        string              `json:"content_type"`
+	Filename           string              `json:"filename"`
+	Size               int64               `json:"size"`
+	SHA256             string              `json:"sha256"`
+	ExpiresAt          int64               `json:"expires_at"`
+	SessionID          string              `json:"browser_session_id"`
+	TabID              string              `json:"tab_id"`
+	SnapshotID         string              `json:"snapshot_id"`
+	SnapshotGeneration uint64              `json:"snapshot_generation"`
+	Truncated          bool                `json:"truncated"`
+	DeliveryState      string              `json:"-"`
+	MediaRef           string              `json:"-"`
+	Recovery           *ScreenshotRecovery `json:"-"`
+}
+
+type ScreenshotRecovery struct {
+	WorkspaceID string
+	AgentID     string
+	ActorID     string
+	RouteID     string
+	SessionID   string
+	ToolCallID  string
+}
+
+type ScreenshotCapture struct {
+	SessionID          string
+	Target             string
+	Profile            string
+	PolicyRevision     string
+	TabID              string
+	SnapshotID         string
+	SnapshotGeneration uint64
+	Data               []byte
+	ContentType        string
+}
+
 type SessionState string
 
 const (

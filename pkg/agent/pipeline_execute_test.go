@@ -343,6 +343,88 @@ func TestPipelineToolResultJournalFailurePreventsEveryDeliveryMode(t *testing.T)
 	}
 }
 
+func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
+	const (
+		mediaRef = "media://private-browser-screenshot"
+		hostPath = "/private/workspace/state/media/browser-screenshot.png"
+	)
+	store := session.NewSessionManager("")
+	commitCalls := 0
+	result := tools.NewToolResult(`{"artifact":{"ref":"transfer-artifact://opaque"}}`).
+		WithOutboundDelivery(tools.OutboundDelivery{
+			Media: []bus.MediaPart{{
+				Type: "image", Ref: mediaRef, Filename: "browser-screenshot.png", ContentType: "image/png",
+			}},
+			Recovery: &bus.OutboundRecovery{
+				Kind:        bus.OutboundRecoveryBrowserScreenshot,
+				ArtifactRef: "transfer-artifact://opaque", MediaRef: mediaRef,
+				WorkspaceID: "private_workspace", AgentID: "browser", ActorID: "private_actor",
+				RouteID: "private_route", SessionID: "private_session", ToolCallID: "private_call",
+			},
+		}).
+		WithOutboundCommit(func(context.Context) error {
+			commitCalls++
+			return nil
+		}).
+		WithImmediateDelivery()
+	tool := &fixedToolResultTool{name: "browser_observe", result: result}
+	registry := tools.NewToolRegistry()
+	registry.Register(tool)
+	agent := &AgentInstance{ID: "browser", Tools: registry, Sessions: store}
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-browser-screenshot",
+		sessionKey: "session-browser-screenshot",
+		opts: processOptions{
+			SendResponse: true,
+			Dispatch:     DispatchRequest{SessionKey: "session-browser-screenshot"},
+		},
+	}
+	toolCall := providers.ToolCall{ID: "call-browser", Name: tool.Name(), Arguments: map[string]any{}}
+	intent := providers.Message{Role: "assistant", ToolCalls: []providers.ToolCall{toolCall}}
+	if err := store.AppendTurnMessage(t.Context(), ts.sessionKey, intent); err != nil {
+		t.Fatal(err)
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", []providers.Message{intent})
+	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
+	exec.assistantToolCallsPersisted = true
+	deliveryCalls := 0
+	delivery := &syncToolResultDelivery{deliverToUser: func(
+		deliveryCtx context.Context,
+		_ *turnState,
+		got *tools.ToolResult,
+		_ string,
+	) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
+		deliveryCalls++
+		journaled := store.GetHistory(ts.sessionKey)
+		if commitCalls != 0 || got.Outbound == nil || got.Outbound.Recovery == nil ||
+			len(got.Outbound.Media) != 1 ||
+			got.Outbound.Media[0].Ref != mediaRef || len(got.Media) != 0 ||
+			len(got.ArtifactTags) != 0 || len(journaled) != 2 || journaled[1].Role != "tool" {
+			t.Fatalf(
+				"delivery result = %#v; commit calls = %d; journaled = %#v",
+				got, commitCalls, journaled,
+			)
+		}
+		if err := commitToolResultOutbound(deliveryCtx, got); err != nil {
+			return nil, toolResultDeliveryNone, err
+		}
+		return nil, toolResultDeliveryQueued, nil
+	}}
+	pipeline := &Pipeline{Interaction: PipelineInteractionServices{SyncToolDelivery: delivery}}
+	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+	history := store.GetHistory(ts.sessionKey)
+	if deliveryCalls != 1 || commitCalls != 1 || len(history) != 2 ||
+		history[1].Role != "tool" || len(history[1].Media) != 0 ||
+		strings.Contains(history[1].Content, mediaRef) || strings.Contains(history[1].Content, hostPath) ||
+		strings.Contains(history[1].Content, "private_workspace") {
+		t.Fatalf(
+			"delivery calls = %d, commit calls = %d, history = %#v",
+			deliveryCalls, commitCalls, history,
+		)
+	}
+}
+
 func TestPipelineSuppressedToolDeliveryRetainsHandledAndImmediateMedia(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

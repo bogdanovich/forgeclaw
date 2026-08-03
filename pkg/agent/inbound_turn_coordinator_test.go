@@ -362,6 +362,130 @@ func TestOutboundTransactionPersistsBeforePublishAndSuppressesSameProcessReplay(
 	}
 }
 
+func TestOutboundTransactionMediaCommitRunsInsideAdmissionBoundary(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	root := t.TempDir()
+	installTestOutboundCoordinator(t, al, root)
+	agent := al.registry.GetDefaultAgent()
+	message := bus.OutboundMediaMessage{
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+		Parts: []bus.MediaPart{{Type: "image", Ref: "media://screenshot"}},
+	}
+	identity := outbox.Identity{
+		SourceID: "spool-browser-screenshot", Ordinal: 0, Kind: outbox.KindMedia,
+		Channel: message.Channel, ChatID: message.ChatID, SessionKey: message.SessionKey,
+	}
+	deliveryID, err := outbox.DeliveryID(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := outbox.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitCalls := 0
+	commit := func(context.Context) error {
+		commitCalls++
+		intent, getErr := store.Get(deliveryID)
+		if getErr != nil || intent.Status != outbox.StatusPending {
+			t.Fatalf("intent at media commit = %+v, %v", intent, getErr)
+		}
+		select {
+		case outbound := <-msgBus.OutboundMediaChan():
+			t.Fatalf("media published before artifact claim: %+v", outbound)
+		default:
+		}
+		return nil
+	}
+	published, err := al.publishTransactionMediaAtBoundary(
+		withOutboundTransaction(t.Context(), identity.SourceID), agent.Workspace, message, commit,
+	)
+	if err != nil || !published || commitCalls != 1 {
+		t.Fatalf("first publication = (%t, %v), commit calls = %d", published, err, commitCalls)
+	}
+	select {
+	case <-msgBus.OutboundMediaChan():
+	case <-time.After(time.Second):
+		t.Fatal("admitted media was not published")
+	}
+
+	replayCommits := 0
+	published, err = al.publishTransactionMediaAtBoundary(
+		withOutboundTransaction(t.Context(), identity.SourceID), agent.Workspace, message,
+		func(context.Context) error {
+			replayCommits++
+			return nil
+		},
+	)
+	if err != nil || published || replayCommits != 1 {
+		t.Fatalf("replay = (%t, %v), commit calls = %d", published, err, replayCommits)
+	}
+	select {
+	case duplicate := <-msgBus.OutboundMediaChan():
+		t.Fatalf("replay published duplicate: %+v", duplicate)
+	default:
+	}
+
+	failedIdentity := "spool-browser-claim-failure"
+	claimErr := errors.New("claim screenshot delivery")
+	published, err = al.publishTransactionMediaAtBoundary(
+		withOutboundTransaction(t.Context(), failedIdentity), agent.Workspace, message,
+		func(context.Context) error { return claimErr },
+	)
+	if published || !errors.Is(err, claimErr) {
+		t.Fatalf("failed claim publication = (%t, %v)", published, err)
+	}
+	published, err = al.publishTransactionMediaAtBoundary(
+		withOutboundTransaction(t.Context(), failedIdentity), agent.Workspace, message,
+		func(context.Context) error { return nil },
+	)
+	if err != nil || !published {
+		t.Fatalf("publication after released claim = (%t, %v)", published, err)
+	}
+	select {
+	case <-msgBus.OutboundMediaChan():
+	case <-time.After(time.Second):
+		t.Fatal("media was not published after failed claim admission was released")
+	}
+
+	crashIdentity := "spool-browser-claimed-before-publish"
+	crashCtx := withOutboundTransaction(t.Context(), crashIdentity)
+	admission, err := al.admitDurableMedia(crashCtx, agent.Workspace, message)
+	if err != nil || !admission.durable || !admission.dispatch {
+		t.Fatalf("pre-crash admission = %+v, %v", admission, err)
+	}
+	artifactClaimed := true
+	oldCoordinator := al.outboundCoordinator()
+	if closeErr := oldCoordinator.Close(); closeErr != nil {
+		t.Fatalf("close pre-crash coordinator: %v", closeErr)
+	}
+	recoveredCoordinator, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatalf("reopen coordinator after simulated crash: %v", err)
+	}
+	al.SetOutboundOutbox(recoveredCoordinator)
+	recoveryClaims := 0
+	published, err = al.publishTransactionMediaAtBoundary(
+		withOutboundTransaction(t.Context(), crashIdentity), agent.Workspace, message,
+		func(context.Context) error {
+			if !artifactClaimed {
+				t.Fatal("artifact claim was not retained across simulated crash")
+			}
+			recoveryClaims++
+			return nil
+		},
+	)
+	if err != nil || !published || recoveryClaims != 1 {
+		t.Fatalf("post-crash recovery = (%t, %v), claims = %d", published, err, recoveryClaims)
+	}
+	select {
+	case <-msgBus.OutboundMediaChan():
+	case <-time.After(time.Second):
+		t.Fatal("pending durable media was not published after simulated crash")
+	}
+}
+
 func TestOutboundTransactionRetainsChildFailureAfterSuccessfulRootPublish(t *testing.T) {
 	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
 	defer cleanup()

@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,6 +116,77 @@ func TestPlaywrightWorkerAttributesProxyDenialToAction(t *testing.T) {
 		Kind: DriverNavigate, URL: "https://example.com",
 	}); !errors.Is(err, ErrDenied) {
 		t.Fatalf("Execute() error = %v, want ErrDenied", err)
+	}
+}
+
+func TestPlaywrightWorkerCapturesBoundedPNGWithoutTextProjection(t *testing.T) {
+	png := append(append([]byte(nil), pngSignature...), []byte("fixture")...)
+	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+		"browser_take_screenshot": {
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "Screenshot saved"},
+				&sdkmcp.ImageContent{Data: png, MIMEType: "image/png"},
+			},
+		},
+	}}
+	worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+	screenshot, err := worker.CaptureScreenshot(context.Background(), len(png))
+	if err != nil || screenshot.ContentType != "image/png" || !bytes.Equal(screenshot.Data, png) ||
+		len(client.calls) != 1 || client.calls[0].tool != "browser_take_screenshot" ||
+		client.calls[0].arguments["type"] != "png" || client.calls[0].arguments["fullPage"] != false ||
+		client.calls[0].arguments["scale"] != "css" {
+		t.Fatalf("CaptureScreenshot() = %+v, %v; calls = %+v", screenshot, err, client.calls)
+	}
+	png[0] = 0
+	if screenshot.Data[0] != pngSignature[0] {
+		t.Fatal("CaptureScreenshot() retained MCP-owned bytes")
+	}
+}
+
+func TestPlaywrightWorkerRejectsInvalidScreenshotContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content []sdkmcp.Content
+		maximum int
+	}{
+		{name: "missing image", content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "saved"}}, maximum: 32},
+		{name: "wrong media", content: []sdkmcp.Content{
+			&sdkmcp.ImageContent{Data: append([]byte(nil), pngSignature...), MIMEType: "image/jpeg"},
+		}, maximum: 32},
+		{name: "oversize", content: []sdkmcp.Content{
+			&sdkmcp.ImageContent{Data: make([]byte, 33), MIMEType: "image/png"},
+		}, maximum: 32},
+		{name: "multiple", content: []sdkmcp.Content{
+			&sdkmcp.ImageContent{Data: append([]byte(nil), pngSignature...), MIMEType: "image/png"},
+			&sdkmcp.ImageContent{Data: append([]byte(nil), pngSignature...), MIMEType: "image/png"},
+		}, maximum: 32},
+		{name: "too many content parts", content: []sdkmcp.Content{
+			&sdkmcp.TextContent{Text: "one"}, &sdkmcp.TextContent{Text: "two"},
+			&sdkmcp.TextContent{Text: "three"}, &sdkmcp.TextContent{Text: "four"},
+			&sdkmcp.ImageContent{Data: append([]byte(nil), pngSignature...), MIMEType: "image/png"},
+		}, maximum: 32},
+		{name: "aggregate text too large", content: []sdkmcp.Content{
+			&sdkmcp.TextContent{Text: strings.Repeat("a", playwrightDriverResponseBytes)},
+			&sdkmcp.TextContent{Text: "b"},
+			&sdkmcp.ImageContent{Data: append([]byte(nil), pngSignature...), MIMEType: "image/png"},
+		}, maximum: 32},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+				"browser_take_screenshot": {Content: test.content},
+			}}
+			worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+			if _, err := worker.CaptureScreenshot(
+				context.Background(),
+				test.maximum,
+			); !errors.Is(
+				err,
+				ErrDriverIncompatible,
+			) {
+				t.Fatalf("CaptureScreenshot() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -1380,6 +1452,11 @@ func TestPlaywrightWorkerRealBrowserConsecutivePersistentSessions(t *testing.T) 
 	if _, err = firstWorker.Observe(ctx); err != nil {
 		t.Fatalf("first fixture Observe() error = %v", err)
 	}
+	screenshot, err := firstWorker.CaptureScreenshot(ctx, config.BrowserMaxScreenshotBytes)
+	if err != nil || screenshot.ContentType != "image/png" ||
+		!bytes.HasPrefix(screenshot.Data, pngSignature) {
+		t.Fatalf("first CaptureScreenshot() = %d bytes, %q, %v", len(screenshot.Data), screenshot.ContentType, err)
+	}
 	if err = firstWorker.Close(ctx); err != nil {
 		t.Fatalf("first Close() error = %v", err)
 	}
@@ -1414,8 +1491,16 @@ func playwrightTextResult(text string) *sdkmcp.CallToolResult {
 
 func playwrightCatalogFixture() []*sdkmcp.Tool {
 	names := []string{
-		"browser_close", "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
-		"browser_select_option", "browser_press_key", "browser_mouse_wheel", "browser_handle_dialog",
+		"browser_close",
+		"browser_navigate",
+		"browser_snapshot",
+		"browser_take_screenshot",
+		"browser_click",
+		"browser_type",
+		"browser_select_option",
+		"browser_press_key",
+		"browser_mouse_wheel",
+		"browser_handle_dialog",
 	}
 	catalog := make([]*sdkmcp.Tool, 0, len(names)+1)
 	for _, name := range names {

@@ -13,28 +13,39 @@ import (
 )
 
 type fakeBrowserToolSource struct {
-	available  bool
-	open       browser.Session
-	status     browser.Session
-	observe    browser.Observation
-	prepare    browser.Preparation
-	execute    browser.Invocation
-	err        error
-	executeErr error
+	available             bool
+	open                  browser.Session
+	status                browser.Session
+	observe               browser.Observation
+	screenshot            browser.ScreenshotArtifact
+	lookup                browser.ScreenshotArtifact
+	lookupHit             bool
+	screenshotUnavailable bool
+	prepare               browser.Preparation
+	execute               browser.Invocation
+	err                   error
+	executeErr            error
 
-	openRequest     browser.OpenRequest
-	statusOwner     browser.Owner
-	statusSessionID string
-	prepareRequest  browser.PrepareActionRequest
-	executeOwner    browser.Owner
-	executePrepared string
-	executeApproval *browser.ApprovalBinding
-	prepareCalls    int
-	executeCalls    int
-	profileStatus   browser.ProfileAvailability
+	openRequest       browser.OpenRequest
+	statusOwner       browser.Owner
+	statusSessionID   string
+	prepareRequest    browser.PrepareActionRequest
+	screenshotRequest browser.ScreenshotRequest
+	deliveryRequest   browser.ScreenshotDeliveryRequest
+	observeCalls      int
+	executeOwner      browser.Owner
+	executePrepared   string
+	executeApproval   *browser.ApprovalBinding
+	prepareCalls      int
+	executeCalls      int
+	profileStatus     browser.ProfileAvailability
 }
 
 func (source *fakeBrowserToolSource) Available() bool { return source.available }
+
+func (source *fakeBrowserToolSource) ScreenshotAvailable() bool {
+	return source != nil && !source.screenshotUnavailable
+}
 
 func (source *fakeBrowserToolSource) ProfileAvailability(
 	_ context.Context,
@@ -86,9 +97,37 @@ func (source *fakeBrowserToolSource) Observe(
 	sessionID string,
 	tabID string,
 ) (browser.Observation, error) {
+	source.observeCalls++
 	source.statusOwner = owner
 	source.statusSessionID = sessionID + ":" + tabID
 	return source.observe, source.err
+}
+
+func (source *fakeBrowserToolSource) LookupScreenshot(
+	_ context.Context,
+	_ browser.Owner,
+	_ string,
+	_ string,
+) (browser.ScreenshotArtifact, bool, error) {
+	return source.lookup, source.lookupHit, source.err
+}
+
+func (source *fakeBrowserToolSource) CaptureScreenshot(
+	_ context.Context,
+	request browser.ScreenshotRequest,
+) (browser.ScreenshotArtifact, error) {
+	source.screenshotRequest = request
+	source.statusOwner = request.Owner
+	source.statusSessionID = request.SessionID + ":" + request.TabID + ":screenshot"
+	return source.screenshot, source.err
+}
+
+func (source *fakeBrowserToolSource) ClaimScreenshotDelivery(
+	_ context.Context,
+	request browser.ScreenshotDeliveryRequest,
+) error {
+	source.deliveryRequest = request
+	return source.err
 }
 
 func (source *fakeBrowserToolSource) PrepareAction(
@@ -146,7 +185,8 @@ func browserToolTestContext() context.Context {
 	ctx = WithToolSessionContext(ctx, "browser", "history-session", nil)
 	ctx = WithToolRouteSessionKey(ctx, "telegram:primary:chat:42")
 	ctx = WithToolCallID(ctx, "provider-call/1")
-	return WithToolExecutionIdentity(ctx, "/workspace/private", "execution/1")
+	ctx = WithToolExecutionIdentity(ctx, "/workspace/private", "execution/1")
+	return WithToolRecoverableOutbound(ctx, true)
 }
 
 func decodeBrowserToolResult(t *testing.T, result *ToolResult, target any) {
@@ -170,7 +210,9 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	if len(result.Targets) != 1 || result.Targets[0].Target != "gateway" ||
 		result.Targets[0].Status != "ready" || len(result.Targets[0].Profiles) != 1 ||
 		result.Targets[0].Profiles[0].NetworkMode != config.BrowserNetworkExactOrigins ||
-		!result.Targets[0].Profiles[0].DryRun || source.openRequest.Target != "" {
+		!result.Targets[0].Profiles[0].DryRun || !result.Targets[0].Features.Screenshot ||
+		result.Targets[0].Limits.ScreenshotBytes != config.BrowserMaxScreenshotBytes ||
+		source.openRequest.Target != "" {
 		t.Fatalf("browser targets = %#v", result)
 	}
 
@@ -178,6 +220,42 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	denied := tool.Execute(other, nil)
 	if denied == nil || !denied.IsError || !strings.Contains(denied.ContentForLLM(), `"code":"not_granted"`) {
 		t.Fatalf("ungranted result = %#v", denied)
+	}
+}
+
+func TestBrowserScreenshotIsNotAdvertisedOrCapturedWhenDeliveryIsUnsupported(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, screenshotUnavailable: true}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t,
+		NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil),
+		&targets,
+	)
+	if len(targets.Targets) != 1 || targets.Targets[0].Features.Screenshot {
+		t.Fatalf("browser targets = %#v", targets)
+	}
+	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	if result == nil || !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), `"code":"unsupported_platform"`) ||
+		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
+		t.Fatalf("unsupported screenshot result = %#v; source = %#v", result, source)
+	}
+}
+
+func TestBrowserScreenshotRequiresRecoverableOutboundOwnerBeforeCapture(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true}
+	ctx := WithToolRecoverableOutbound(browserToolTestContext(), false)
+	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		ctx,
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	if result == nil || !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), `"code":"delivery_unavailable"`) ||
+		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
+		t.Fatalf("unrecoverable screenshot result = %#v; source = %#v", result, source)
 	}
 }
 
@@ -292,6 +370,80 @@ func TestBrowserObserveDeliversEscapedTruncatedSnapshotWithinToolLimit(t *testin
 	if !observation.Truncated || observation.Snapshot != snapshot ||
 		len(result.ContentForLLM()) > cfg.Tools.Browser.Limits.ToolResultBytes {
 		t.Fatalf("escaped observation = %#v; encoded bytes = %d", observation, len(result.ContentForLLM()))
+	}
+}
+
+func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T) {
+	source := &fakeBrowserToolSource{
+		available: true,
+		status:    browser.Session{ID: "browser_session_1", State: browser.SessionReady, TabID: "tab_primary"},
+		observe: browser.Observation{
+			SessionID: "browser_session_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+			SnapshotGeneration: 3, URL: "https://example.com/listing", Origin: "https://example.com",
+			Title: "Listing", Snapshot: "- heading Listing",
+		},
+		screenshot: browser.ScreenshotArtifact{
+			Ref: "transfer-artifact://opaque", Kind: "screenshot", ContentType: "image/png",
+			Filename: "browser-screenshot.png", Size: 1024, SHA256: strings.Repeat("a", 64),
+			ExpiresAt: 200, SessionID: "browser_session_1", TabID: "tab_primary",
+			SnapshotID: "snapshot_1", SnapshotGeneration: 3,
+			DeliveryState: browser.ScreenshotDeliveryPending, MediaRef: "media://opaque",
+			Recovery: &browser.ScreenshotRecovery{
+				WorkspaceID: "workspace_1", AgentID: "browser", ActorID: "actor_1",
+				RouteID: "route_1", SessionID: "browser_session_1", ToolCallID: "request_1",
+			},
+		},
+	}
+	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	var observation browserObservationView
+	if result == nil || result.IsError {
+		t.Fatalf("screenshot result = %#v", result)
+	}
+	if err := json.Unmarshal([]byte(result.ForLLM), &observation); err != nil {
+		t.Fatalf("decode screenshot result: %v; content = %q", err, result.ForLLM)
+	}
+	if observation.Artifact == nil || observation.Artifact.Ref != "transfer-artifact://opaque" ||
+		observation.Artifact.SnapshotID != "snapshot_1" ||
+		observation.Artifact.MediaRef != "" || len(result.Media) != 0 || result.Outbound == nil ||
+		len(result.Outbound.Media) != 1 || result.Outbound.Media[0].Ref != "media://opaque" ||
+		result.Outbound.Recovery == nil || result.Outbound.Recovery.ArtifactRef != "transfer-artifact://opaque" ||
+		!result.ImmediateDelivery || result.CommitOutbound == nil ||
+		source.screenshotRequest.SnapshotID != "snapshot_1" || source.screenshotRequest.RequestID == "" ||
+		strings.Contains(result.ForLLM, "delivery_state") ||
+		strings.Contains(result.ForLLM, "media://opaque") ||
+		strings.Contains(result.ForLLM, "iVBOR") {
+		t.Fatalf(
+			"screenshot observation = %#v; result = %#v; request = %#v",
+			observation,
+			result,
+			source.screenshotRequest,
+		)
+	}
+	if err := result.CommitOutbound(browserToolTestContext()); err != nil ||
+		source.deliveryRequest.Ref != "transfer-artifact://opaque" ||
+		source.deliveryRequest.RequestID != source.screenshotRequest.RequestID {
+		t.Fatalf("commit outbound = %#v, %v", source.deliveryRequest, err)
+	}
+
+	source.lookup = source.screenshot
+	source.lookup.DeliveryState = browser.ScreenshotDeliveryAlreadyClaimed
+	source.lookupHit = true
+	duplicate := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	var replay browserObservationView
+	if duplicate.IsError || duplicate.Outbound == nil || duplicate.CommitOutbound == nil ||
+		source.observeCalls != 1 || json.Unmarshal([]byte(duplicate.ForLLM), &replay) != nil ||
+		!replay.Replayed || replay.Artifact == nil || replay.Artifact.Ref != observation.Artifact.Ref ||
+		replay.Artifact.SnapshotID != observation.Artifact.SnapshotID {
+		t.Fatalf("duplicate screenshot result = %#v", duplicate)
+	}
+	if err := duplicate.CommitOutbound(browserToolTestContext()); err != nil {
+		t.Fatalf("recovery commit outbound error = %v", err)
 	}
 }
 

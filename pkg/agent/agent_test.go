@@ -3203,6 +3203,39 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 	}
 }
 
+func TestRecoverableToolOutboundRejectsNonDurableRoute(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	defer al.Close()
+	agent := al.registry.GetDefaultAgent()
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, workspace: agent.Workspace,
+		channel: "cli", chatID: "chat-1", sessionKey: "session-1",
+	}
+	commitCalls := 0
+	result := (&tools.ToolResult{}).
+		WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
+			Type: "image", Ref: "media://recoverable",
+		}}}).
+		WithOutboundCommit(func(context.Context) error {
+			commitCalls++
+			return nil
+		}).
+		WithImmediateDelivery()
+	_, outcome, err := al.deliverToolResultToUser(t.Context(), ts, result, "browser_observe")
+	if err == nil || !strings.Contains(err.Error(), "durable outbound transaction is required") ||
+		outcome != toolResultDeliveryNone || commitCalls != 0 {
+		t.Fatalf("delivery = (%v, %v), commit calls = %d", outcome, err, commitCalls)
+	}
+	select {
+	case outbound := <-msgBus.OutboundMediaChan():
+		t.Fatalf("non-durable recoverable media was published: %+v", outbound)
+	default:
+	}
+}
+
 func TestDeliverFinalTurnToolTextCarriesTraceSettlement(t *testing.T) {
 	for _, test := range []struct {
 		name   string

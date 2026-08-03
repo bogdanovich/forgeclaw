@@ -1,6 +1,7 @@
 package toolshared
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -127,6 +128,11 @@ type ToolResult struct {
 	// coordinator. Tools should prefer this over sending directly.
 	Outbound *OutboundDelivery `json:"outbound,omitempty"`
 
+	// CommitOutbound durably records that the prepared outbound attempt is
+	// being scheduled. It runs only after the tool result is journaled and
+	// immediately before synchronous delivery. It is never model-visible.
+	CommitOutbound func(context.Context) error `json:"-"`
+
 	// WriteAudit records verified write-side effects performed by this tool.
 	// Agents should use this as the source of truth for claims like "saved",
 	// "updated", or "created"; prose in ForLLM/ForUser is only descriptive.
@@ -139,11 +145,12 @@ type ToolResult struct {
 }
 
 type OutboundDelivery struct {
-	Channel          string          `json:"channel,omitempty"`
-	ChatID           string          `json:"chat_id,omitempty"`
-	ReplyToMessageID string          `json:"reply_to_message_id,omitempty"`
-	Text             string          `json:"text,omitempty"`
-	Media            []bus.MediaPart `json:"media,omitempty"`
+	Channel          string                `json:"channel,omitempty"`
+	ChatID           string                `json:"chat_id,omitempty"`
+	ReplyToMessageID string                `json:"reply_to_message_id,omitempty"`
+	Text             string                `json:"text,omitempty"`
+	Media            []bus.MediaPart       `json:"media,omitempty"`
+	Recovery         *bus.OutboundRecovery `json:"recovery,omitempty"`
 }
 
 type WriteAuditEntry struct {
@@ -543,6 +550,11 @@ func (tr *ToolResult) WithDeliveryIntent(intent DeliveryIntent) *ToolResult {
 
 func (tr *ToolResult) WithOutboundDelivery(outbound OutboundDelivery) *ToolResult {
 	tr.Outbound = &outbound
+	return tr
+}
+
+func (tr *ToolResult) WithOutboundCommit(commit func(context.Context) error) *ToolResult {
+	tr.CommitOutbound = commit
 	return tr
 }
 

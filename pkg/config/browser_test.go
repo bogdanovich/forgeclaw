@@ -389,6 +389,13 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 			},
 			wantErr: "sessions must be between 0 and 1",
 		},
+		{
+			name: "expanded screenshot limit",
+			mutate: func(cfg *Config) {
+				cfg.Tools.Browser.Limits.ScreenshotBytes = BrowserMaxScreenshotBytes + 1
+			},
+			wantErr: "screenshot_bytes must be between 0 and 8388608",
+		},
 	}
 
 	for _, test := range tests {

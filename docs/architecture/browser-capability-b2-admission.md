@@ -133,8 +133,9 @@ descriptor:
   "size": 12345,
   "sha256": "hex-digest",
   "expires_at": 1770000000,
-  "session_id": "session-alias",
+  "browser_session_id": "session-alias",
   "tab_id": "tab-alias",
+  "snapshot_id": "snapshot-alias",
   "snapshot_generation": 4,
   "truncated": false
 }

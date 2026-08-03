@@ -506,6 +506,30 @@ func TestNormalizeOutboundTraceSettlementRequiresCompleteScope(t *testing.T) {
 	}
 }
 
+func TestNormalizeOutboundMediaMessageValidatesRecoveryPrerequisite(t *testing.T) {
+	recovery := &OutboundRecovery{
+		Kind:        OutboundRecoveryBrowserScreenshot,
+		ArtifactRef: "transfer-artifact://opaque", MediaRef: "media://screenshot",
+		WorkspaceID: "workspace_1", AgentID: "browser", ActorID: "actor_1",
+		RouteID: "route_1", SessionID: "session_1", ToolCallID: "call_1",
+	}
+	message, err := NormalizeOutboundMediaMessage(OutboundMediaMessage{
+		Parts: []MediaPart{{Type: "image", Ref: recovery.MediaRef}}, Recovery: recovery,
+	})
+	if err != nil || message.Recovery == nil || message.Recovery == recovery {
+		t.Fatalf("NormalizeOutboundMediaMessage() = %+v, %v", message, err)
+	}
+	recovery.MediaRef = "media://different"
+	if message.Recovery.MediaRef != "media://screenshot" {
+		t.Fatal("normalized recovery prerequisite aliases caller memory")
+	}
+	if _, err = NormalizeOutboundMediaMessage(OutboundMediaMessage{
+		Parts: []MediaPart{{Type: "image", Ref: "media://screenshot"}}, Recovery: recovery,
+	}); err == nil {
+		t.Fatal("mismatched recovery media was accepted")
+	}
+}
+
 func TestPublishOutboundRejectsMixedTraceScopeWorkspaces(t *testing.T) {
 	mb := NewMessageBus()
 	defer mb.Close()

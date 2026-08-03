@@ -9,6 +9,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 var errOutboundPublicationInFlight = errors.New("durable outbound publication is still in flight")
@@ -44,7 +45,8 @@ func withOutboundTransaction(ctx context.Context, sourceID string) context.Conte
 	if ctx == nil || sourceID == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, outboundTransactionKey{}, &outboundTransaction{sourceID: sourceID})
+	ctx = context.WithValue(ctx, outboundTransactionKey{}, &outboundTransaction{sourceID: sourceID})
+	return tools.WithToolRecoverableOutbound(ctx, true)
 }
 
 func inheritOutboundTransaction(dst, src context.Context) context.Context {
@@ -52,7 +54,8 @@ func inheritOutboundTransaction(dst, src context.Context) context.Context {
 	if dst == nil || transaction == nil {
 		return dst
 	}
-	return context.WithValue(dst, outboundTransactionKey{}, transaction)
+	dst = context.WithValue(dst, outboundTransactionKey{}, transaction)
+	return tools.WithToolRecoverableOutbound(dst, true)
 }
 
 func outboundTransactionFromContext(ctx context.Context) *outboundTransaction {
@@ -250,11 +253,28 @@ func (al *AgentLoop) publishTransactionMessage(
 	workspace string,
 	msg bus.OutboundMessage,
 ) (bool, error) {
+	return al.publishTransactionMessageAtBoundary(ctx, workspace, msg, nil)
+}
+
+func (al *AgentLoop) publishTransactionMessageAtBoundary(
+	ctx context.Context,
+	workspace string,
+	msg bus.OutboundMessage,
+	commit func(context.Context) error,
+) (bool, error) {
 	admission, err := al.admitDurableMessage(ctx, workspace, msg)
 	if err != nil {
 		return false, err
 	}
 	if admission.durable && !admission.dispatch {
+		if commit != nil {
+			if err = commit(ctx); err != nil {
+				if transaction := outboundTransactionFromContext(ctx); transaction != nil {
+					transaction.fail(err)
+				}
+				return false, err
+			}
+		}
 		return false, nil
 	}
 	if al == nil || al.bus == nil {
@@ -263,6 +283,14 @@ func (al *AgentLoop) publishTransactionMessage(
 			err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
 		}
 		return false, err
+	}
+	if commit != nil {
+		if err = commit(ctx); err != nil {
+			if admission.durable {
+				err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
+			}
+			return false, err
+		}
 	}
 	if admission.durable {
 		if err = admission.coordinator.PrepareAdmission(admission.lease); err != nil {
@@ -292,11 +320,28 @@ func (al *AgentLoop) publishTransactionMedia(
 	workspace string,
 	msg bus.OutboundMediaMessage,
 ) (bool, error) {
+	return al.publishTransactionMediaAtBoundary(ctx, workspace, msg, nil)
+}
+
+func (al *AgentLoop) publishTransactionMediaAtBoundary(
+	ctx context.Context,
+	workspace string,
+	msg bus.OutboundMediaMessage,
+	commit func(context.Context) error,
+) (bool, error) {
 	admission, err := al.admitDurableMedia(ctx, workspace, msg)
 	if err != nil {
 		return false, err
 	}
 	if admission.durable && !admission.dispatch {
+		if commit != nil {
+			if err = commit(ctx); err != nil {
+				if transaction := outboundTransactionFromContext(ctx); transaction != nil {
+					transaction.fail(err)
+				}
+				return false, err
+			}
+		}
 		return false, nil
 	}
 	if al == nil || al.bus == nil {
@@ -305,6 +350,14 @@ func (al *AgentLoop) publishTransactionMedia(
 			err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
 		}
 		return false, err
+	}
+	if commit != nil {
+		if err = commit(ctx); err != nil {
+			if admission.durable {
+				err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
+			}
+			return false, err
+		}
 	}
 	if admission.durable {
 		if err = admission.coordinator.PrepareAdmission(admission.lease); err != nil {
