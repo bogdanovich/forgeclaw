@@ -14,7 +14,6 @@ Keep work moving across chat turns, restarts, subagents, and paired machines.
 <p>
   <a href="#quick-start">Quick start</a> ·
   <a href="#why-mintclaw">Why MintClaw</a> ·
-  <a href="#how-it-compares">Compare</a> ·
   <a href="docs/README.md">Documentation</a>
 </p>
 
@@ -27,12 +26,6 @@ understandable and recoverable after the current chat turn ends. Connect the
 models, chat apps, MCP servers, and skills you already use; delegate work to
 durable background tasks; steer an active run; pause for an authorized human;
 and extend execution to explicitly paired machines.
-
-MintClaw is a downstream fork of [PicoClaw](https://github.com/sipeed/picoclaw).
-It keeps the practical Go foundation while intentionally diverging around
-workflow durability, delivery ownership, multi-agent control, context
-management, and operations. Treat MintClaw as its own runtime rather than as a
-drop-in PicoClaw build.
 
 ## Why MintClaw
 
@@ -59,22 +52,21 @@ drop-in PicoClaw build.
   skills, provider routing, scheduled jobs, chat channels, the CLI, or the Web
   launcher without tying the runtime to one model vendor.
 
-## How it compares
+## From PicoClaw to MintClaw
 
-These projects overlap, but they optimize for different jobs. This is a design
-comparison, not a benchmark.
+MintClaw is a downstream fork of [PicoClaw](https://github.com/sipeed/picoclaw).
+It keeps the practical Go foundation while intentionally diverging around
+workflow durability, delivery ownership, multi-agent control, context
+management, and operations. Treat MintClaw as its own runtime rather than as a
+drop-in PicoClaw build.
 
-| Project | Design center | A good starting point when... |
-| --- | --- | --- |
-| **MintClaw** | Go runtime with explicit durable workflow and operator-control semantics | Long-running personal automation must remain inspectable and recoverable across subagents, human decisions, restarts, and paired machines. |
-| [**PicoClaw**](https://github.com/sipeed/picoclaw) | Ultra-efficient Go assistant and MintClaw's upstream lineage | Small footprint, inexpensive hardware, and staying close to the upstream PicoClaw project matter most. |
-| [**OpenClaw**](https://github.com/openclaw/openclaw) | Node.js personal-assistant platform with companion apps and a large extension surface | You want its native app, voice, Canvas, channel, and ecosystem experience. |
-| [**ZeroClaw**](https://github.com/zeroclaw-labs/zeroclaw) | Modular Rust agent infrastructure with feature-selected builds | Rust, supervised risk profiles, OS sandboxing, hardware peripherals, or its SOP engine fit your deployment. |
-| [**Hermes Agent**](https://github.com/NousResearch/hermes-agent) | Learning-oriented Python agent with rich terminal and desktop experiences | Built-in skill evolution, conversation recall, or Nous Portal integration is the priority. |
+PicoClaw remains the better starting point when staying close to upstream and
+targeting the smallest practical hardware are the main priorities. MintClaw
+accepts a larger operational surface in exchange for explicit contracts around
+long-running work, human decisions, restart recovery, and paired machines.
 
-See [Choosing MintClaw](docs/guides/choosing-mintclaw.md) for the sourced,
-maintained comparison, MintClaw's concrete divergence from PicoClaw, and the
-trade-offs behind each choice.
+Read [MintClaw and PicoClaw](docs/guides/picoclaw-lineage.md) for the fork
+relationship, the intentional divergence, and the trade-offs behind it.
 
 ## Quick start
 
