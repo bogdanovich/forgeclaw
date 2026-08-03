@@ -181,6 +181,29 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	}
 }
 
+func TestBrowserTargetsReportsExplicitAnyHTTPMode(t *testing.T) {
+	cfg := browserToolTestConfig()
+	target := cfg.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	cfg.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	var result browserTargetResult
+	decodeBrowserToolResult(
+		t,
+		NewBrowserTargetsTool(cfg, &fakeBrowserToolSource{available: true}).Execute(
+			browserToolTestContext(), nil,
+		),
+		&result,
+	)
+	if len(result.Targets) != 1 || len(result.Targets[0].Profiles) != 1 ||
+		result.Targets[0].Profiles[0].NetworkMode != config.BrowserNetworkAnyHTTP {
+		t.Fatalf("browser targets = %#v", result)
+	}
+}
+
 func TestBrowserTargetsReportsBrokerProfileAvailability(t *testing.T) {
 	source := &fakeBrowserToolSource{
 		available: true,

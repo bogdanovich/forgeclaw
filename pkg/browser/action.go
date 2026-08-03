@@ -74,7 +74,7 @@ func (broker *Broker) Observe(ctx context.Context, owner Owner, sessionID, tabID
 	if !broker.originAllowed(session, driverObservation.Origin) {
 		return Observation{}, ErrDenied
 	}
-	if !broker.originNetworkAllowed(ctx, driverObservation.Origin) {
+	if !broker.originNetworkAllowed(ctx, session, driverObservation.Origin) {
 		return Observation{}, broker.quarantineNetworkDeniedLocked(ctx, session)
 	}
 	snapshotID, err := randomOpaqueID("snapshot")
@@ -297,7 +297,7 @@ func (broker *Broker) resolvePreparedActionLocked(
 	if !validDigest(prepared.CatalogRevision) {
 		return PreparedAction{}, ErrDriverIncompatible
 	}
-	if !broker.originNetworkAllowed(ctx, prepared.CurrentOrigin) {
+	if !broker.originNetworkAllowed(ctx, session, prepared.CurrentOrigin) {
 		return PreparedAction{}, broker.quarantineNetworkDeniedLocked(ctx, session)
 	}
 	switch request.Action.Kind {
@@ -320,7 +320,7 @@ func (broker *Broker) resolvePreparedActionLocked(
 		if err != nil || !broker.originAllowed(session, destination) {
 			return PreparedAction{}, ErrDenied
 		}
-		if !broker.originNetworkAllowed(ctx, destination) {
+		if !broker.originNetworkAllowed(ctx, session, destination) {
 			return PreparedAction{}, broker.quarantineNetworkDeniedLocked(ctx, session)
 		}
 		prepared.Action.URL = normalized
@@ -410,9 +410,9 @@ func (broker *Broker) revalidatePreparedLocked(
 		session.SnapshotOrigin != prepared.CurrentOrigin || worker.CatalogRevision() != prepared.CatalogRevision {
 		return ErrStale
 	}
-	if !broker.originNetworkAllowed(ctx, prepared.CurrentOrigin) ||
+	if !broker.originNetworkAllowed(ctx, session, prepared.CurrentOrigin) ||
 		(prepared.DestinationOrigin != "" &&
-			!broker.originNetworkAllowed(ctx, prepared.DestinationOrigin)) {
+			!broker.originNetworkAllowed(ctx, session, prepared.DestinationOrigin)) {
 		return broker.quarantineNetworkDeniedLocked(ctx, session)
 	}
 	if prepared.Action.Kind == ActionNavigate || prepared.Action.Kind == ActionPress ||
@@ -727,6 +727,10 @@ func (broker *Broker) originAllowed(session Session, origin string) bool {
 		normalized, err := config.NormalizeBrowserOrigin(origin)
 		return err == nil && normalized == origin
 	}
+	if profile.EffectiveNetworkMode() == config.BrowserNetworkAnyHTTP {
+		normalized, err := config.NormalizeBrowserHTTPOrigin(origin)
+		return err == nil && normalized == origin
+	}
 	for _, allowed := range profile.AllowedOrigins {
 		normalized, err := config.NormalizeBrowserOrigin(allowed)
 		if err == nil && normalized == origin {
@@ -736,24 +740,41 @@ func (broker *Broker) originAllowed(session Session, origin string) bool {
 	return false
 }
 
-func (broker *Broker) originNetworkAllowed(ctx context.Context, origin string) bool {
+func (broker *Broker) originNetworkAllowed(ctx context.Context, session Session, origin string) bool {
 	if origin == initialBlankOrigin {
 		return true
 	}
-	parsed, err := url.Parse(origin)
+	target, ok := broker.config.Targets[session.Target]
+	if !ok {
+		return false
+	}
+	profile, ok := target.Profiles[session.Profile]
+	if !ok {
+		return false
+	}
+	anyHTTP := profile.EffectiveNetworkMode() == config.BrowserNetworkAnyHTTP
+	normalized, err := config.NormalizeBrowserOrigin(origin)
+	if anyHTTP {
+		normalized, err = config.NormalizeBrowserHTTPOrigin(origin)
+	}
+	if err != nil || normalized != origin {
+		return false
+	}
+	parsed, err := url.Parse(normalized)
 	if err != nil || parsed.Hostname() == "" || broker.lookupIP == nil {
 		return false
 	}
 	host := parsed.Hostname()
 	if ip := net.ParseIP(host); ip != nil {
-		return config.IsPublicBrowserIP(ip)
+		return anyHTTP || config.IsPublicBrowserIP(ip)
 	}
 	addresses, err := broker.lookupIP(ctx, "ip", host)
 	if err != nil || len(addresses) == 0 || len(addresses) > 32 {
 		return false
 	}
 	for _, address := range addresses {
-		if !config.IsPublicBrowserIP(address) {
+		if address == nil || (address.To4() == nil && address.To16() == nil) ||
+			(!anyHTTP && !config.IsPublicBrowserIP(address)) {
 			return false
 		}
 	}

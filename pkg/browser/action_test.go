@@ -291,6 +291,40 @@ func TestBrokerPublicWebOriginPolicyAllowsPublicSyntaxButRejectsPrivateLiterals(
 	}
 }
 
+func TestBrokerAnyHTTPObservationAdmitsPrivateOrigin(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBrokerWithConfig(t, root, store)
+	broker.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("169.254.169.254")}, nil
+	}
+	worker.observation.URL = "http://private.internal/status"
+	worker.observation.Origin = "http://private.internal"
+	worker.resolveOrigin = worker.observation.Origin
+
+	observation, err := broker.Observe(
+		context.Background(), testOwner(), session.ID, session.TabID,
+	)
+	if err != nil {
+		t.Fatalf("Observe() private origin error = %v", err)
+	}
+	if observation.URL != "http://private.internal/status" ||
+		observation.Origin != "http://private.internal" {
+		t.Fatalf("private observation = %+v", observation)
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.State != SessionReady || stored.SnapshotOrigin != "http://private.internal" {
+		t.Fatalf("stored private session = %+v, %v", stored, err)
+	}
+}
+
 func TestBrokerPreparationQuarantinesDeniedDNSResolution(t *testing.T) {
 	t.Run("current origin", func(t *testing.T) {
 		store := NewMemoryStore()

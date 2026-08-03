@@ -264,8 +264,9 @@ func playwrightServerWithNetworkPolicy(
 	if profile.EffectiveNetworkMode() == config.BrowserNetworkExactOrigins && len(origins) == 0 {
 		return config.MCPServerConfig{}, errors.New("browser driver requires allowed origins")
 	}
-	if profile.EffectiveNetworkMode() == config.BrowserNetworkPublicWeb && len(origins) != 0 {
-		return config.MCPServerConfig{}, errors.New("public-web browser driver cannot use allowed origins")
+	if (profile.EffectiveNetworkMode() == config.BrowserNetworkPublicWeb ||
+		profile.EffectiveNetworkMode() == config.BrowserNetworkAnyHTTP) && len(origins) != 0 {
+		return config.MCPServerConfig{}, errors.New("non-exact browser driver cannot use allowed origins")
 	}
 	sort.Strings(origins)
 	allowedOrigins := strings.Join(origins, ";")
