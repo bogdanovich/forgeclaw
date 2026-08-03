@@ -206,6 +206,15 @@ func TestBrowserNetworkPolicyAnyHTTPAdmitsEveryValidAddressScope(t *testing.T) {
 	if err != nil || len(loopbackTLS) != 1 || loopbackTLS[0] != "127.0.0.1:8443" {
 		t.Fatalf("HTTPS loopback destination = %v, %v", loopbackTLS, err)
 	}
+	for _, authority := range []string{
+		"[fe80::1%EtherNet]:8080",
+		"[fe80::1%25EtherNet]:8080",
+	} {
+		scoped, scopedErr := policy.destination(context.Background(), "http", authority)
+		if scopedErr != nil || len(scoped) != 1 || scoped[0] != "[fe80::1%EtherNet]:8080" {
+			t.Errorf("scoped destination(%q) = %v, %v", authority, scoped, scopedErr)
+		}
+	}
 	destinations, err := policy.destination(context.Background(), "https", "mixed.internal")
 	want := "8.8.8.8:443,10.0.0.8:443,127.0.0.1:443,169.254.169.254:443,[fe80::1]:443"
 	if err != nil || strings.Join(destinations, ",") != want || lookupCalls != 1 {

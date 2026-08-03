@@ -1034,6 +1034,11 @@ func TestSanitizeObservedURLCanonicalizesMappedIPv6AndRejectsEmptyPort(t *testin
 	if _, _, err = sanitizeObservedURL("http://127.0.0.1:/health"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("sanitizeObservedURL(empty port) error = %v, want ErrInvalid", err)
 	}
+	safeURL, origin, err = sanitizeObservedURL("http://[FE80::1%25EtherNet]:8080/health")
+	if err != nil || safeURL != "http://[fe80::1%25EtherNet]:8080/health" ||
+		origin != "http://[fe80::1%25EtherNet]:8080" {
+		t.Fatalf("sanitizeObservedURL(scoped) = %q, %q, %v", safeURL, origin, err)
+	}
 }
 
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {

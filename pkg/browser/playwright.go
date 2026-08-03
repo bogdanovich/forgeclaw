@@ -693,10 +693,11 @@ func normalizeDriverNavigationURL(raw string) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", ErrInvalid
 	}
-	if strings.HasSuffix(parsed.Host, ":") && parsed.Port() == "" {
+	origin, normalizedOrigin, err := normalizeParsedBrowserHTTPOrigin(parsed)
+	if err != nil || origin == "" || normalizedOrigin == nil {
 		return "", ErrInvalid
 	}
-	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Host = normalizedOrigin.Host
 	return parsed.String(), nil
 }
 
@@ -952,12 +953,8 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", "", ErrInvalid
 	}
-	origin, err := config.NormalizeBrowserHTTPOrigin(parsed.Scheme + "://" + parsed.Host)
-	if err != nil {
-		return "", "", ErrInvalid
-	}
-	normalizedOrigin, err := url.Parse(origin)
-	if err != nil || normalizedOrigin.Host == "" {
+	origin, normalizedOrigin, err := normalizeParsedBrowserHTTPOrigin(parsed)
+	if err != nil || normalizedOrigin == nil {
 		return "", "", ErrInvalid
 	}
 	parsed.Host = normalizedOrigin.Host
@@ -969,6 +966,25 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 		return "", "", ErrInvalid
 	}
 	return safeURL, origin, nil
+}
+
+func normalizeParsedBrowserHTTPOrigin(parsed *url.URL) (string, *url.URL, error) {
+	if parsed == nil {
+		return "", nil, ErrInvalid
+	}
+	// URL.String re-escapes a decoded RFC 6874 IPv6 zone while leaving its
+	// case intact. Reconstructing scheme + "://" + Host would produce an
+	// invalid bare percent and can silently change zone identity.
+	rawOrigin := (&url.URL{Scheme: strings.ToLower(parsed.Scheme), Host: parsed.Host}).String()
+	origin, err := config.NormalizeBrowserHTTPOrigin(rawOrigin)
+	if err != nil {
+		return "", nil, ErrInvalid
+	}
+	normalized, err := url.Parse(origin)
+	if err != nil || normalized.Host == "" {
+		return "", nil, ErrInvalid
+	}
+	return origin, normalized, nil
 }
 
 var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{

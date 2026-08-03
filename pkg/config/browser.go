@@ -338,12 +338,13 @@ func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 	if host == "" || strings.Contains(host, "*") {
 		return "", errors.New("origin host must be exact")
 	}
-	lowerHost := strings.ToLower(strings.TrimSuffix(host, "."))
+	trimmedHost := strings.TrimSuffix(host, ".")
+	lowerHost := strings.ToLower(trimmedHost)
 	if publicOnly && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") ||
 		lowerHost == "metadata.google.internal") {
 		return "", errors.New("origin host is outside the public network policy")
 	}
-	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
+	if address, addressErr := netip.ParseAddr(trimmedHost); addressErr == nil {
 		if publicOnly && !IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return "", errors.New("origin IP is outside the public network policy")
 		}

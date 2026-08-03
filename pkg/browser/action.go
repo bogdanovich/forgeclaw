@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -765,8 +766,8 @@ func (broker *Broker) originNetworkAllowed(ctx context.Context, session Session,
 		return false
 	}
 	host := parsed.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		return anyHTTP || config.IsPublicBrowserIP(ip)
+	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
+		return anyHTTP || config.IsPublicBrowserIP(net.IP(address.AsSlice()))
 	}
 	addresses, err := broker.lookupIP(ctx, "ip", host)
 	if err != nil || len(addresses) == 0 || len(addresses) > 32 {

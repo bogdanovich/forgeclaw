@@ -193,11 +193,11 @@ func (proxy *browserNetworkProxy) ServeHTTP(writer http.ResponseWriter, request 
 		proxy.deny(writer)
 		return
 	}
-	requestOrigin, requestOriginErr := proxy.policy.normalizeOrigin(
-		request.URL.Scheme + "://" + request.URL.Host,
+	requestOrigin, requestOriginErr := proxy.policy.normalizeAuthorityOrigin(
+		request.URL.Scheme, request.URL.Host,
 	)
-	hostOrigin, hostOriginErr := proxy.policy.normalizeOrigin(
-		request.URL.Scheme + "://" + request.Host,
+	hostOrigin, hostOriginErr := proxy.policy.normalizeAuthorityOrigin(
+		request.URL.Scheme, request.Host,
 	)
 	if requestOriginErr != nil || hostOriginErr != nil || requestOrigin != hostOrigin {
 		proxy.deny(writer)
@@ -370,7 +370,7 @@ func (policy *browserNetworkPolicy) destination(
 	if policy == nil || (scheme != "http" && scheme != "https") || authority == "" {
 		return nil, ErrDenied
 	}
-	origin, err := policy.normalizeOrigin(scheme + "://" + authority)
+	origin, err := policy.normalizeAuthorityOrigin(scheme, authority)
 	if err != nil {
 		return nil, ErrDenied
 	}
@@ -419,6 +419,17 @@ func (policy *browserNetworkPolicy) normalizeOrigin(raw string) (string, error) 
 		return config.NormalizeBrowserHTTPOrigin(raw)
 	}
 	return config.NormalizeBrowserOrigin(raw)
+}
+
+func (policy *browserNetworkPolicy) normalizeAuthorityOrigin(scheme, authority string) (string, error) {
+	// url.URL.String restores the percent escaping that url.Parse and net/http
+	// decode from an RFC 6874 IPv6 zone identifier in Host.
+	if parsed, err := url.Parse("http://" + authority); err == nil &&
+		parsed.User == nil && parsed.Host != "" {
+		authority = parsed.Host
+	}
+	raw := (&url.URL{Scheme: scheme, Host: authority}).String()
+	return policy.normalizeOrigin(raw)
 }
 
 func (policy *browserNetworkPolicy) dialDestination(
