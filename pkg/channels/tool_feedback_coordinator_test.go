@@ -306,6 +306,88 @@ func TestToolFeedbackCoordinator_ReplacementTerminalDeletesBothMessages(t *testi
 	}
 }
 
+func TestToolFeedbackCoordinator_ReplacementTerminalRetriesLateMessageCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	replacementStarted := make(chan struct{})
+	releaseReplacement := make(chan struct{})
+	progressTwoDeleteAttempts := 0
+	progressOneDeleted := false
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return ErrSendFailed },
+		delete: func(_ context.Context, _, messageID string) error {
+			if messageID == "progress-1" {
+				progressOneDeleted = true
+				return nil
+			}
+			progressTwoDeleteAttempts++
+			if progressTwoDeleteAttempts <= 3 {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	deliverDone := make(chan []string, 1)
+	go func() {
+		ids, _ := coordinator.Deliver(
+			context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+			func(context.Context, string) ([]string, error) {
+				close(replacementStarted)
+				<-releaseReplacement
+				return []string{"progress-2"}, nil
+			},
+		)
+		deliverDone <- ids
+	}()
+	<-replacementStarted
+
+	terminal := coordinator.BeginTerminal("feishu:chat-1")
+	terminalDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(terminalDone)
+	}()
+	close(releaseReplacement)
+	if ids := <-deliverDone; len(ids) != 0 {
+		t.Fatalf("replacement IDs = %v, want none after terminal", ids)
+	}
+	<-terminalDone
+
+	entry := coordinator.findEntry("feishu:chat-1")
+	if entry == nil {
+		t.Fatal("retained terminal entry was removed")
+	}
+	entry.mu.Lock()
+	pending := len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if !progressOneDeleted || pending != 1 || progressTwoDeleteAttempts != 3 {
+		t.Fatalf(
+			"current deleted = %v, pending = %d, late attempts = %d; want true, 1, 3",
+			progressOneDeleted,
+			pending,
+			progressTwoDeleteAttempts,
+		)
+	}
+
+	coordinator.maintainCleanup("feishu:chat-1", entry)
+	entry.mu.Lock()
+	pending = len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if progressTwoDeleteAttempts != 4 || pending != 0 {
+		t.Fatalf(
+			"late attempts = %d, pending = %d; want 4, 0",
+			progressTwoDeleteAttempts,
+			pending,
+		)
+	}
+}
+
 func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()
@@ -356,7 +438,7 @@ func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testi
 	}
 
 	allowCleanup = true
-	coordinator.maintainTerminal(terminal)
+	coordinator.maintainCleanup("feishu:chat-1", entry)
 	if count := coordinator.ActiveCount(); count != 0 {
 		t.Fatalf("ActiveCount() after cleanup retry = %d, want 0", count)
 	}
@@ -425,7 +507,7 @@ func TestToolFeedbackCoordinator_TerminalExpiresUnknownCleanupFailure(t *testing
 	entry.pendingCleanup[0].expiresAt = time.Now().Add(-time.Second)
 	entry.mu.Unlock()
 
-	coordinator.maintainTerminal(terminal)
+	coordinator.maintainCleanup("telegram:chat-1", entry)
 	if deleteCalls != 1 {
 		t.Fatalf("delete calls after expiry = %d, want 1", deleteCalls)
 	}
@@ -499,6 +581,73 @@ func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testin
 	<-completed
 	if count := coordinator.ActiveCount(); count != 0 {
 		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_PendingSendTerminalRetriesLateMessageCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	deleteAttempts := 0
+	deliverDone := make(chan []string, 1)
+
+	go func() {
+		ids, err := coordinator.Deliver(
+			context.Background(),
+			"telegram:chat-1",
+			"chat-1",
+			"Working...",
+			toolFeedbackOperations{delete: func(context.Context, string, string) error {
+				deleteAttempts++
+				if deleteAttempts <= 3 {
+					return ErrTemporary
+				}
+				return nil
+			}},
+			func(context.Context, string) ([]string, error) {
+				close(sendStarted)
+				<-releaseSend
+				return []string{"progress-1"}, nil
+			},
+		)
+		if err != nil {
+			t.Errorf("Deliver() error = %v", err)
+		}
+		deliverDone <- ids
+	}()
+	<-sendStarted
+
+	terminal := coordinator.BeginTransientTerminal("telegram:chat-1")
+	terminalDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(terminalDone)
+	}()
+	close(releaseSend)
+	if ids := <-deliverDone; len(ids) != 0 {
+		t.Fatalf("superseded Deliver() IDs = %v, want none", ids)
+	}
+	<-terminalDone
+
+	entry := coordinator.findEntry("telegram:chat-1")
+	if entry == nil {
+		t.Fatal("late cleanup failure did not retain the coordinator entry")
+	}
+	entry.mu.Lock()
+	pending := len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if pending != 1 || deleteAttempts != 3 {
+		t.Fatalf("pending cleanup = %d, attempts = %d; want 1, 3", pending, deleteAttempts)
+	}
+
+	coordinator.maintainCleanup("telegram:chat-1", entry)
+	if deleteAttempts != 4 || coordinator.ActiveCount() != 0 {
+		t.Fatalf(
+			"cleanup attempts = %d, active = %d; want 4, 0",
+			deleteAttempts,
+			coordinator.ActiveCount(),
+		)
 	}
 }
 
@@ -678,6 +827,329 @@ func TestToolFeedbackCoordinator_TransientTerminalDoesNotBlockLaterUnscopedFeedb
 	)
 	if err != nil || !slices.Equal(ids, []string{"progress-1"}) || sends != 1 {
 		t.Fatalf("Deliver() = (%v, %v), sends %d, want later unscoped delivery", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_TransientCleanupFailureDoesNotBlockLaterFeedback(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			return ErrTemporary
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	if _, err := coordinator.Deliver(
+		t.Context(), "telegram:chat-1", "chat-1", "checking", operations, send,
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	terminal := coordinator.BeginTransientTerminal("telegram:chat-1")
+	coordinator.CompleteTerminal(t.Context(), terminal, true)
+
+	ids, err := coordinator.Deliver(
+		t.Context(), "telegram:chat-1", "chat-1", "checking ports", operations, send,
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
+		t.Fatalf("later Deliver() = (%v, %v), sends %d, want progress-2", ids, err, sends)
+	}
+	if deleteCalls < 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and delivery retry", deleteCalls)
+	}
+}
+
+func TestToolFeedbackCoordinator_RetainedTerminalWinsOverOverlappingTransient(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	var deleted []string
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(_ context.Context, _ string, messageID string) error {
+			deleted = append(deleted, messageID)
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "between terminals", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("pending-final Deliver() = (%v, %v), sends %d, want suppressed", ids, err, sends)
+	}
+	coordinator.CompleteTerminal(t.Context(), retained, true)
+	if !slices.Equal(deleted, []string{"progress-1"}) {
+		t.Fatalf("deleted = %v, want retained final cleanup", deleted)
+	}
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "after final", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want tombstone suppression", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_TransientSuccessSurvivesRetainedFailure(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteCalls := 0
+	editCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error {
+			editCalls++
+			return nil
+		},
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if deleteCalls < 3 {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+	coordinator.CompleteTerminal(t.Context(), retained, false)
+
+	ids, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking ports", operations, send)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
+		t.Fatalf("later Deliver() = (%v, %v), sends %d, want new progress-2", ids, err, sends)
+	}
+	if editCalls != 0 {
+		t.Fatalf("edit calls = %d, want stale carrier left detached", editCalls)
+	}
+	if deleteCalls != 3 {
+		t.Fatalf("delete calls = %d, want transient attempt, final retry, and delivery retry", deleteCalls)
+	}
+}
+
+func TestToolFeedbackCoordinator_TransientCleanupRetriesWhileRetainedPending(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	retried := make(chan struct{})
+	var retryOnce sync.Once
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if deleteCalls == 1 {
+				return ErrTemporary
+			}
+			retryOnce.Do(func() { close(retried) })
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+
+	select {
+	case <-retried:
+	case <-time.After(toolFeedbackCleanupRetryDelay + 2*time.Second):
+		t.Fatal("transient cleanup was not retried while retained terminal remained pending")
+	}
+	if deleteCalls != 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and timer-driven retry", deleteCalls)
+	}
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "before final outcome", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("pending-final Deliver() = (%v, %v), sends %d, want retained barrier", ids, err, sends)
+	}
+
+	coordinator.CompleteTerminal(t.Context(), retained, false)
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "after failed final", operations, send,
+	); err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
+		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want new progress-2", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_TransientCleanupSurvivesSequentialRetainedAdmission(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	retried := make(chan struct{})
+	var retryOnce sync.Once
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if deleteCalls == 1 {
+				return ErrTemporary
+			}
+			retryOnce.Do(func() { close(retried) })
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+	retained := coordinator.BeginTerminal(key)
+
+	select {
+	case <-retried:
+	case <-time.After(toolFeedbackCleanupRetryDelay + 2*time.Second):
+		t.Fatal("cleanup did not survive the sequential retained terminal generation")
+	}
+	if deleteCalls != 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and timer-driven retry", deleteCalls)
+	}
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "before final outcome", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("pending-final Deliver() = (%v, %v), sends %d, want retained barrier", ids, err, sends)
+	}
+	coordinator.CompleteTerminal(t.Context(), retained, false)
+}
+
+func TestToolFeedbackCoordinator_RetainedCleanupContinuesIntoTombstoneExpiry(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	allowCleanup := false
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if !allowCleanup {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "checking", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), retained, true)
+	entry := coordinator.findEntry(key)
+	if entry == nil {
+		t.Fatal("retained terminal entry removed before cleanup retry")
+	}
+
+	allowCleanup = true
+	coordinator.maintainCleanup(key, entry)
+	if deleteCalls != 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and cleanup retry", deleteCalls)
+	}
+	if got := coordinator.findEntry(key); got != entry {
+		t.Fatalf("entry after cleanup = %p, want retained tombstone %p", got, entry)
+	}
+	entry.mu.Lock()
+	entry.terminalUntil = time.Now().Add(-time.Second)
+	entry.mu.Unlock()
+	coordinator.maintainTerminal(retained)
+	if got := coordinator.findEntry(key); got != nil {
+		t.Fatalf("entry after tombstone expiry = %p, want nil", got)
+	}
+}
+
+func TestToolFeedbackCoordinator_RetainedTerminalJoinsTransientCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteStarted := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			close(deleteStarted)
+			<-releaseDelete
+			return nil
+		},
+	}
+	const key = "telegram:chat-1"
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	transientDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(t.Context(), transient, true)
+		close(transientDone)
+	}()
+	select {
+	case <-deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("transient cleanup did not start")
+	}
+
+	retainedResult := make(chan *toolFeedbackTerminal, 1)
+	go func() { retainedResult <- coordinator.BeginTerminal(key) }()
+	var retained *toolFeedbackTerminal
+	select {
+	case retained = <-retainedResult:
+		if retained == nil || retained.absorbed {
+			t.Fatalf("retained terminal = %#v, want active terminal", retained)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retained terminal did not join in-progress transient cleanup")
+	}
+	close(releaseDelete)
+	select {
+	case <-transientDone:
+	case <-time.After(time.Second):
+		t.Fatal("transient cleanup did not finish")
+	}
+	coordinator.CompleteTerminal(t.Context(), retained, true)
+
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "after final", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want tombstone suppression", ids, err, sends)
 	}
 }
 

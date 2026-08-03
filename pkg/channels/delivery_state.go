@@ -50,13 +50,14 @@ func (s *deliveryInteractionState) hasToolFeedback() bool {
 func (s *deliveryInteractionState) beginToolFeedbackTerminals(
 	keys []string,
 	scoped bool,
+	transient bool,
 ) []*toolFeedbackTerminal {
 	if !s.hasToolFeedback() {
 		return nil
 	}
 	terminals := make([]*toolFeedbackTerminal, 0, len(keys))
 	for _, key := range keys {
-		if scoped {
+		if scoped && !transient {
 			terminals = append(terminals, s.toolFeedback.BeginTerminal(key))
 		} else {
 			terminals = append(terminals, s.toolFeedback.BeginTransientTerminal(key))

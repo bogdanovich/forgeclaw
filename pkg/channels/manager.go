@@ -509,6 +509,7 @@ func (m *Manager) beginToolFeedbackTerminals(
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
 	traceScopes []runtimeevents.TraceScope,
+	transient bool,
 ) []*toolFeedbackTerminal {
 	if m == nil || !m.deliveryInteractionState.hasToolFeedback() {
 		return nil
@@ -516,7 +517,7 @@ func (m *Manager) beginToolFeedbackTerminals(
 	keys, scoped := m.resolveToolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
-	return m.deliveryInteractionState.beginToolFeedbackTerminals(keys, scoped)
+	return m.deliveryInteractionState.beginToolFeedbackTerminals(keys, scoped, transient)
 }
 
 func (m *Manager) completeToolFeedbackTerminals(
@@ -543,6 +544,7 @@ func (m *Manager) beginOutboundToolFeedbackTerminals(
 		&msg.Context,
 		msg.SessionKey,
 		msg.TraceScopes,
+		bus.OutboundMetadataFromMessage(msg).IsInterim(),
 	)
 }
 
@@ -2599,6 +2601,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 			&msg.Context,
 			msg.SessionKey,
 			msg.TraceScopes,
+			bus.OutboundMetadataFromContext(msg.Context).IsInterim(),
 		)
 		defer func() {
 			m.completeToolFeedbackTerminals(ctx, terminals, terminalSucceeded)

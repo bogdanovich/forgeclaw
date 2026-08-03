@@ -491,9 +491,15 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
 		}
 	}
+	traceSettlement := len(traceScopes) > 0 && !result.ImmediateDelivery
+	if result.ImmediateDelivery && len(traceScopes) == 0 {
+		traceScopes = []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+		}
+	}
 
 	if result.Outbound != nil {
-		return al.deliverExplicitToolOutbound(ctx, ts, result, toolName, traceScopes)
+		return al.deliverExplicitToolOutbound(ctx, ts, result, toolName, traceScopes, traceSettlement)
 	}
 
 	mediaRefs := toolResultMediaRefs(result)
@@ -514,10 +520,11 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      parts,
 		}
+		applyToolResultOutboundMetadata(result, &outboundMedia.Context)
 		if err := bus.SetOutboundMediaTraceScopes(&outboundMedia, traceScopes); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}
-		outboundMedia.TraceSettlement = len(outboundMedia.TraceScopes) > 0
+		outboundMedia.TraceSettlement = traceSettlement
 		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 			sendMedia := al.channelManager.SendMedia
 			if toolName == "final_turn" {
@@ -568,6 +575,8 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 	if err != nil {
 		return nil, toolResultDeliveryNone, err
 	}
+	applyToolResultOutboundMetadata(result, &outbound.Context)
+	outbound.TraceSettlement = traceSettlement
 	if err := al.bus.PublishOutbound(ctx, outbound); err != nil {
 		return nil, toolResultDeliveryNone, err
 	}
@@ -585,6 +594,7 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	result *tools.ToolResult,
 	toolName string,
 	traceScopes []runtimeevents.TraceScope,
+	traceSettlement bool,
 ) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 	out := result.Outbound
 	if out == nil {
@@ -613,10 +623,11 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      append([]bus.MediaPart(nil), out.Media...),
 		}
+		applyToolResultOutboundMetadata(result, &outboundMedia.Context)
 		if err := bus.SetOutboundMediaTraceScopes(&outboundMedia, traceScopes); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}
-		outboundMedia.TraceSettlement = len(outboundMedia.TraceScopes) > 0
+		outboundMedia.TraceSettlement = traceSettlement
 		if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
 				logger.WarnCF("agent", "Failed to deliver explicit tool media",
@@ -652,10 +663,11 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		Content:          out.Text,
 		ReplyToMessageID: replyToMessageID,
 	}
+	applyToolResultOutboundMetadata(result, &outboundMessage.Context)
 	if err := bus.SetOutboundTraceScopes(&outboundMessage, traceScopes); err != nil {
 		return nil, toolResultDeliveryNone, err
 	}
-	outboundMessage.TraceSettlement = len(outboundMessage.TraceScopes) > 0
+	outboundMessage.TraceSettlement = traceSettlement
 	if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
 		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
@@ -669,6 +681,13 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		return nil, toolResultDeliveryQueued, nil
 	}
 	return nil, toolResultDeliveryNone, nil
+}
+
+func applyToolResultOutboundMetadata(result *tools.ToolResult, outboundCtx *bus.InboundContext) {
+	if result == nil || !result.ImmediateDelivery {
+		return
+	}
+	bus.OutboundMetadata{OutboundKind: bus.OutboundKindInterim}.ApplyToContext(outboundCtx)
 }
 
 func firstNonEmptyString(values ...string) string {

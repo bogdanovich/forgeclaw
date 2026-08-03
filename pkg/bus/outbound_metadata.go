@@ -23,7 +23,8 @@ const (
 	OutboundMessageKindToolCalls    = "tool_calls"
 	OutboundMessageKindFinalReply   = "final_reply"
 
-	OutboundKindFinal = "final"
+	OutboundKindFinal   = "final"
+	OutboundKindInterim = "interim"
 
 	OutboundInteractionApproval = "approval"
 
@@ -147,6 +148,10 @@ func (m OutboundMetadata) HasAuxiliaryKind() bool {
 
 func (m OutboundMetadata) IsFinal() bool {
 	return strings.EqualFold(m.OutboundKind, OutboundKindFinal)
+}
+
+func (m OutboundMetadata) IsInterim() bool {
+	return strings.EqualFold(m.OutboundKind, OutboundKindInterim)
 }
 
 func (m OutboundMetadata) BypassesPlaceholderEdit() bool {

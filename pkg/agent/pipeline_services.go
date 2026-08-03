@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
@@ -201,13 +200,9 @@ func (p *Pipeline) applySyncToolResultDelivery(
 	if p == nil || p.Interaction.SyncToolDelivery == nil {
 		return nil, result
 	}
-	if result != nil && result.ImmediateDelivery {
-		// Immediate delivery may trigger a self-restart. Clear the tracked
-		// feedback before the tool can tear down this gateway process.
-		dismissCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-		defer cancel()
-		p.dismissToolFeedbackForTurn(dismissCtx, ts)
-	}
+	// An immediate delivery is interim: its outbound message transiently clears
+	// the current carrier, while later tool calls in the same turn must remain
+	// able to publish new feedback. Terminal results own terminal cleanup.
 	return p.Interaction.SyncToolDelivery.applySyncToolResultDelivery(ctx, ts, result, toolName)
 }
 
