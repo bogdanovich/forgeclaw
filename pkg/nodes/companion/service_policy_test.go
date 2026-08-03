@@ -172,6 +172,7 @@ func TestNormalizeServicePoliciesRejectsAggregateSchemaBeyondCeiling(t *testing.
 			alias := fmt.Sprintf("service_%02d_%02d", profileIndex, serviceIndex)
 			services[alias] = ServicePolicyEntry{
 				Unit:                alias + ".service",
+				Status:              true,
 				Actions:             append([]nodes.ServiceAction(nil), actions...),
 				ExpectedActiveState: "active",
 			}
@@ -187,6 +188,17 @@ func TestNormalizeServicePoliciesRejectsAggregateSchemaBeyondCeiling(t *testing.
 	_, err := normalizeServicePolicies(policies)
 	if err == nil || !strings.Contains(err.Error(), "bounded descriptor") {
 		t.Fatalf("aggregate service authority error = %v", err)
+	}
+}
+
+func TestNormalizeServicePoliciesRequiresActionVerification(t *testing.T) {
+	profile := servicePolicyFixture()
+	service := profile.Services["vpn"]
+	service.Status = false
+	profile.Services["vpn"] = service
+	_, err := normalizeServicePolicies(ServicePolicies{"server-services": profile})
+	if err == nil || !strings.Contains(err.Error(), "actions require status verification") {
+		t.Fatalf("unverifiable service action error = %v", err)
 	}
 }
 
