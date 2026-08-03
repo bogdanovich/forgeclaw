@@ -255,7 +255,7 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 
 // BeginAttempt persists the crash boundary immediately before a transport call.
 func (s *Store) BeginAttempt(id string) (Intent, error) {
-	return s.transition(id, StatusAttempting, Outcome{}, StatusPending, StatusAttempting)
+	return s.transition(id, StatusAttempting, Outcome{}, StatusPending, StatusAttempting, StatusDefinitelyFailed)
 }
 
 // MarkDelivered records confirmed remote acceptance and platform message IDs.

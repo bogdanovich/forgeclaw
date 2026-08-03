@@ -136,6 +136,30 @@ func TestStoreRejectsInvalidTransitions(t *testing.T) {
 	}
 }
 
+func TestDefinitelyFailedIntentCanBeginRetry(t *testing.T) {
+	store := openTestStore(t)
+	intent := createTestIntent(t, store, "response")
+	if _, err := store.BeginAttempt(intent.ID); err != nil {
+		t.Fatalf("BeginAttempt(first) error = %v", err)
+	}
+	retryAt := time.Date(2026, time.August, 2, 12, 30, 0, 0, time.UTC)
+	if _, err := store.MarkDefinitelyFailed(intent.ID, Outcome{
+		RetryAfter: retryAt,
+		Error:      "rejected",
+	}); err != nil {
+		t.Fatalf("MarkDefinitelyFailed() error = %v", err)
+	}
+
+	retrying, err := store.BeginAttempt(intent.ID)
+	if err != nil {
+		t.Fatalf("BeginAttempt(retry) error = %v", err)
+	}
+	if retrying.Status != StatusAttempting || retrying.Attempts != 2 ||
+		!retrying.RetryAfter.IsZero() || retrying.LastError != "" {
+		t.Fatalf("BeginAttempt(retry) = %#v", retrying)
+	}
+}
+
 func TestCreateKeepsCanonicalIntentAcrossReplayChanges(t *testing.T) {
 	store := openTestStore(t)
 	intent := newTestIntent(t, "response", 0)

@@ -33,6 +33,7 @@ func TestCoordinatorKeepsFirstOwnerRouteAndPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenCoordinator() error = %v", err)
 	}
+	t.Cleanup(func() { _ = coordinator.Close() })
 	identity := testIdentity()
 	first, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "first"})
 	if err != nil {
@@ -74,11 +75,15 @@ func TestCoordinatorReopenUsesOneCanonicalStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdmitMessage(first) error = %v", err)
 	}
+	if closeErr := first.Close(); closeErr != nil {
+		t.Fatalf("Close(first) error = %v", closeErr)
+	}
 
 	second, err := OpenCoordinator(instanceRoot)
 	if err != nil {
 		t.Fatalf("OpenCoordinator(second) error = %v", err)
 	}
+	t.Cleanup(func() { _ = second.Close() })
 	identity.Channel = "slack"
 	identity.ChatID = "rerouted-chat"
 	identity.SessionKey = "agent:other:slack:rerouted-chat"
@@ -90,7 +95,7 @@ func TestCoordinatorReopenUsesOneCanonicalStore(t *testing.T) {
 		t.Fatal("pending admission after restart did not resume dispatch")
 	}
 	assertSamePersistedIntent(t, replayed.Intent, created.Intent)
-	if got, want := filepath.Dir(first.store.dir), filepath.Join(instanceRoot, "state"); got != want {
+	if got, want := filepath.Dir(first.store.dir), filepath.Join(first.root, "state"); got != want {
 		t.Fatalf("outbox parent = %q, want %q", got, want)
 	}
 }
@@ -100,13 +105,14 @@ func TestCoordinatorReleaseAllowsCanonicalRedispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenCoordinator() error = %v", err)
 	}
+	t.Cleanup(func() { _ = coordinator.Close() })
 	identity := testIdentity()
 	first, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "first"})
 	if err != nil {
 		t.Fatalf("AdmitMessage(first) error = %v", err)
 	}
-	if err := coordinator.ReleaseAdmission(first.Intent.ID); err != nil {
-		t.Fatalf("ReleaseAdmission() error = %v", err)
+	if releaseErr := coordinator.ReleaseAdmission(first.Lease); releaseErr != nil {
+		t.Fatalf("ReleaseAdmission() error = %v", releaseErr)
 	}
 
 	identity.Channel = "slack"
@@ -121,11 +127,83 @@ func TestCoordinatorReleaseAllowsCanonicalRedispatch(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRejectsSecondLiveOwnerForInstanceRoot(t *testing.T) {
+	instanceRoot := t.TempDir()
+	type result struct {
+		coordinator *Coordinator
+		err         error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for range 2 {
+		go func() {
+			<-start
+			coordinator, err := OpenCoordinator(instanceRoot)
+			results <- result{coordinator: coordinator, err: err}
+		}()
+	}
+	close(start)
+
+	opened := 0
+	rejected := 0
+	var owner *Coordinator
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			rejected++
+			continue
+		}
+		opened++
+		owner = result.coordinator
+	}
+	if owner != nil {
+		t.Cleanup(func() { _ = owner.Close() })
+	}
+	if opened != 1 || rejected != 1 {
+		t.Fatalf("concurrent opens = %d accepted, %d rejected; want 1 and 1", opened, rejected)
+	}
+}
+
+func TestCoordinatorStaleReleaseCannotClearNewLease(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	identity := testIdentity()
+	first, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "first"})
+	if err != nil {
+		t.Fatalf("AdmitMessage(first) error = %v", err)
+	}
+	if releaseErr := coordinator.ReleaseAdmission(first.Lease); releaseErr != nil {
+		t.Fatalf("ReleaseAdmission(first) error = %v", releaseErr)
+	}
+	second, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "second"})
+	if err != nil {
+		t.Fatalf("AdmitMessage(second) error = %v", err)
+	}
+	if !second.Dispatch {
+		t.Fatal("second admission did not reacquire dispatch")
+	}
+
+	if releaseErr := coordinator.ReleaseAdmission(first.Lease); releaseErr == nil {
+		t.Fatal("stale release cleared the current dispatch lease")
+	}
+	third, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "third"})
+	if err != nil {
+		t.Fatalf("AdmitMessage(third) error = %v", err)
+	}
+	if third.Dispatch {
+		t.Fatal("third admission acquired dispatch while second lease remained active")
+	}
+}
+
 func TestCoordinatorConcurrentReroutesHaveOneOwner(t *testing.T) {
 	coordinator, err := OpenCoordinator(t.TempDir())
 	if err != nil {
 		t.Fatalf("OpenCoordinator() error = %v", err)
 	}
+	t.Cleanup(func() { _ = coordinator.Close() })
 
 	const attempts = 16
 	results := make(chan Admission, attempts)
