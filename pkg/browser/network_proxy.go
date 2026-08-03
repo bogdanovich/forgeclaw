@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -391,11 +392,12 @@ func (policy *browserNetworkPolicy) destination(
 		}
 	}
 	host := parsed.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if policy.mode != config.BrowserNetworkAnyHTTP && !config.IsPublicBrowserIP(ip) {
+	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
+		if policy.mode != config.BrowserNetworkAnyHTTP &&
+			!config.IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return nil, ErrDenied
 		}
-		return []string{net.JoinHostPort(ip.String(), port)}, nil
+		return []string{net.JoinHostPort(address.String(), port)}, nil
 	}
 	addresses, err := policy.lookupIP(ctx, "ip", host)
 	if err != nil || len(addresses) == 0 || len(addresses) > browserProxyMaxResolvedAddresses {

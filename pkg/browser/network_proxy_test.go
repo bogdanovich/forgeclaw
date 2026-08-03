@@ -193,6 +193,7 @@ func TestBrowserNetworkPolicyAnyHTTPAdmitsEveryValidAddressScope(t *testing.T) {
 		"169.254.169.254": "169.254.169.254:80",
 		"[fe80::1]:8080":  "[fe80::1]:8080",
 		"[::]:8080":       "[::]:8080",
+		"[::ffff:7f00:1]": "[::ffff:127.0.0.1]:80",
 		"224.0.0.1:8080":  "224.0.0.1:8080",
 	}
 	for authority, want := range tests {

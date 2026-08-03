@@ -1025,6 +1025,17 @@ func TestPlaywrightObservationAcceptsOnlyExactEmptyInitialBlank(t *testing.T) {
 	}
 }
 
+func TestSanitizeObservedURLCanonicalizesMappedIPv6AndRejectsEmptyPort(t *testing.T) {
+	safeURL, origin, err := sanitizeObservedURL("http://[::ffff:7f00:1]/health?secret=value#fragment")
+	if err != nil || safeURL != "http://[::ffff:127.0.0.1]/health" ||
+		origin != "http://[::ffff:127.0.0.1]" {
+		t.Fatalf("sanitizeObservedURL() = %q, %q, %v", safeURL, origin, err)
+	}
+	if _, _, err = sanitizeObservedURL("http://127.0.0.1:/health"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("sanitizeObservedURL(empty port) error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
 		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")

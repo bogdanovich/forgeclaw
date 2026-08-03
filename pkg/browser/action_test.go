@@ -325,6 +325,42 @@ func TestBrokerAnyHTTPObservationAdmitsPrivateOrigin(t *testing.T) {
 	}
 }
 
+func TestBrokerAnyHTTPRejectsNavigationWithEmptyPort(t *testing.T) {
+	root := admittedBrowserConfig()
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	profile := target.Profiles[config.BrowserDefaultProfile]
+	profile.NetworkMode = config.BrowserNetworkAnyHTTP
+	profile.AllowedOrigins = nil
+	target.Profiles[config.BrowserDefaultProfile] = profile
+	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
+
+	broker, worker, session := openActionTestBrokerWithConfig(t, root, NewMemoryStore())
+	observation, err := broker.Observe(
+		context.Background(), testOwner(), session.ID, session.TabID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: testOwner(), RequestID: "request_empty_port", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "http://127.0.0.1:/health"},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PrepareAction() empty-port error = %v, want ErrInvalid", err)
+	}
+	if len(worker.actions) != 0 {
+		t.Fatalf("empty-port navigation dispatched actions: %+v", worker.actions)
+	}
+}
+
+func TestNavigationOriginPreservesMappedIPv6AddressFamily(t *testing.T) {
+	origin, err := originFromURL("http://[::ffff:7f00:1]/health")
+	if err != nil || origin != "http://[::ffff:127.0.0.1]" {
+		t.Fatalf("originFromURL() = %q, %v", origin, err)
+	}
+}
+
 func TestBrokerPreparationQuarantinesDeniedDNSResolution(t *testing.T) {
 	t.Run("current origin", func(t *testing.T) {
 		store := NewMemoryStore()

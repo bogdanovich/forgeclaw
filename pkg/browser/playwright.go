@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -694,6 +693,9 @@ func normalizeDriverNavigationURL(raw string) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", ErrInvalid
 	}
+	if strings.HasSuffix(parsed.Host, ":") && parsed.Port() == "" {
+		return "", ErrInvalid
+	}
 	parsed.Host = strings.ToLower(parsed.Host)
 	return parsed.String(), nil
 }
@@ -950,22 +952,18 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", "", ErrInvalid
 	}
-	hostname := strings.ToLower(parsed.Hostname())
-	port := parsed.Port()
-	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
-		port = ""
+	origin, err := config.NormalizeBrowserHTTPOrigin(parsed.Scheme + "://" + parsed.Host)
+	if err != nil {
+		return "", "", ErrInvalid
 	}
-	host := hostname
-	if port != "" {
-		host = net.JoinHostPort(hostname, port)
-	} else if strings.Contains(hostname, ":") {
-		host = "[" + hostname + "]"
+	normalizedOrigin, err := url.Parse(origin)
+	if err != nil || normalizedOrigin.Host == "" {
+		return "", "", ErrInvalid
 	}
-	parsed.Host = host
+	parsed.Host = normalizedOrigin.Host
 	parsed.RawQuery = ""
 	parsed.ForceQuery = false
 	parsed.Fragment = ""
-	origin := parsed.Scheme + "://" + host
 	safeURL := parsed.String()
 	if len(safeURL) > MaxURLBytes || len(origin) > MaxURLBytes {
 		return "", "", ErrInvalid

@@ -431,6 +431,8 @@ func TestNormalizeBrowserHTTPOriginAdmitsPrivateScopesButRejectsAmbiguousNumeric
 		"http://metadata.google.internal": "http://metadata.google.internal",
 		"http://169.254.169.254/":         "http://169.254.169.254",
 		"http://[fe80::1]:8080/":          "http://[fe80::1]:8080",
+		"http://[fe80::1%25en0]:8080/":    "http://[fe80::1%25en0]:8080",
+		"http://[::ffff:7f00:1]/":         "http://[::ffff:127.0.0.1]",
 	}
 	for raw, want := range tests {
 		got, err := NormalizeBrowserHTTPOrigin(raw)

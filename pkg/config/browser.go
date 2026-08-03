@@ -343,11 +343,11 @@ func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 		lowerHost == "metadata.google.internal") {
 		return "", errors.New("origin host is outside the public network policy")
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if publicOnly && !IsPublicBrowserIP(ip) {
+	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
+		if publicOnly && !IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return "", errors.New("origin IP is outside the public network policy")
 		}
-		lowerHost = ip.String()
+		lowerHost = address.String()
 	} else if legacyIP, recognized := parseBrowserIPv4(lowerHost); recognized {
 		if !publicOnly {
 			return "", errors.New("origin host is an ambiguous numeric IPv4 address")
@@ -389,10 +389,13 @@ func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 		port = ""
 	}
 	normalizedHost := lowerHost
+	if strings.Contains(lowerHost, ":") {
+		normalizedHost = strings.ReplaceAll(normalizedHost, "%", "%25")
+	}
 	if port != "" {
-		normalizedHost = net.JoinHostPort(lowerHost, port)
+		normalizedHost = net.JoinHostPort(normalizedHost, port)
 	} else if strings.Contains(lowerHost, ":") {
-		normalizedHost = "[" + lowerHost + "]"
+		normalizedHost = "[" + normalizedHost + "]"
 	}
 	return scheme + "://" + normalizedHost, nil
 }
