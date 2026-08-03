@@ -628,6 +628,7 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			SessionKey: ts.sessionKey,
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      append([]bus.MediaPart(nil), out.Media...),
+			Recovery:   out.Recovery,
 		}
 		applyToolResultOutboundMetadata(result, &outboundMedia.Context)
 		if err := bus.SetOutboundMediaTraceScopes(&outboundMedia, traceScopes); err != nil {

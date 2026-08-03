@@ -58,7 +58,7 @@ func TestReplayGatewayOutboundIntentsPublishesRecoveredMedia(t *testing.T) {
 		t.Fatalf("RecoverPending() = %+v, %v", pending, err)
 	}
 	msgBus := bus.NewMessageBus()
-	if err = replayGatewayOutboundIntents(t.Context(), msgBus, recovered, pending); err != nil {
+	if err = replayGatewayOutboundIntents(t.Context(), msgBus, recovered, nil, pending); err != nil {
 		t.Fatalf("replayGatewayOutboundIntents() error = %v", err)
 	}
 	select {
@@ -72,6 +72,59 @@ func TestReplayGatewayOutboundIntentsPublishesRecoveredMedia(t *testing.T) {
 	}
 	if err = recovered.BeginAttempt(admission.Intent.ID); err != nil {
 		t.Fatalf("BeginAttempt(recovered) error = %v", err)
+	}
+}
+
+func TestReplayGatewayOutboundFailureLeavesIntentPendingForNextStartup(t *testing.T) {
+	root := t.TempDir()
+	first, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := outbox.Identity{
+		SourceID: "spool-recovery-retry", Kind: outbox.KindMessage,
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+	}
+	admission, err := first.AdmitMessage(
+		"/agents/main", identity,
+		bus.OutboundMessage{Channel: "telegram", ChatID: "chat-1", Content: "retry me"},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := recovered.RecoverPending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("RecoverPending(first restart) = %+v, %v", pending, err)
+	}
+	closedBus := bus.NewMessageBus()
+	closedBus.Close()
+	if err = replayGatewayOutboundIntents(
+		t.Context(), closedBus, recovered, nil, pending,
+	); err == nil {
+		t.Fatal("replayGatewayOutboundIntents() unexpectedly succeeded")
+	}
+	intent, getErr := recovered.Get(admission.Intent.ID)
+	if getErr != nil || intent.Status != outbox.StatusPending {
+		t.Fatalf("intent after rejected recovery = %+v, %v", intent, getErr)
+	}
+	if err = recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Close() })
+	pending, err = next.RecoverPending()
+	if err != nil || len(pending) != 1 || pending[0].ID != admission.Intent.ID {
+		t.Fatalf("RecoverPending(next restart) = %+v, %v", pending, err)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
@@ -93,6 +94,95 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	capture.Data = append(capture.Data, 0)
 	if _, err = source.retainScreenshot(ctx, request, capture); err == nil {
 		t.Fatal("conflicting replay unexpectedly succeeded")
+	}
+}
+
+func TestGatewayOutboundRecoveryClaimsFilesystemScreenshotBeforePublication(t *testing.T) {
+	workspace := t.TempDir()
+	runtime := &nodeAdmissionRuntime{}
+	t.Cleanup(func() {
+		if runtime.transferSpool != nil {
+			_ = runtime.transferSpool.Close()
+		}
+	})
+	store, err := media.NewFileMediaStoreWithPersistentIndex(
+		filepath.Join(workspace, "state", "media", "index.json"),
+		media.MediaCleanerConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &gatewayBrowserToolSource{
+		services:  &services{NodeAdmission: runtime, MediaStore: store},
+		workspace: workspace, screenshotRetention: time.Hour,
+	}
+	ctx := gatewayBrowserArtifactContext(workspace)
+	request := browser.ScreenshotRequest{RequestID: "request_recovery"}
+	artifact, err := source.retainScreenshot(ctx, request, browser.ScreenshotCapture{
+		SessionID: "session_recovery", Target: "gateway", Profile: "managed",
+		PolicyRevision: "policy_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+		SnapshotGeneration: 1,
+		Data: append(
+			append([]byte(nil), []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}...),
+			[]byte("recovery fixture")...,
+		),
+		ContentType: "image/png",
+	})
+	if err != nil || artifact.Recovery == nil ||
+		artifact.DeliveryState != browser.ScreenshotDeliveryPending {
+		t.Fatalf("retainScreenshot() = %+v, %v", artifact, err)
+	}
+	recovery := &bus.OutboundRecovery{
+		Kind:        bus.OutboundRecoveryBrowserScreenshot,
+		ArtifactRef: artifact.Ref, MediaRef: artifact.MediaRef,
+		WorkspaceID: artifact.Recovery.WorkspaceID, AgentID: artifact.Recovery.AgentID,
+		ActorID: artifact.Recovery.ActorID, RouteID: artifact.Recovery.RouteID,
+		SessionID: artifact.Recovery.SessionID, ToolCallID: artifact.Recovery.ToolCallID,
+	}
+	first, err := outbox.OpenCoordinator(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := outbox.Identity{
+		SourceID: "spool-screenshot-recovery", Kind: outbox.KindMedia,
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+	}
+	admission, err := first.AdmitMedia(workspace, identity, bus.OutboundMediaMessage{
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+		Parts: []bus.MediaPart{{Type: "image", Ref: artifact.MediaRef}}, Recovery: recovery,
+	})
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMedia() = %+v, %v", admission, err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := outbox.OpenCoordinator(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = recovered.Close() })
+	pending, err := recovered.RecoverPending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("RecoverPending() = %+v, %v", pending, err)
+	}
+	msgBus := bus.NewMessageBus()
+	if err = replayGatewayOutboundIntents(ctx, msgBus, recovered, runtime, pending); err != nil {
+		t.Fatalf("replayGatewayOutboundIntents() error = %v", err)
+	}
+	owner := browser.Owner{ActorID: "actor", AgentID: "agent", SessionKey: "route", ExecutionID: "execution"}
+	replayed, found, err := source.LookupScreenshot(ctx, owner, request.RequestID, "session_recovery")
+	if err != nil || !found || replayed.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed {
+		t.Fatalf("claimed recovered screenshot = %+v, %t, %v", replayed, found, err)
+	}
+	select {
+	case message := <-msgBus.OutboundMediaChan():
+		if message.DeliveryID != admission.Intent.ID || message.Recovery == nil ||
+			message.Recovery.ArtifactRef != artifact.Ref {
+			t.Fatalf("recovered outbound media = %+v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovered screenshot was not published")
 	}
 }
 

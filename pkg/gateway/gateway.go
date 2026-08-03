@@ -772,6 +772,7 @@ func replayGatewayOutboundIntents(
 	ctx context.Context,
 	msgBus *bus.MessageBus,
 	coordinator *outbox.Coordinator,
+	nodeRuntime *nodeAdmissionRuntime,
 	pending []outbox.Intent,
 ) error {
 	if len(pending) == 0 {
@@ -786,18 +787,22 @@ func replayGatewayOutboundIntents(
 		case intent.Message != nil && intent.Media == nil:
 			publishErr = msgBus.PublishOutbound(ctx, *intent.Message)
 		case intent.Media != nil && intent.Message == nil:
-			publishErr = msgBus.PublishOutboundMedia(ctx, *intent.Media)
+			if intent.Media.Recovery != nil {
+				publishErr = recoverBrowserScreenshotDelivery(
+					nodeRuntime, intent.OwnerWorkspace, *intent.Media.Recovery,
+				)
+			}
+			if publishErr == nil {
+				publishErr = msgBus.PublishOutboundMedia(ctx, *intent.Media)
+			}
 		default:
 			publishErr = errors.New("recovered outbound intent has invalid payload cardinality")
 		}
 		if publishErr == nil {
 			continue
 		}
-		persistErr := coordinator.MarkDispatchRejected(
-			intent.ID,
-			outbox.Outcome{Error: publishErr.Error()},
-		)
-		return errors.Join(publishErr, persistErr)
+		releaseErr := coordinator.ReleaseRecovered(intent.ID)
+		return errors.Join(publishErr, releaseErr)
 	}
 	logger.InfoCF("gateway", "Replayed pending outbound intents", map[string]any{"count": len(pending)})
 	return nil
@@ -954,7 +959,9 @@ func setupAndStartServices(
 		}
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
-	if err = replayGatewayOutboundIntents(ctx, msgBus, outboundOutbox, recoveredOutbound); err != nil {
+	if err = replayGatewayOutboundIntents(
+		ctx, msgBus, outboundOutbox, runningServices.NodeAdmission, recoveredOutbound,
+	); err != nil {
 		return nil, fmt.Errorf("replay pending outbound intents: %w", err)
 	}
 	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)

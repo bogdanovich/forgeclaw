@@ -484,14 +484,31 @@ func (tool *BrowserObserveTool) screenshotResult(
 		artifact.MediaRef == "" {
 		return result
 	}
+	if artifact.Recovery == nil {
+		return browserErrorResult(
+			"delivery_unavailable",
+			"Browser screenshot recovery metadata is unavailable.",
+			"retry_observation",
+		)
+	}
 	delivery := browser.ScreenshotDeliveryRequest{
 		Owner: owner, RequestID: requestID, SessionID: artifact.SessionID,
 		Ref: artifact.Ref, MediaRef: artifact.MediaRef,
 	}
-	return result.WithOutboundDelivery(OutboundDelivery{Media: []bus.MediaPart{{
-		Type: "image", Ref: artifact.MediaRef, Filename: artifact.Filename,
-		ContentType: artifact.ContentType,
-	}}}).WithOutboundCommit(func(commitCtx context.Context) error {
+	recovery := artifact.Recovery
+	return result.WithOutboundDelivery(OutboundDelivery{
+		Media: []bus.MediaPart{{
+			Type: "image", Ref: artifact.MediaRef, Filename: artifact.Filename,
+			ContentType: artifact.ContentType,
+		}},
+		Recovery: &bus.OutboundRecovery{
+			Kind:        bus.OutboundRecoveryBrowserScreenshot,
+			ArtifactRef: artifact.Ref, MediaRef: artifact.MediaRef,
+			WorkspaceID: recovery.WorkspaceID, AgentID: recovery.AgentID,
+			ActorID: recovery.ActorID, RouteID: recovery.RouteID,
+			SessionID: recovery.SessionID, ToolCallID: recovery.ToolCallID,
+		},
+	}).WithOutboundCommit(func(commitCtx context.Context) error {
 		return tool.runtime.source.ClaimScreenshotDelivery(commitCtx, delivery)
 	}).WithImmediateDelivery()
 }

@@ -114,6 +114,35 @@ func (c *Coordinator) RecoverPending() ([]Intent, error) {
 	return intents, nil
 }
 
+// ReleaseRecovered relinquishes startup publication ownership without
+// changing the durable pending state, so the next startup can retry.
+func (c *Coordinator) ReleaseRecovered(deliveryID string) error {
+	if c == nil || c.store == nil {
+		return errors.New("outbox coordinator is unavailable")
+	}
+	if err := validateID(deliveryID); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return err
+	}
+	if !c.published[deliveryID] || c.leases[deliveryID] != 0 ||
+		c.publishing[deliveryID] != 0 || c.attempting[deliveryID] {
+		return fmt.Errorf("recovered outbox intent %q is not releasable", deliveryID)
+	}
+	intent, err := c.store.Get(deliveryID)
+	if err != nil {
+		return err
+	}
+	if intent.Status != StatusPending {
+		return fmt.Errorf("recovered outbox intent %q is %q, not pending", deliveryID, intent.Status)
+	}
+	delete(c.published, deliveryID)
+	return nil
+}
+
 // PrepareAdmission authorizes bus visibility while retaining the exact lease
 // needed to roll back a failed publication.
 func (c *Coordinator) PrepareAdmission(lease DispatchLease) error {

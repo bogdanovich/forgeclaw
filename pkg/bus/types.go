@@ -134,6 +134,22 @@ type MediaPart struct {
 	ContentType string `json:"content_type,omitempty"` // MIME type hint
 }
 
+const OutboundRecoveryBrowserScreenshot = "browser_screenshot_claim"
+
+// OutboundRecovery is a bounded, model-private prerequisite that must be
+// restored before a durable media intent is republished after restart.
+type OutboundRecovery struct {
+	Kind        string `json:"kind"`
+	ArtifactRef string `json:"artifact_ref"`
+	MediaRef    string `json:"media_ref"`
+	WorkspaceID string `json:"workspace_id"`
+	AgentID     string `json:"agent_id"`
+	ActorID     string `json:"actor_id"`
+	RouteID     string `json:"route_id"`
+	SessionID   string `json:"session_id"`
+	ToolCallID  string `json:"tool_call_id"`
+}
+
 // OutboundMediaMessage carries media attachments from Agent to channels via the bus.
 type OutboundMediaMessage struct {
 	DeliveryID      string                     `json:"delivery_id,omitempty"`
@@ -146,6 +162,7 @@ type OutboundMediaMessage struct {
 	TraceSettlement bool                       `json:"trace_settlement,omitempty"`
 	Scope           *OutboundScope             `json:"scope,omitempty"`
 	Parts           []MediaPart                `json:"parts"`
+	Recovery        *OutboundRecovery          `json:"recovery,omitempty"`
 }
 
 // AudioChunk represents a chunk of streaming voice data.

@@ -75,20 +75,30 @@ const (
 )
 
 type ScreenshotArtifact struct {
-	Ref                string `json:"ref"`
-	Kind               string `json:"kind"`
-	ContentType        string `json:"content_type"`
-	Filename           string `json:"filename"`
-	Size               int64  `json:"size"`
-	SHA256             string `json:"sha256"`
-	ExpiresAt          int64  `json:"expires_at"`
-	SessionID          string `json:"browser_session_id"`
-	TabID              string `json:"tab_id"`
-	SnapshotID         string `json:"snapshot_id"`
-	SnapshotGeneration uint64 `json:"snapshot_generation"`
-	Truncated          bool   `json:"truncated"`
-	DeliveryState      string `json:"-"`
-	MediaRef           string `json:"-"`
+	Ref                string              `json:"ref"`
+	Kind               string              `json:"kind"`
+	ContentType        string              `json:"content_type"`
+	Filename           string              `json:"filename"`
+	Size               int64               `json:"size"`
+	SHA256             string              `json:"sha256"`
+	ExpiresAt          int64               `json:"expires_at"`
+	SessionID          string              `json:"browser_session_id"`
+	TabID              string              `json:"tab_id"`
+	SnapshotID         string              `json:"snapshot_id"`
+	SnapshotGeneration uint64              `json:"snapshot_generation"`
+	Truncated          bool                `json:"truncated"`
+	DeliveryState      string              `json:"-"`
+	MediaRef           string              `json:"-"`
+	Recovery           *ScreenshotRecovery `json:"-"`
+}
+
+type ScreenshotRecovery struct {
+	WorkspaceID string
+	AgentID     string
+	ActorID     string
+	RouteID     string
+	SessionID   string
+	ToolCallID  string
 }
 
 type ScreenshotCapture struct {

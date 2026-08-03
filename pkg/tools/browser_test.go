@@ -388,6 +388,10 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 			ExpiresAt: 200, SessionID: "browser_session_1", TabID: "tab_primary",
 			SnapshotID: "snapshot_1", SnapshotGeneration: 3,
 			DeliveryState: browser.ScreenshotDeliveryPending, MediaRef: "media://opaque",
+			Recovery: &browser.ScreenshotRecovery{
+				WorkspaceID: "workspace_1", AgentID: "browser", ActorID: "actor_1",
+				RouteID: "route_1", SessionID: "browser_session_1", ToolCallID: "request_1",
+			},
 		},
 	}
 	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
@@ -405,6 +409,7 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 		observation.Artifact.SnapshotID != "snapshot_1" ||
 		observation.Artifact.MediaRef != "" || len(result.Media) != 0 || result.Outbound == nil ||
 		len(result.Outbound.Media) != 1 || result.Outbound.Media[0].Ref != "media://opaque" ||
+		result.Outbound.Recovery == nil || result.Outbound.Recovery.ArtifactRef != "transfer-artifact://opaque" ||
 		!result.ImmediateDelivery || result.CommitOutbound == nil ||
 		source.screenshotRequest.SnapshotID != "snapshot_1" || source.screenshotRequest.RequestID == "" ||
 		strings.Contains(result.ForLLM, "delivery_state") ||

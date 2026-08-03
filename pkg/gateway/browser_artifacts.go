@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/browser"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
@@ -92,15 +93,27 @@ func (source *gatewayBrowserToolSource) ClaimScreenshotDelivery(
 	if err != nil {
 		return browser.ErrWorkerUnavailable
 	}
-	retained, found, err := spool.LookupTransfer(owner, request.RequestID)
-	if err != nil || !found || retained.Ref != request.Ref || !validBrowserScreenshotRecord(retained) {
+	return claimBrowserScreenshotDelivery(spool, owner, request.Ref, request.MediaRef)
+}
+
+func claimBrowserScreenshotDelivery(
+	spool *nodes.GatewayTransferSpool,
+	owner nodes.TransferArtifactOwner,
+	artifactRef string,
+	mediaRef string,
+) error {
+	if spool == nil || owner.Validate() != nil {
+		return nodes.ErrTransferArtifactNotFound
+	}
+	retained, found, err := spool.LookupTransfer(owner, owner.ToolCallID)
+	if err != nil || !found || retained.Ref != artifactRef || !validBrowserScreenshotRecord(retained) {
 		if err != nil {
 			return err
 		}
 		return nodes.ErrTransferArtifactNotFound
 	}
 	record, claimed, claimErr := spool.ClaimDelivery(
-		owner, request.Ref, request.MediaRef, nodeFileDeliveryKey(owner, retained),
+		owner, artifactRef, mediaRef, nodeFileDeliveryKey(owner, retained),
 	)
 	if claimErr != nil && !(claimed && record.DeliveryAt != 0 && fileutil.IsCommittedWriteError(claimErr)) {
 		return claimErr
@@ -108,6 +121,29 @@ func (source *gatewayBrowserToolSource) ClaimScreenshotDelivery(
 	// An exact duplicate claim is idempotent so a durable outbox intent can
 	// resume publication after process interruption without reopening delivery.
 	return nil
+}
+
+func recoverBrowserScreenshotDelivery(
+	runtime *nodeAdmissionRuntime,
+	workspace string,
+	recovery bus.OutboundRecovery,
+) error {
+	if runtime == nil || recovery.Kind != bus.OutboundRecoveryBrowserScreenshot {
+		return errors.New("browser screenshot recovery is unavailable")
+	}
+	owner := nodes.TransferArtifactOwner{
+		WorkspaceID: recovery.WorkspaceID, AgentID: recovery.AgentID,
+		ActorID: recovery.ActorID, RouteID: recovery.RouteID,
+		SessionID: recovery.SessionID, ToolCallID: recovery.ToolCallID,
+	}
+	if err := owner.Validate(); err != nil {
+		return err
+	}
+	spool, err := runtime.gatewayTransferSpool(nodes.GatewayTransferSpoolPath(workspace))
+	if err != nil {
+		return err
+	}
+	return claimBrowserScreenshotDelivery(spool, owner, recovery.ArtifactRef, recovery.MediaRef)
 }
 
 func validBrowserScreenshotRecord(record nodes.TransferArtifactRecord) bool {
@@ -300,6 +336,11 @@ func browserScreenshotArtifact(
 		SnapshotGeneration: record.Spec.SourceRevision,
 		DeliveryState:      deliveryState,
 		MediaRef:           mediaRef,
+		Recovery: &browser.ScreenshotRecovery{
+			WorkspaceID: record.Owner.WorkspaceID, AgentID: record.Owner.AgentID,
+			ActorID: record.Owner.ActorID, RouteID: record.Owner.RouteID,
+			SessionID: record.Owner.SessionID, ToolCallID: record.Owner.ToolCallID,
+		},
 	}
 }
 

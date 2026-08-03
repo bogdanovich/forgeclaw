@@ -422,10 +422,11 @@ the retained bytes and exact delivery claim; the outbox intent is the single
 recoverable owner of publication. The runtime admits that intent before it
 claims the artifact, and an exact replay must be able to publish a pending
 intent after interruption without creating a second claim. Gateway startup
-re-enqueues only intents whose transport call never started; interrupted
-transport attempts become ambiguous and are not blindly retried. A
-non-durable direct route must reject screenshot capture before bytes are
-retained.
+first restores the intent's typed P2 claim prerequisite, then re-enqueues only
+intents whose transport call never started. A rejected startup enqueue releases
+in-process ownership while leaving the intent pending for the next restart.
+Interrupted transport attempts become ambiguous and are not blindly retried. A
+non-durable direct route must reject screenshot capture before bytes are retained.
 
 Browser uploads do not accept arbitrary host paths. Downloads are not exposed
 as arbitrary filesystem destinations. Both directions remain bound to actor,

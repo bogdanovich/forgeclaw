@@ -351,9 +351,17 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 	store := session.NewSessionManager("")
 	commitCalls := 0
 	result := tools.NewToolResult(`{"artifact":{"ref":"transfer-artifact://opaque"}}`).
-		WithOutboundDelivery(tools.OutboundDelivery{Media: []bus.MediaPart{{
-			Type: "image", Ref: mediaRef, Filename: "browser-screenshot.png", ContentType: "image/png",
-		}}}).
+		WithOutboundDelivery(tools.OutboundDelivery{
+			Media: []bus.MediaPart{{
+				Type: "image", Ref: mediaRef, Filename: "browser-screenshot.png", ContentType: "image/png",
+			}},
+			Recovery: &bus.OutboundRecovery{
+				Kind:        bus.OutboundRecoveryBrowserScreenshot,
+				ArtifactRef: "transfer-artifact://opaque", MediaRef: mediaRef,
+				WorkspaceID: "private_workspace", AgentID: "browser", ActorID: "private_actor",
+				RouteID: "private_route", SessionID: "private_session", ToolCallID: "private_call",
+			},
+		}).
 		WithOutboundCommit(func(context.Context) error {
 			commitCalls++
 			return nil
@@ -388,7 +396,8 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 	) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 		deliveryCalls++
 		journaled := store.GetHistory(ts.sessionKey)
-		if commitCalls != 0 || got.Outbound == nil || len(got.Outbound.Media) != 1 ||
+		if commitCalls != 0 || got.Outbound == nil || got.Outbound.Recovery == nil ||
+			len(got.Outbound.Media) != 1 ||
 			got.Outbound.Media[0].Ref != mediaRef || len(got.Media) != 0 ||
 			len(got.ArtifactTags) != 0 || len(journaled) != 2 || journaled[1].Role != "tool" {
 			t.Fatalf(
@@ -407,7 +416,8 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 	history := store.GetHistory(ts.sessionKey)
 	if deliveryCalls != 1 || commitCalls != 1 || len(history) != 2 ||
 		history[1].Role != "tool" || len(history[1].Media) != 0 ||
-		strings.Contains(history[1].Content, mediaRef) || strings.Contains(history[1].Content, hostPath) {
+		strings.Contains(history[1].Content, mediaRef) || strings.Contains(history[1].Content, hostPath) ||
+		strings.Contains(history[1].Content, "private_workspace") {
 		t.Fatalf(
 			"delivery calls = %d, commit calls = %d, history = %#v",
 			deliveryCalls, commitCalls, history,

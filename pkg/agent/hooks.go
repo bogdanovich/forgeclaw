@@ -960,6 +960,10 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 			ReplyToMessageID: result.Outbound.ReplyToMessageID, Text: result.Outbound.Text,
 			Media: append([]bus.MediaPart(nil), result.Outbound.Media...),
 		}
+		if result.Outbound.Recovery != nil {
+			recovery := *result.Outbound.Recovery
+			cloned.Outbound.Recovery = &recovery
+		}
 	}
 	if result.Completion != nil {
 		cloned.Completion = &tools.CompletionResult{

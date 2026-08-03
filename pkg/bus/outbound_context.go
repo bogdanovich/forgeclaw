@@ -59,6 +59,29 @@ func NormalizeOutboundMessage(msg OutboundMessage) (OutboundMessage, error) {
 	return msg, err
 }
 
+func validateOutboundRecovery(recovery OutboundRecovery, parts []MediaPart) error {
+	if recovery.Kind != OutboundRecoveryBrowserScreenshot ||
+		!strings.HasPrefix(recovery.ArtifactRef, "transfer-artifact://") ||
+		!strings.HasPrefix(recovery.MediaRef, "media://") {
+		return errors.New("invalid outbound recovery prerequisite")
+	}
+	values := []string{
+		recovery.ArtifactRef, recovery.MediaRef, recovery.WorkspaceID, recovery.AgentID,
+		recovery.ActorID, recovery.RouteID, recovery.SessionID, recovery.ToolCallID,
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" || len(value) > 512 {
+			return errors.New("invalid outbound recovery prerequisite")
+		}
+	}
+	for _, part := range parts {
+		if part.Ref == recovery.MediaRef {
+			return nil
+		}
+	}
+	return errors.New("outbound recovery media is not attached")
+}
+
 // NormalizeTraceScopes returns complete, distinct scopes for one workspace.
 // A physical outbound cannot correlate turns from different workspaces.
 func NormalizeTraceScopes(scopes []runtimeevents.TraceScope) ([]runtimeevents.TraceScope, error) {
@@ -129,6 +152,13 @@ func NormalizeOutboundMediaMessage(msg OutboundMediaMessage) (OutboundMediaMessa
 		msg.ChatID = msg.Context.ChatID
 	}
 	msg.Scope = cloneOutboundScope(msg.Scope)
+	if msg.Recovery != nil {
+		recovery := *msg.Recovery
+		msg.Recovery = &recovery
+		if err := validateOutboundRecovery(recovery, msg.Parts); err != nil {
+			return msg, err
+		}
+	}
 	var err error
 	msg.TraceScopes, err = NormalizeTraceScopes(msg.TraceScopes)
 	if len(msg.TraceScopes) == 0 {
