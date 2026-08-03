@@ -756,6 +756,66 @@ func TestToolFeedbackCoordinator_RetainedTerminalWinsOverOverlappingTransient(t 
 	}
 }
 
+func TestToolFeedbackCoordinator_RetainedTerminalJoinsTransientCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteStarted := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			close(deleteStarted)
+			<-releaseDelete
+			return nil
+		},
+	}
+	const key = "telegram:chat-1"
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	transientDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(t.Context(), transient, true)
+		close(transientDone)
+	}()
+	select {
+	case <-deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("transient cleanup did not start")
+	}
+
+	retainedResult := make(chan *toolFeedbackTerminal, 1)
+	go func() { retainedResult <- coordinator.BeginTerminal(key) }()
+	var retained *toolFeedbackTerminal
+	select {
+	case retained = <-retainedResult:
+		if retained == nil || retained.absorbed {
+			t.Fatalf("retained terminal = %#v, want active terminal", retained)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retained terminal did not join in-progress transient cleanup")
+	}
+	close(releaseDelete)
+	select {
+	case <-transientDone:
+	case <-time.After(time.Second):
+		t.Fatal("transient cleanup did not finish")
+	}
+	coordinator.CompleteTerminal(t.Context(), retained, true)
+
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "after final", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want tombstone suppression", ids, err, sends)
+	}
+}
+
 func TestToolFeedbackCoordinator_SeparateDeliveryAndStopDoNotDeadlock(t *testing.T) {
 	for range 100 {
 		coordinator := newTestToolFeedbackCoordinator(true)

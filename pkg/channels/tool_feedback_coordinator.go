@@ -37,6 +37,14 @@ type pendingToolFeedbackCleanup struct {
 	expiresAt time.Time
 }
 
+type toolFeedbackTerminalSuccess uint8
+
+const (
+	toolFeedbackTerminalSuccessNone toolFeedbackTerminalSuccess = iota
+	toolFeedbackTerminalSuccessTransient
+	toolFeedbackTerminalSuccessRetained
+)
+
 type toolFeedbackEntry struct {
 	opMu sync.Mutex
 	mu   sync.Mutex
@@ -46,7 +54,7 @@ type toolFeedbackEntry struct {
 	terminalUntil      time.Time
 	terminalPending    int
 	terminalRetained   int
-	terminalSucceeded  bool
+	terminalSuccess    toolFeedbackTerminalSuccess
 	retired            bool
 	sending            bool
 	current            trackedToolFeedbackMessage
@@ -148,7 +156,7 @@ func (c *ToolFeedbackCoordinator) deliver(
 		entry.terminalUntil = time.Time{}
 		entry.terminalPending = 0
 		entry.terminalRetained = 0
-		entry.terminalSucceeded = false
+		entry.terminalSuccess = toolFeedbackTerminalSuccessNone
 		entry.terminalGeneration++
 	}
 	if separate && entry.current.messageID != "" {
@@ -354,7 +362,8 @@ func (c *ToolFeedbackCoordinator) beginTerminal(key string, retain bool) *toolFe
 			c.removeEntry(key, entry)
 			continue
 		}
-		if entry.terminal && entry.terminalSucceeded {
+		if entry.terminal && entry.terminalSuccess != toolFeedbackTerminalSuccessNone &&
+			(!retain || entry.terminalSuccess == toolFeedbackTerminalSuccessRetained) {
 			generation := entry.terminalGeneration
 			entry.mu.Unlock()
 			return &toolFeedbackTerminal{
@@ -365,7 +374,7 @@ func (c *ToolFeedbackCoordinator) beginTerminal(key string, retain bool) *toolFe
 			entry.terminalGeneration++
 			entry.terminalPending = 0
 			entry.terminalRetained = 0
-			entry.terminalSucceeded = false
+			entry.terminalSuccess = toolFeedbackTerminalSuccessNone
 		}
 		entry.terminal = true
 		entry.terminalUntil = time.Time{}
@@ -412,7 +421,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		return
 	}
 	if !success {
-		if entry.terminalSucceeded || entry.terminalPending > 0 {
+		if entry.terminalSuccess != toolFeedbackTerminalSuccessNone || entry.terminalPending > 0 {
 			entry.mu.Unlock()
 			entry.opMu.Unlock()
 			return
@@ -429,13 +438,17 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		entry.opMu.Unlock()
 		return
 	}
-	if entry.terminalSucceeded {
+	if entry.terminalSuccess != toolFeedbackTerminalSuccessNone {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		return
 	}
 
-	entry.terminalSucceeded = true
+	if terminal.retain {
+		entry.terminalSuccess = toolFeedbackTerminalSuccessRetained
+	} else {
+		entry.terminalSuccess = toolFeedbackTerminalSuccessTransient
+	}
 	current := entry.current
 	entry.current = trackedToolFeedbackMessage{}
 	if !separate && current.messageID != "" && current.operations.delete != nil {
@@ -449,20 +462,27 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	c.retryPendingCleanup(ctx, entry)
 	entry.mu.Lock()
 	pendingCleanup := len(entry.pendingCleanup) != 0
+	retainedPending := !terminal.retain && entry.terminalRetained > 0
 	if !terminal.retain {
-		entry.terminal = false
-		entry.terminalUntil = time.Time{}
-		entry.terminalPending = 0
-		entry.terminalRetained = 0
-		entry.terminalSucceeded = false
-		if !pendingCleanup {
-			entry.retired = true
+		if retainedPending {
+			entry.terminalSuccess = toolFeedbackTerminalSuccessNone
+		} else {
+			entry.terminal = false
+			entry.terminalUntil = time.Time{}
+			entry.terminalPending = 0
+			entry.terminalRetained = 0
+			entry.terminalSuccess = toolFeedbackTerminalSuccessNone
+			if !pendingCleanup {
+				entry.retired = true
+			}
 		}
 	}
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
 
-	if pendingCleanup {
+	if retainedPending {
+		return
+	} else if pendingCleanup {
 		c.scheduleTerminalMaintenance(terminal, toolFeedbackCleanupRetryDelay)
 	} else if terminal.retain {
 		c.scheduleTerminalMaintenance(terminal, toolFeedbackTerminalTombstoneTTL)
@@ -750,7 +770,8 @@ func (c *ToolFeedbackCoordinator) maintainTerminal(terminal *toolFeedbackTermina
 	entry.opMu.Lock()
 	entry.mu.Lock()
 	if entry.retired ||
-		(terminal.retain && (!entry.terminal || !entry.terminalSucceeded)) ||
+		(terminal.retain &&
+			(!entry.terminal || entry.terminalSuccess != toolFeedbackTerminalSuccessRetained)) ||
 		entry.terminalGeneration != terminal.generation {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
