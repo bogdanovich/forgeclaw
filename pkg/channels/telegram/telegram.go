@@ -273,19 +273,33 @@ func (c *TelegramChannel) cleanupBackgroundWork(ctx context.Context) {
 }
 
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
-	if !c.IsRunning() {
-		return nil, channels.ErrNotRunning
+	result := c.SendMessageResult(ctx, []bus.OutboundMessage{msg})
+	return result.MessageIDs, result.Err
+}
+
+func (c *TelegramChannel) SendMessageResult(
+	ctx context.Context,
+	pending []bus.OutboundMessage,
+) channels.DeliveryResult[bus.OutboundMessage] {
+	if len(pending) == 0 {
+		return channels.RejectedDelivery[bus.OutboundMessage](errors.New("telegram delivery payload is empty"))
 	}
+	if !c.IsRunning() {
+		return channels.RejectedDelivery[bus.OutboundMessage](channels.ErrNotRunning)
+	}
+	msg := pending[0]
 
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
 
 	chatID, threadID, err := resolveTelegramOutboundTarget(msg.ChatID, &msg.Context)
 	if err != nil {
-		return nil, fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
+		return channels.RejectedDelivery[bus.OutboundMessage](
+			fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed),
+		)
 	}
 
 	if msg.Content == "" {
-		return nil, nil
+		return channels.SuccessfulDelivery[bus.OutboundMessage](nil)
 	}
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
@@ -294,18 +308,36 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 	if isToolFeedback {
 		textContent = fitToolFeedbackForTelegram(msg.Content, useMarkdownV2, 4096)
 	}
-	messageIDs, err := c.sendTextChunks(ctx, textContent, sendChunkParams{
+	queue := make([]string, 0, len(pending))
+	queue = append(queue, textContent)
+	for _, pendingMessage := range pending[1:] {
+		queue = append(queue, pendingMessage.Content)
+	}
+	result := c.sendTextChunkQueue(ctx, queue, sendChunkParams{
 		chatID:        chatID,
 		threadID:      threadID,
 		replyToID:     msg.ReplyToMessageID,
 		useMarkdownV2: useMarkdownV2,
 		replyMarkup:   replyMarkup,
 	}, c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback && replyMarkup == nil, isToolFeedback)
-	if err != nil {
-		return messageIDs, err
+	var remaining []bus.OutboundMessage
+	if result.Remaining != nil {
+		remaining = make([]bus.OutboundMessage, 0, len(result.Remaining))
+		for _, content := range result.Remaining {
+			pending := msg
+			pending.Content = content
+			remaining = append(remaining, pending)
+		}
 	}
-
-	return messageIDs, nil
+	return channels.DeliveryResult[bus.OutboundMessage]{
+		MessageIDs: append([]string(nil), result.MessageIDs...),
+		Status:     result.Status,
+		Acceptance: result.Acceptance,
+		Remaining:  remaining,
+		RetryAfter: result.RetryAfter,
+		Attempts:   result.Attempts,
+		Err:        result.Err,
+	}
 }
 
 type sendChunkParams struct {
@@ -567,7 +599,7 @@ func (c *TelegramChannel) sendRichChunk(
 			"reply_to":  fallbackParams.replyToID,
 			"error":     err.Error(),
 		})
-		return "", fmt.Errorf("telegram send rich message: %w: %w", channels.ErrTemporary, err)
+		return "", wrapTelegramSendError("telegram send rich message", err)
 	}
 
 	return strconv.Itoa(pMsg.MessageID), nil
@@ -607,7 +639,7 @@ func (c *TelegramChannel) sendChunk(
 			tgMsg.ParseMode = ""
 			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 			if err != nil {
-				return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
+				return "", wrapTelegramSendError("telegram send", err)
 			}
 		} else {
 			logger.WarnCF("telegram", "sendMessage failed", map[string]any{
@@ -617,7 +649,7 @@ func (c *TelegramChannel) sendChunk(
 				"parse_mode": telegramParseModeName(params.useMarkdownV2),
 				"error":      err.Error(),
 			})
-			return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
+			return "", wrapTelegramSendError("telegram send", err)
 		}
 	}
 
@@ -2095,6 +2127,15 @@ func telegramRetryDelayFor(err error) time.Duration {
 		return time.Duration(apiErr.Parameters.RetryAfter) * time.Second
 	}
 	return 0
+}
+
+func wrapTelegramSendError(operation string, err error) error {
+	classification := channels.ErrTemporary
+	var apiErr *ta.Error
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == http.StatusTooManyRequests {
+		classification = channels.ErrRateLimit
+	}
+	return fmt.Errorf("%s: %w: %w", operation, classification, err)
 }
 
 func parseContent(text string, useMarkdownV2 bool) string {

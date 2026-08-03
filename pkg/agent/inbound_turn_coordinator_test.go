@@ -33,6 +33,25 @@ type finalResponseAdmissionTestBus struct {
 	publishOnce  sync.Once
 }
 
+type postAcceptBlockingBus struct {
+	*bus.MessageBus
+	accepted chan struct{}
+	release  chan struct{}
+}
+
+func (b *postAcceptBlockingBus) PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error {
+	if err := b.MessageBus.PublishOutbound(ctx, msg); err != nil {
+		return err
+	}
+	close(b.accepted)
+	select {
+	case <-b.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type failingRootTurnJournal struct {
 	session.SessionStore
 	err error
@@ -153,6 +172,60 @@ func TestOutboundTransactionRejectsDuplicateWhilePublicationIsInFlight(t *testin
 	case duplicateMessage := <-msgBus.OutboundChan():
 		t.Fatalf("committed replay published again: %+v", duplicateMessage)
 	default:
+	}
+}
+
+func TestOutboundTransactionConsumerCanFinishBeforePublisherReturns(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	trackingBus := &postAcceptBlockingBus{
+		MessageBus: msgBus,
+		accepted:   make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	al.bus = trackingBus
+	agent := al.registry.GetDefaultAgent()
+	result := make(chan finalResponseAdmission, 1)
+	go func() {
+		result <- al.publishResponseWithContextIfNeeded(
+			withOutboundTransaction(t.Context(), "spool-consumer-first"),
+			agent.Workspace,
+			agent.ID,
+			"telegram",
+			"chat-1",
+			"session-1",
+			"durable final",
+			nil,
+			finalResponseAlwaysPublish,
+		)
+	}()
+
+	select {
+	case <-trackingBus.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("publication was not accepted by the bus")
+	}
+	var outbound bus.OutboundMessage
+	select {
+	case outbound = <-msgBus.OutboundChan():
+	case <-time.After(time.Second):
+		t.Fatal("consumer did not receive the durable message")
+	}
+	coordinator := al.outboundCoordinator()
+	if err := coordinator.BeginAttempt(outbound.DeliveryID); err != nil {
+		t.Fatalf("BeginAttempt() before publisher return error = %v", err)
+	}
+	if err := coordinator.MarkDelivered(outbound.DeliveryID, outbox.Outcome{}); err != nil {
+		t.Fatalf("MarkDelivered() before publisher return error = %v", err)
+	}
+	close(trackingBus.release)
+	if admission := <-result; !admission.permitsInboundAck() || admission.err != nil {
+		t.Fatalf("publisher result = %+v", admission)
+	}
+	intent, err := coordinator.Get(outbound.DeliveryID)
+	if err != nil || intent.Status != outbox.StatusDelivered {
+		t.Fatalf("delivered intent = %+v, %v", intent, err)
 	}
 }
 

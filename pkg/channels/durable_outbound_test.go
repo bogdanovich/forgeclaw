@@ -38,6 +38,24 @@ type durableMediaChannel struct {
 	sends      int
 }
 
+type durableTypedTextChannel struct {
+	durableTextChannel
+	result DeliveryResult[bus.OutboundMessage]
+	cancel context.CancelFunc
+	typed  int
+}
+
+func (c *durableTypedTextChannel) SendMessageResult(
+	context.Context,
+	[]bus.OutboundMessage,
+) DeliveryResult[bus.OutboundMessage] {
+	c.typed++
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return c.result
+}
+
 func (c *durableMediaChannel) SendMedia(context.Context, bus.OutboundMediaMessage) ([]string, error) {
 	c.sends++
 	return append([]string(nil), c.messageIDs...), c.err
@@ -306,6 +324,38 @@ func TestDurableOutcomeCarriesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestDurableQueuedMessagePersistsTypedAdapterRetryAfter(t *testing.T) {
+	coordinator := openDurableTestCoordinator(t)
+	msg := admitDurableTestMessage(t, coordinator, "source-typed-retry-after")
+	ctx, cancel := context.WithCancel(t.Context())
+	channel := &durableTypedTextChannel{
+		result: DeliveryResult[bus.OutboundMessage]{
+			Status:     DeliveryFailed,
+			Acceptance: DeliveryRejected,
+			RetryAfter: 30 * time.Second,
+			Err:        ErrRateLimit,
+		},
+		cancel: cancel,
+	}
+	manager := newTestManager()
+	manager.outboundOutbox = coordinator
+	before := time.Now().UTC().Add(20 * time.Second)
+	manager.deliverQueuedMessage(ctx, "test", &channelWorker{
+		ch: channel, limiter: rate.NewLimiter(rate.Inf, 1),
+	}, msg)
+
+	if channel.typed != 1 || channel.sends != 0 {
+		t.Fatalf("typed sends = %d, legacy sends = %d; want 1 and 0", channel.typed, channel.sends)
+	}
+	intent, err := coordinator.Get(msg.DeliveryID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if intent.Status != outbox.StatusDefinitelyFailed || intent.RetryAfter.Before(before) {
+		t.Fatalf("typed retry outcome = %+v", intent)
+	}
+}
+
 func openDurableTestCoordinator(t *testing.T) *outbox.Coordinator {
 	t.Helper()
 	coordinator, err := outbox.OpenCoordinator(t.TempDir())
@@ -339,9 +389,7 @@ func admitDurableTestMessageForChannel(
 	if err != nil || !admission.Dispatch {
 		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
 	}
-	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitDurableTestAdmission(t, coordinator, admission.Lease)
 	return *admission.Intent.Message
 }
 
@@ -363,10 +411,22 @@ func admitDurableTestMedia(
 	if err != nil || !admission.Dispatch {
 		t.Fatalf("AdmitMedia() = %+v, %v", admission, err)
 	}
-	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitDurableTestAdmission(t, coordinator, admission.Lease)
 	return *admission.Intent.Media
+}
+
+func commitDurableTestAdmission(
+	t *testing.T,
+	coordinator *outbox.Coordinator,
+	lease outbox.DispatchLease,
+) {
+	t.Helper()
+	if err := coordinator.PrepareAdmission(lease); err != nil {
+		t.Fatalf("PrepareAdmission() error = %v", err)
+	}
+	if err := coordinator.CommitAdmission(lease); err != nil {
+		t.Fatalf("CommitAdmission() error = %v", err)
+	}
 }
 
 func TestDurableDeliveryErrorPreservesCause(t *testing.T) {

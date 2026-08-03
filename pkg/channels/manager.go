@@ -2322,6 +2322,9 @@ func (m *Manager) sendWithRetryPolicy(
 			MaxBackoff:     maxBackoff,
 		},
 		func(ctx context.Context, pending []bus.OutboundMessage) DeliveryResult[bus.OutboundMessage] {
+			if sender, ok := w.ch.(MessageDeliverySender); ok {
+				return sender.SendMessageResult(ctx, pending)
+			}
 			attemptMsg := pending[0]
 			var msgIDs []string
 			var err error

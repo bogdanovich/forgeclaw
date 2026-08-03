@@ -19,6 +19,7 @@ type Coordinator struct {
 	store      *Store
 	root       string
 	leases     map[string]uint64
+	publishing map[string]uint64
 	published  map[string]bool
 	attempting map[string]bool
 	now        func() time.Time
@@ -78,14 +79,39 @@ func newCoordinator(store *Store) *Coordinator {
 	return &Coordinator{
 		store:      store,
 		leases:     make(map[string]uint64),
+		publishing: make(map[string]uint64),
 		published:  make(map[string]bool),
 		attempting: make(map[string]bool),
 		now:        time.Now,
 	}
 }
 
+// PrepareAdmission authorizes bus visibility while retaining the exact lease
+// needed to roll back a failed publication.
+func (c *Coordinator) PrepareAdmission(lease DispatchLease) error {
+	if c == nil || c.store == nil {
+		return errors.New("outbox coordinator is unavailable")
+	}
+	if lease.deliveryID == "" || lease.generation == 0 {
+		return errors.New("dispatch lease is required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return err
+	}
+	if c.leases[lease.deliveryID] != lease.generation {
+		return fmt.Errorf("dispatch lease for %q is stale", lease.deliveryID)
+	}
+	if generation := c.publishing[lease.deliveryID]; generation != 0 && generation != lease.generation {
+		return fmt.Errorf("publication lease for %q is stale", lease.deliveryID)
+	}
+	c.publishing[lease.deliveryID] = lease.generation
+	c.published[lease.deliveryID] = true
+	return nil
+}
+
 // CommitAdmission records successful transfer to the in-memory delivery bus.
-// It suppresses same-process replay while the durable channel outcome remains pending.
 func (c *Coordinator) CommitAdmission(lease DispatchLease) error {
 	if c == nil || c.store == nil {
 		return errors.New("outbox coordinator is unavailable")
@@ -101,8 +127,11 @@ func (c *Coordinator) CommitAdmission(lease DispatchLease) error {
 	if c.leases[lease.deliveryID] != lease.generation {
 		return fmt.Errorf("dispatch lease for %q is stale", lease.deliveryID)
 	}
+	if c.publishing[lease.deliveryID] != lease.generation {
+		return fmt.Errorf("publication lease for %q was not prepared", lease.deliveryID)
+	}
+	delete(c.publishing, lease.deliveryID)
 	delete(c.leases, lease.deliveryID)
-	c.published[lease.deliveryID] = true
 	return nil
 }
 
@@ -284,6 +313,8 @@ func (c *Coordinator) ReleaseAdmission(lease DispatchLease) error {
 	// publication. Relinquish it even if the diagnostic record read fails, so a
 	// later admission can retry instead of mistaking a stale lease for an owner.
 	delete(c.leases, lease.deliveryID)
+	delete(c.publishing, lease.deliveryID)
+	delete(c.published, lease.deliveryID)
 	intent, err := c.store.Get(lease.deliveryID)
 	if err != nil {
 		return err
@@ -315,7 +346,8 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 		c.leases[intent.ID] = generation
 		lease = DispatchLease{deliveryID: intent.ID, generation: generation}
 	}
-	return Admission{Intent: intent, Dispatch: dispatch, InFlight: dispatchable && leased, Lease: lease}, nil
+	inFlight := dispatchable && leased
+	return Admission{Intent: intent, Dispatch: dispatch, InFlight: inFlight, Lease: lease}, nil
 }
 
 func (c *Coordinator) validateOpenLocked() error {

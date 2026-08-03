@@ -2540,6 +2540,31 @@ func TestBeginStream_FinalizeHonorsRetryAfterForUnsentLegacyChunk(t *testing.T) 
 	assert.Equal(t, finalContent, delivered.String())
 }
 
+func TestSendMessageResultPreservesTelegramRetryAfter(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
+			return nil, &ta.Error{
+				ErrorCode:   http.StatusTooManyRequests,
+				Description: "Too Many Requests",
+				Parameters:  &ta.ResponseParameters{RetryAfter: 7},
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	result := ch.SendMessageResult(t.Context(), []bus.OutboundMessage{{
+		ChatID:  "12345",
+		Content: "retry later",
+	}})
+
+	if result.RetryAfter != 7*time.Second || result.Acceptance != channels.DeliveryRejected ||
+		!errors.Is(result.Err, channels.ErrRateLimit) {
+		t.Fatalf("typed Telegram outcome = %+v", result)
+	}
+	if len(result.Remaining) != 1 || result.Remaining[0].Content != "retry later" {
+		t.Fatalf("typed Telegram remainder = %+v", result.Remaining)
+	}
+}
+
 func TestBeginStream_RichMessagesUsesRichDraftAndFinalize(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {

@@ -105,12 +105,32 @@ func TestCoordinatorCommitSuppressesSameProcessReplay(t *testing.T) {
 	if err != nil || !first.Dispatch {
 		t.Fatalf("first admission = %+v, %v", first, err)
 	}
-	if commitErr := coordinator.CommitAdmission(first.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitTestAdmission(t, coordinator, first.Lease)
 	replay, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "replay"})
 	if err != nil || replay.Dispatch || replay.InFlight {
 		t.Fatalf("committed replay = %+v, %v", replay, err)
+	}
+}
+
+func TestCoordinatorRequiresPreparationBeforeCommit(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	admission, err := coordinator.AdmitMessage(
+		"/agents/main",
+		testIdentity(),
+		bus.OutboundMessage{Content: "prepare first"},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
+	}
+	if err := coordinator.CommitAdmission(admission.Lease); err == nil {
+		t.Fatal("CommitAdmission() without PrepareAdmission() succeeded")
+	}
+	if err := coordinator.ReleaseAdmission(admission.Lease); err != nil {
+		t.Fatalf("ReleaseAdmission() error = %v", err)
 	}
 }
 
@@ -129,9 +149,7 @@ func TestCoordinatorPersistsChannelDeliveryLifecycle(t *testing.T) {
 	if err != nil || !admission.Dispatch {
 		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
 	}
-	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitTestAdmission(t, coordinator, admission.Lease)
 	if beginErr := coordinator.BeginAttempt(admission.Intent.ID); beginErr != nil {
 		t.Fatalf("BeginAttempt() error = %v", beginErr)
 	}
@@ -166,9 +184,7 @@ func TestCoordinatorDefinitelyFailedOutcomeCanBeReadmitted(t *testing.T) {
 	if err != nil || !first.Dispatch {
 		t.Fatalf("first admission = %+v, %v", first, err)
 	}
-	if commitErr := coordinator.CommitAdmission(first.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitTestAdmission(t, coordinator, first.Lease)
 	if beginErr := coordinator.BeginAttempt(first.Intent.ID); beginErr != nil {
 		t.Fatalf("BeginAttempt() error = %v", beginErr)
 	}
@@ -202,9 +218,7 @@ func TestCoordinatorDispatchRejectionDoesNotCountTransportAttempt(t *testing.T) 
 	if err != nil || !admission.Dispatch {
 		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
 	}
-	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitTestAdmission(t, coordinator, admission.Lease)
 	if rejectErr := coordinator.MarkDispatchRejected(
 		admission.Intent.ID,
 		Outcome{Error: "channel unavailable"},
@@ -224,9 +238,7 @@ func TestCoordinatorDispatchRejectionDoesNotCountTransportAttempt(t *testing.T) 
 	if err != nil || !retry.Dispatch {
 		t.Fatalf("retry admission = %+v, %v", retry, err)
 	}
-	if commitErr := coordinator.CommitAdmission(retry.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission(retry) error = %v", commitErr)
-	}
+	commitTestAdmission(t, coordinator, retry.Lease)
 	if rejectErr := coordinator.MarkDispatchRejected(
 		retry.Intent.ID,
 		Outcome{Error: "channel still unavailable"},
@@ -253,9 +265,7 @@ func TestCoordinatorRejectsConcurrentChannelAttempt(t *testing.T) {
 	if err != nil || !admission.Dispatch {
 		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
 	}
-	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
-		t.Fatalf("CommitAdmission() error = %v", commitErr)
-	}
+	commitTestAdmission(t, coordinator, admission.Lease)
 	if beginErr := coordinator.BeginAttempt(admission.Intent.ID); beginErr != nil {
 		t.Fatalf("first BeginAttempt() error = %v", beginErr)
 	}
@@ -503,5 +513,15 @@ func assertSamePersistedIntent(t *testing.T, got, want Intent) {
 		got.Message.Content != want.Message.Content || !got.CreatedAt.Equal(want.CreatedAt) ||
 		!got.UpdatedAt.Equal(want.UpdatedAt) {
 		t.Fatalf("intent = %#v, want persisted contract %#v", got, want)
+	}
+}
+
+func commitTestAdmission(t *testing.T, coordinator *Coordinator, lease DispatchLease) {
+	t.Helper()
+	if err := coordinator.PrepareAdmission(lease); err != nil {
+		t.Fatalf("PrepareAdmission() error = %v", err)
+	}
+	if err := coordinator.CommitAdmission(lease); err != nil {
+		t.Fatalf("CommitAdmission() error = %v", err)
 	}
 }
