@@ -169,6 +169,7 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	decodeBrowserToolResult(t, tool.Execute(browserToolTestContext(), nil), &result)
 	if len(result.Targets) != 1 || result.Targets[0].Target != "gateway" ||
 		result.Targets[0].Status != "ready" || len(result.Targets[0].Profiles) != 1 ||
+		result.Targets[0].Profiles[0].NetworkMode != config.BrowserNetworkExactOrigins ||
 		!result.Targets[0].Profiles[0].DryRun || source.openRequest.Target != "" {
 		t.Fatalf("browser targets = %#v", result)
 	}

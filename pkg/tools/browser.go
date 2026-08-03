@@ -126,10 +126,11 @@ type browserTargetView struct {
 }
 
 type browserProfileView struct {
-	Profile string `json:"profile"`
-	Status  string `json:"status"`
-	Reason  string `json:"reason,omitempty"`
-	DryRun  bool   `json:"dry_run"`
+	Profile     string `json:"profile"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	NetworkMode string `json:"network_mode"`
+	DryRun      bool   `json:"dry_run"`
 }
 
 type browserLimitsView struct {
@@ -178,7 +179,8 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				}
 			}
 			profiles = append(profiles, browserProfileView{
-				Profile: profileName, Status: status, Reason: reason, DryRun: profile.DryRun,
+				Profile: profileName, Status: status, Reason: reason,
+				NetworkMode: profile.EffectiveNetworkMode(), DryRun: profile.DryRun,
 			})
 		}
 		targetStatus, targetReason := "ready", ""
