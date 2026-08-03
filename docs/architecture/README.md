@@ -13,6 +13,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Session Goals](session-goals.md): durable per-conversation objectives, command and tool interfaces, prompt injection, and reset semantics.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.
 - [Durable Ingress](durable-ingress.md): normalized inbound message spool and restart replay semantics.
+- [Durable Outbound Delivery](durable-outbound-delivery.md): canonical outbound ownership, typed channel outcomes, retry-safe restart reconciliation, and explicit ambiguity.
 - [Safe Restart And Deploy](safe-restart-and-deploy.md): bounded restart/deploy handoff, shared binary targets, and durability boundaries.
 - [Node Companion](node-companion.md): outbound paired capability hosts, transport and identity boundaries, remote execution policy, and the Linux/macOS MVP.
 - [Node Companion Post-MVP Roadmap](node-companion-roadmap.md): ordered future milestones for explicit owner/root shell and PTY access, administrator file transfer, service management, fleet operations, executors, transports, and additional capabilities.
