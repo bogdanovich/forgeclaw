@@ -39,6 +39,9 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return rejectedFinalResponseAdmission(err)
+		}
 		return al.publishResponseWithContextIfNeeded(
 			ctx,
 			workspace,

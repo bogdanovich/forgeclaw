@@ -410,6 +410,45 @@ func TestProcessMessageSyncPreservesSystemOriginContextOnSynthesisError(t *testi
 	}
 }
 
+func TestProcessMessageSyncKeepsCancellationRetryable(t *testing.T) {
+	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{errors: []error{context.Canceled}})
+	defer cleanup()
+	msgBus := al.bus.(*bus.MessageBus)
+	trackingBus := &finalResponseAdmissionTestBus{MessageBus: msgBus}
+	al.bus = trackingBus
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	msg := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "system",
+			ChatID:    "telegram:chat-1",
+			TopicID:   "topic-1",
+			MessageID: "message-1",
+		},
+		Content: "Task canceled",
+		SpoolID: "spool-system-canceled",
+		Channel: "system",
+		ChatID:  "telegram:chat-1",
+	}
+
+	ctx := withOutboundTransaction(t.Context(), msg.SpoolID)
+	admission := al.processMessageSync(ctx, msg)
+	if admission.permitsInboundAck() || !errors.Is(admission.err, context.Canceled) {
+		t.Fatalf("system cancellation admission = %+v", admission)
+	}
+	if err := al.settleInboundAdmission(ctx, msg, admission); !errors.Is(err, context.Canceled) {
+		t.Fatalf("settleInboundAdmission() error = %v, want context canceled", err)
+	}
+	_, released, cause := trackingBus.ownership()
+	if !containsExactly(released, msg.SpoolID) || !errors.Is(cause, context.Canceled) {
+		t.Fatalf("system cancellation release = released:%v cause:%v", released, cause)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		t.Fatalf("system cancellation published outbound: %+v", outbound)
+	default:
+	}
+}
+
 func TestSteeringAckFailureRejectsRootSettlement(t *testing.T) {
 	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
 	defer cleanup()
