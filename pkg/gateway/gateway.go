@@ -926,6 +926,7 @@ func setupAndStartServices(
 		msgBus,
 		recoveredOutbound,
 		runningServices.NodeAdmission,
+		cfg.WorkspacePath(),
 	)
 	if err != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), serviceShutdownTimeout)

@@ -25,6 +25,7 @@ func startGatewayOutboundReconciler(
 	msgBus *bus.MessageBus,
 	admissions []outbox.Admission,
 	nodeRuntime *nodeAdmissionRuntime,
+	artifactWorkspace string,
 ) (*gatewayOutboundReconciler, error) {
 	if parent == nil {
 		parent = context.Background()
@@ -46,7 +47,7 @@ func startGatewayOutboundReconciler(
 			break
 		}
 		if err := publishRecoveredAdmission(
-			reconcileCtx, coordinator, msgBus, admission, nodeRuntime,
+			reconcileCtx, coordinator, msgBus, admission, nodeRuntime, artifactWorkspace,
 		); err != nil {
 			cancel()
 			releaseRecoveredAdmissions(coordinator, pending[index+1:])
@@ -65,7 +66,7 @@ func startGatewayOutboundReconciler(
 				return
 			}
 			if err := publishRecoveredAdmission(
-				reconcileCtx, coordinator, msgBus, admission, nodeRuntime,
+				reconcileCtx, coordinator, msgBus, admission, nodeRuntime, artifactWorkspace,
 			); err != nil {
 				logger.ErrorCF("gateway", "Failed to publish scheduled outbound recovery", map[string]any{
 					"delivery_id": admission.Intent.ID,
@@ -129,12 +130,13 @@ func publishRecoveredAdmission(
 	msgBus *bus.MessageBus,
 	admission outbox.Admission,
 	nodeRuntime *nodeAdmissionRuntime,
+	artifactWorkspace string,
 ) error {
 	if !admission.Dispatch {
 		return errors.New("recovered outbound admission does not own dispatch")
 	}
 	if err := restoreRecoveredOutboundPrerequisite(
-		nodeRuntime, admission.Intent,
+		nodeRuntime, artifactWorkspace, admission.Intent,
 	); err != nil {
 		return errors.Join(err, coordinator.ReleaseAdmission(admission.Lease))
 	}
@@ -167,6 +169,7 @@ func publishRecoveredAdmission(
 
 func restoreRecoveredOutboundPrerequisite(
 	nodeRuntime *nodeAdmissionRuntime,
+	artifactWorkspace string,
 	intent outbox.Intent,
 ) error {
 	if intent.Media == nil || intent.Media.Recovery == nil {
@@ -174,7 +177,7 @@ func restoreRecoveredOutboundPrerequisite(
 	}
 	return recoverBrowserScreenshotDelivery(
 		nodeRuntime,
-		intent.OwnerWorkspace,
+		artifactWorkspace,
 		*intent.Media.Recovery,
 	)
 }

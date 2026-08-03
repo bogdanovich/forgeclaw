@@ -42,7 +42,7 @@ func TestGatewayOutboundReconcilerPublishesCanonicalTextAndMedia(t *testing.T) {
 	}
 	msgBus := bus.NewMessageBus()
 	t.Cleanup(msgBus.Close)
-	reconciler, err := startGatewayOutboundReconciler(t.Context(), second, msgBus, admissions, nil)
+	reconciler, err := startGatewayOutboundReconciler(t.Context(), second, msgBus, admissions, nil, "")
 	if err != nil {
 		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
 	}
@@ -102,7 +102,7 @@ func TestGatewayOutboundReconcilerHonorsPersistedRetryDeadline(t *testing.T) {
 	}
 	msgBus := bus.NewMessageBus()
 	t.Cleanup(msgBus.Close)
-	reconciler, err := startGatewayOutboundReconciler(t.Context(), second, msgBus, admissions, nil)
+	reconciler, err := startGatewayOutboundReconciler(t.Context(), second, msgBus, admissions, nil, "")
 	if err != nil {
 		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestGatewayOutboundReconcilerReleasesUnpublishedAdmission(t *testing.T) {
 	}
 	msgBus := bus.NewMessageBus()
 	msgBus.Close()
-	if _, err := startGatewayOutboundReconciler(t.Context(), second, msgBus, admissions, nil); err == nil {
+	if _, err := startGatewayOutboundReconciler(t.Context(), second, msgBus, admissions, nil, ""); err == nil {
 		t.Fatal("startGatewayOutboundReconciler() succeeded with a closed bus")
 	}
 	closeGatewayRecoveryCoordinator(t, second)
@@ -189,7 +189,7 @@ func TestGatewayOutboundReconcilerShutdownReleasesDelayedAdmission(t *testing.T)
 	}
 	msgBus := bus.NewMessageBus()
 	t.Cleanup(msgBus.Close)
-	reconciler, err := startGatewayOutboundReconciler(context.Background(), second, msgBus, admissions, nil)
+	reconciler, err := startGatewayOutboundReconciler(context.Background(), second, msgBus, admissions, nil, "")
 	if err != nil {
 		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
 	}

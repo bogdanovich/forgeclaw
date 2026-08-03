@@ -97,7 +97,7 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	}
 }
 
-func TestGatewayOutboundRecoveryClaimsFilesystemScreenshotBeforePublication(t *testing.T) {
+func TestGatewayOutboundRecoveryUsesGatewayWorkspaceBeforePublication(t *testing.T) {
 	workspace := t.TempDir()
 	runtime := &nodeAdmissionRuntime{}
 	t.Cleanup(func() {
@@ -147,12 +147,16 @@ func TestGatewayOutboundRecoveryClaimsFilesystemScreenshotBeforePublication(t *t
 		SourceID: "spool-screenshot-recovery", Kind: outbox.KindMedia,
 		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
 	}
-	admission, err := first.AdmitMedia(workspace, identity, bus.OutboundMediaMessage{
+	ownerWorkspace := filepath.Join(workspace, "agents", "browser")
+	admission, err := first.AdmitMedia(ownerWorkspace, identity, bus.OutboundMediaMessage{
 		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
 		Parts: []bus.MediaPart{{Type: "image", Ref: artifact.MediaRef}}, Recovery: recovery,
 	})
 	if err != nil || !admission.Dispatch {
 		t.Fatalf("AdmitMedia() = %+v, %v", admission, err)
+	}
+	if admission.Intent.OwnerWorkspace != ownerWorkspace {
+		t.Fatalf("OwnerWorkspace = %q, want %q", admission.Intent.OwnerWorkspace, ownerWorkspace)
 	}
 	if err = first.Close(); err != nil {
 		t.Fatal(err)
@@ -167,7 +171,9 @@ func TestGatewayOutboundRecoveryClaimsFilesystemScreenshotBeforePublication(t *t
 		t.Fatalf("Recover() = %+v, %v", admissions, err)
 	}
 	msgBus := bus.NewMessageBus()
-	reconciler, err := startGatewayOutboundReconciler(ctx, recovered, msgBus, admissions, runtime)
+	reconciler, err := startGatewayOutboundReconciler(
+		ctx, recovered, msgBus, admissions, runtime, workspace,
+	)
 	if err != nil {
 		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
 	}
@@ -230,7 +236,7 @@ func TestGatewayOutboundRecoveryReleasesAdmissionWhenScreenshotClaimFails(t *tes
 	runtime := &nodeAdmissionRuntime{}
 	msgBus := bus.NewMessageBus()
 	if _, err = startGatewayOutboundReconciler(
-		t.Context(), second, msgBus, admissions, runtime,
+		t.Context(), second, msgBus, admissions, runtime, workspace,
 	); err == nil {
 		t.Fatal("startGatewayOutboundReconciler() succeeded without the screenshot artifact")
 	}
