@@ -294,6 +294,7 @@ func (c *ToolFeedbackCoordinator) replaceTrackedMessage(
 		entry.mu.Lock()
 		entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(current))
 		entry.mu.Unlock()
+		c.scheduleCleanupMaintenance(key, entry, toolFeedbackCleanupRetryDelay)
 		return messageIDs, sendErr
 	}
 	return messageIDs, sendErr
@@ -466,7 +467,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		if pendingCleanup {
-			c.scheduleTerminalMaintenance(transientToolFeedbackTerminal(terminal), toolFeedbackCleanupRetryDelay)
+			c.scheduleCleanupMaintenance(terminal.key, entry, toolFeedbackCleanupRetryDelay)
 		}
 		return
 	}
@@ -484,22 +485,13 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
 
-	maintenanceTerminal := transientToolFeedbackTerminal(terminal)
 	if pendingCleanup {
-		c.scheduleTerminalMaintenance(maintenanceTerminal, toolFeedbackCleanupRetryDelay)
-	} else if retained {
+		c.scheduleCleanupMaintenance(terminal.key, entry, toolFeedbackCleanupRetryDelay)
+	}
+	if retained {
 		c.scheduleTerminalMaintenance(terminal, toolFeedbackTerminalTombstoneTTL)
-	} else {
+	} else if !pendingCleanup {
 		c.removeEntry(terminal.key, entry)
-	}
-}
-
-func transientToolFeedbackTerminal(terminal *toolFeedbackTerminal) *toolFeedbackTerminal {
-	if terminal == nil || !terminal.retain {
-		return terminal
-	}
-	return &toolFeedbackTerminal{
-		key: terminal.key, entry: terminal.entry, generation: terminal.generation,
 	}
 }
 
@@ -775,16 +767,55 @@ func (c *ToolFeedbackCoordinator) scheduleTerminalMaintenance(
 }
 
 func (c *ToolFeedbackCoordinator) maintainTerminal(terminal *toolFeedbackTerminal) {
-	if c == nil || terminal == nil || terminal.entry == nil {
+	if c == nil || terminal == nil || terminal.entry == nil || !terminal.retain {
 		return
 	}
 	entry := terminal.entry
 	entry.opMu.Lock()
 	entry.mu.Lock()
-	if entry.retired ||
-		(terminal.retain &&
-			(!entry.terminal || entry.terminalSuccess != toolFeedbackTerminalSuccessRetained)) ||
+	if entry.retired || !entry.terminal || entry.terminalSuccess != toolFeedbackTerminalSuccessRetained ||
 		entry.terminalGeneration != terminal.generation {
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
+		return
+	}
+	if time.Now().Before(entry.terminalUntil) {
+		delay := time.Until(entry.terminalUntil)
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
+		c.scheduleTerminalMaintenance(terminal, delay)
+		return
+	}
+	if len(entry.pendingCleanup) != 0 {
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
+		c.scheduleTerminalMaintenance(terminal, toolFeedbackCleanupRetryDelay)
+		return
+	}
+	entry.retired = true
+	entry.mu.Unlock()
+	entry.opMu.Unlock()
+	c.removeEntry(terminal.key, entry)
+}
+
+func (c *ToolFeedbackCoordinator) scheduleCleanupMaintenance(
+	key string,
+	entry *toolFeedbackEntry,
+	delay time.Duration,
+) {
+	if delay < 0 {
+		delay = 0
+	}
+	time.AfterFunc(delay, func() { c.maintainCleanup(key, entry) })
+}
+
+func (c *ToolFeedbackCoordinator) maintainCleanup(key string, entry *toolFeedbackEntry) {
+	if c == nil || entry == nil {
+		return
+	}
+	entry.opMu.Lock()
+	entry.mu.Lock()
+	if entry.retired {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		return
@@ -795,25 +826,18 @@ func (c *ToolFeedbackCoordinator) maintainTerminal(terminal *toolFeedbackTermina
 	if len(entry.pendingCleanup) != 0 {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
-		c.scheduleTerminalMaintenance(terminal, toolFeedbackCleanupRetryDelay)
+		c.scheduleCleanupMaintenance(key, entry, toolFeedbackCleanupRetryDelay)
 		return
 	}
-	if terminal.retain && time.Now().Before(entry.terminalUntil) {
-		delay := time.Until(entry.terminalUntil)
-		entry.mu.Unlock()
-		entry.opMu.Unlock()
-		c.scheduleTerminalMaintenance(terminal, delay)
-		return
+	retire := !entry.terminal && !entry.sending && entry.current.messageID == ""
+	if retire {
+		entry.retired = true
 	}
-	if !terminal.retain && (entry.terminal || entry.sending || entry.current.messageID != "") {
-		entry.mu.Unlock()
-		entry.opMu.Unlock()
-		return
-	}
-	entry.retired = true
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
-	c.removeEntry(terminal.key, entry)
+	if retire {
+		c.removeEntry(key, entry)
+	}
 }
 
 func (c *ToolFeedbackCoordinator) separateMessages() bool {

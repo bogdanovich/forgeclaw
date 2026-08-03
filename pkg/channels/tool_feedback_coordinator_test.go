@@ -356,7 +356,7 @@ func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testi
 	}
 
 	allowCleanup = true
-	coordinator.maintainTerminal(terminal)
+	coordinator.maintainCleanup("feishu:chat-1", entry)
 	if count := coordinator.ActiveCount(); count != 0 {
 		t.Fatalf("ActiveCount() after cleanup retry = %d, want 0", count)
 	}
@@ -425,7 +425,7 @@ func TestToolFeedbackCoordinator_TerminalExpiresUnknownCleanupFailure(t *testing
 	entry.pendingCleanup[0].expiresAt = time.Now().Add(-time.Second)
 	entry.mu.Unlock()
 
-	coordinator.maintainTerminal(terminal)
+	coordinator.maintainCleanup("telegram:chat-1", entry)
 	if deleteCalls != 1 {
 		t.Fatalf("delete calls after expiry = %d, want 1", deleteCalls)
 	}
@@ -849,6 +849,98 @@ func TestToolFeedbackCoordinator_TransientCleanupRetriesWhileRetainedPending(t *
 		t.Context(), key, "chat-1", "after failed final", operations, send,
 	); err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
 		t.Fatalf("post-final Deliver() = (%v, %v), sends %d, want new progress-2", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_TransientCleanupSurvivesSequentialRetainedAdmission(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	retried := make(chan struct{})
+	var retryOnce sync.Once
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if deleteCalls == 1 {
+				return ErrTemporary
+			}
+			retryOnce.Do(func() { close(retried) })
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+	retained := coordinator.BeginTerminal(key)
+
+	select {
+	case <-retried:
+	case <-time.After(toolFeedbackCleanupRetryDelay + 2*time.Second):
+		t.Fatal("cleanup did not survive the sequential retained terminal generation")
+	}
+	if deleteCalls != 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and timer-driven retry", deleteCalls)
+	}
+	if ids, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "before final outcome", operations, send,
+	); err != nil || len(ids) != 0 || sends != 1 {
+		t.Fatalf("pending-final Deliver() = (%v, %v), sends %d, want retained barrier", ids, err, sends)
+	}
+	coordinator.CompleteTerminal(t.Context(), retained, false)
+}
+
+func TestToolFeedbackCoordinator_RetainedCleanupContinuesIntoTombstoneExpiry(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	allowCleanup := false
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if !allowCleanup {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(
+		t.Context(), key, "chat-1", "checking", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), retained, true)
+	entry := coordinator.findEntry(key)
+	if entry == nil {
+		t.Fatal("retained terminal entry removed before cleanup retry")
+	}
+
+	allowCleanup = true
+	coordinator.maintainCleanup(key, entry)
+	if deleteCalls != 2 {
+		t.Fatalf("delete calls = %d, want initial attempt and cleanup retry", deleteCalls)
+	}
+	if got := coordinator.findEntry(key); got != entry {
+		t.Fatalf("entry after cleanup = %p, want retained tombstone %p", got, entry)
+	}
+	entry.mu.Lock()
+	entry.terminalUntil = time.Now().Add(-time.Second)
+	entry.mu.Unlock()
+	coordinator.maintainTerminal(retained)
+	if got := coordinator.findEntry(key); got != nil {
+		t.Fatalf("entry after tombstone expiry = %p, want nil", got)
 	}
 }
 
