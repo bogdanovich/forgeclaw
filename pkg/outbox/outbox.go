@@ -18,7 +18,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
-const recordVersion = 1
+const recordVersion = 2
 
 const interruptedAttemptError = "process stopped before the delivery outcome was persisted"
 
@@ -55,6 +55,7 @@ type Identity struct {
 type Intent struct {
 	Version            int                       `json:"version"`
 	ID                 string                    `json:"id"`
+	OwnerWorkspace     string                    `json:"owner_workspace"`
 	Identity           Identity                  `json:"identity"`
 	Status             Status                    `json:"status"`
 	Message            *bus.OutboundMessage      `json:"message,omitempty"`
@@ -74,7 +75,7 @@ type Outcome struct {
 	Error              string
 }
 
-// Store persists outbound intents under one agent workspace.
+// Store persists outbound intents for one MintClaw instance.
 type Store struct {
 	dir         string
 	mu          sync.Mutex
@@ -84,23 +85,23 @@ type Store struct {
 
 type mkdirDurableFunc func(string, string, os.FileMode) error
 
-// Path returns the directory containing durable outbound intent records.
-func Path(workspace string) string {
-	return filepath.Join(workspace, "state", "outbox")
+// Path returns the instance-wide directory containing durable outbound intents.
+func Path(instanceRoot string) string {
+	return filepath.Join(instanceRoot, "state", "outbox")
 }
 
-// Open creates a workspace-scoped outbox store.
-func Open(workspace string) (*Store, error) {
-	return open(workspace, fileutil.MkdirAllDurable)
+// Open creates an instance-scoped outbox store.
+func Open(instanceRoot string) (*Store, error) {
+	return open(instanceRoot, fileutil.MkdirAllDurable)
 }
 
-func open(workspace string, mkdirDurable mkdirDurableFunc) (*Store, error) {
-	workspace = strings.TrimSpace(workspace)
-	dir := Path(workspace)
-	if workspace == "" {
-		return nil, errors.New("outbox workspace is required")
+func open(instanceRoot string, mkdirDurable mkdirDurableFunc) (*Store, error) {
+	instanceRoot = strings.TrimSpace(instanceRoot)
+	dir := Path(instanceRoot)
+	if instanceRoot == "" {
+		return nil, errors.New("outbox instance root is required")
 	}
-	if err := mkdirDurable(workspace, filepath.Join("state", "outbox"), 0o700); err != nil {
+	if err := mkdirDurable(instanceRoot, filepath.Join("state", "outbox"), 0o700); err != nil {
 		return nil, fmt.Errorf("create outbox directory: %w", err)
 	}
 	return &Store{
@@ -116,7 +117,17 @@ func DeliveryID(identity Identity) (string, error) {
 	if err := validateIdentity(identity); err != nil {
 		return "", err
 	}
-	encoded, err := json.Marshal(identity)
+	encoded, err := json.Marshal(struct {
+		Version  int    `json:"version"`
+		SourceID string `json:"source_id"`
+		Ordinal  int    `json:"ordinal"`
+		Kind     Kind   `json:"kind"`
+	}{
+		Version:  recordVersion,
+		SourceID: identity.SourceID,
+		Ordinal:  identity.Ordinal,
+		Kind:     identity.Kind,
+	})
 	if err != nil {
 		return "", fmt.Errorf("encode outbox identity: %w", err)
 	}
@@ -125,7 +136,16 @@ func DeliveryID(identity Identity) (string, error) {
 }
 
 // NewMessageIntent creates a pending text-message intent.
-func NewMessageIntent(identity Identity, msg bus.OutboundMessage, now time.Time) (Intent, error) {
+func NewMessageIntent(
+	ownerWorkspace string,
+	identity Identity,
+	msg bus.OutboundMessage,
+	now time.Time,
+) (Intent, error) {
+	ownerWorkspace = strings.TrimSpace(ownerWorkspace)
+	if ownerWorkspace == "" {
+		return Intent{}, errors.New("outbox owner workspace is required")
+	}
 	identity.Kind = KindMessage
 	identity = normalizeIdentity(identity)
 	id, err := DeliveryID(identity)
@@ -147,18 +167,28 @@ func NewMessageIntent(identity Identity, msg bus.OutboundMessage, now time.Time)
 	}
 	now = now.UTC()
 	return Intent{
-		Version:   recordVersion,
-		ID:        id,
-		Identity:  normalizeIdentity(identity),
-		Status:    StatusPending,
-		Message:   &msg,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Version:        recordVersion,
+		ID:             id,
+		OwnerWorkspace: ownerWorkspace,
+		Identity:       normalizeIdentity(identity),
+		Status:         StatusPending,
+		Message:        &msg,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}, nil
 }
 
 // NewMediaIntent creates a pending media-message intent.
-func NewMediaIntent(identity Identity, msg bus.OutboundMediaMessage, now time.Time) (Intent, error) {
+func NewMediaIntent(
+	ownerWorkspace string,
+	identity Identity,
+	msg bus.OutboundMediaMessage,
+	now time.Time,
+) (Intent, error) {
+	ownerWorkspace = strings.TrimSpace(ownerWorkspace)
+	if ownerWorkspace == "" {
+		return Intent{}, errors.New("outbox owner workspace is required")
+	}
 	identity.Kind = KindMedia
 	identity = normalizeIdentity(identity)
 	id, err := DeliveryID(identity)
@@ -180,13 +210,14 @@ func NewMediaIntent(identity Identity, msg bus.OutboundMediaMessage, now time.Ti
 	}
 	now = now.UTC()
 	return Intent{
-		Version:   recordVersion,
-		ID:        id,
-		Identity:  normalizeIdentity(identity),
-		Status:    StatusPending,
-		Media:     &msg,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Version:        recordVersion,
+		ID:             id,
+		OwnerWorkspace: ownerWorkspace,
+		Identity:       normalizeIdentity(identity),
+		Status:         StatusPending,
+		Media:          &msg,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}, nil
 }
 
@@ -200,7 +231,7 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 	}
 	existing, err := s.read(intent.ID)
 	if err == nil {
-		if !sameLogicalIntent(existing, intent) {
+		if !sameLogicalIdentity(existing, intent) {
 			return Intent{}, fmt.Errorf("outbox intent %q conflicts with existing record", intent.ID)
 		}
 		if existing.Status != StatusPending {
@@ -224,7 +255,7 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 
 // BeginAttempt persists the crash boundary immediately before a transport call.
 func (s *Store) BeginAttempt(id string) (Intent, error) {
-	return s.transition(id, StatusAttempting, Outcome{}, StatusPending, StatusAttempting)
+	return s.transition(id, StatusAttempting, Outcome{}, StatusPending, StatusAttempting, StatusDefinitelyFailed)
 }
 
 // MarkDelivered records confirmed remote acceptance and platform message IDs.
@@ -406,6 +437,9 @@ func validateIntent(intent Intent) error {
 	if err := validateID(intent.ID); err != nil {
 		return err
 	}
+	if strings.TrimSpace(intent.OwnerWorkspace) == "" {
+		return errors.New("outbox owner workspace is required")
+	}
 	if err := validateIdentity(normalizeIdentity(intent.Identity)); err != nil {
 		return err
 	}
@@ -507,20 +541,9 @@ func statusAllowed(status Status, allowed []Status) bool {
 	return false
 }
 
-func sameLogicalIntent(left, right Intent) bool {
+func sameLogicalIdentity(left, right Intent) bool {
 	return left.ID == right.ID &&
-		left.Identity == right.Identity &&
-		payloadEqual(left, right)
-}
-
-func payloadEqual(left, right Intent) bool {
-	leftPayload, leftErr := json.Marshal(struct {
-		Message *bus.OutboundMessage
-		Media   *bus.OutboundMediaMessage
-	}{left.Message, left.Media})
-	rightPayload, rightErr := json.Marshal(struct {
-		Message *bus.OutboundMessage
-		Media   *bus.OutboundMediaMessage
-	}{right.Message, right.Media})
-	return leftErr == nil && rightErr == nil && string(leftPayload) == string(rightPayload)
+		left.Identity.SourceID == right.Identity.SourceID &&
+		left.Identity.Ordinal == right.Identity.Ordinal &&
+		left.Identity.Kind == right.Identity.Kind
 }
