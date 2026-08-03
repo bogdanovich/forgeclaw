@@ -1044,6 +1044,11 @@ func TestSanitizeObservedURLCanonicalizesMappedIPv6AndRejectsEmptyPort(t *testin
 		origin != "http://[fe80::1%25Ether%20Net]:8080" {
 		t.Fatalf("sanitizeObservedURL(percent-encoded scoped) = %q, %q, %v", safeURL, origin, err)
 	}
+	safeURL, origin, err = sanitizeObservedURL("http://[FE80::1%25Ether%2E]:8080/health")
+	if err != nil || safeURL != "http://[fe80::1%25Ether.]:8080/health" ||
+		origin != "http://[fe80::1%25Ether.]:8080" {
+		t.Fatalf("sanitizeObservedURL(trailing-dot scoped) = %q, %q, %v", safeURL, origin, err)
+	}
 }
 
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {

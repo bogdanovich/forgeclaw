@@ -434,6 +434,8 @@ func TestNormalizeBrowserHTTPOriginAdmitsPrivateScopesButRejectsAmbiguousNumeric
 		"http://[fe80::1%25en0]:8080/":    "http://[fe80::1%25en0]:8080",
 		"http://[FE80::1%25EtherNet]/":    "http://[fe80::1%25EtherNet]",
 		"http://[FE80::1%25Ether%20Net]/": "http://[fe80::1%25Ether%20Net]",
+		"http://[FE80::1%25Ether.]/":      "http://[fe80::1%25Ether.]",
+		"http://[FE80::1%25Ether%2E]/":    "http://[fe80::1%25Ether.]",
 		"http://[::ffff:7f00:1]/":         "http://[::ffff:127.0.0.1]",
 	}
 	for raw, want := range tests {

@@ -344,7 +344,10 @@ func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 		lowerHost == "metadata.google.internal") {
 		return "", errors.New("origin host is outside the public network policy")
 	}
-	if address, addressErr := netip.ParseAddr(trimmedHost); addressErr == nil {
+	// Parse the untouched host before applying DNS-only trailing-dot
+	// canonicalization. A trailing dot can be part of an IPv6 zone name and
+	// therefore affects the interface selected for a scoped destination.
+	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
 		if publicOnly && !IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return "", errors.New("origin IP is outside the public network policy")
 		}

@@ -438,11 +438,19 @@ func TestBrokerAnyHTTPAdmitsPercentEncodedScopedIPv6NavigationAndObservation(t *
 	if err != nil || prepared.Action.DestinationOrigin != "http://[fe80::1%25Ether%20Net]:8080" {
 		t.Fatalf("PrepareAction() encoded scoped destination = %q, %v", prepared.Action.DestinationOrigin, err)
 	}
+	prepared, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: testOwner(), RequestID: "request_trailing_dot_scoped_ipv6", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "http://[FE80::1%25Ether%2E]:8080/health"},
+	})
+	if err != nil || prepared.Action.DestinationOrigin != "http://[fe80::1%25Ether.]:8080" {
+		t.Fatalf("PrepareAction() trailing-dot scoped destination = %q, %v", prepared.Action.DestinationOrigin, err)
+	}
 
-	worker.observation.URL = "http://[fe80::1%25Ether%20Net]:8080/health"
-	worker.observation.Origin = "http://[fe80::1%25Ether%20Net]:8080"
+	worker.observation.URL = "http://[fe80::1%25Ether.]:8080/health"
+	worker.observation.Origin = "http://[fe80::1%25Ether.]:8080"
 	if _, err = broker.Observe(context.Background(), testOwner(), session.ID, session.TabID); err != nil {
-		t.Fatalf("Observe() encoded scoped IPv6 error = %v", err)
+		t.Fatalf("Observe() trailing-dot scoped IPv6 error = %v", err)
 	}
 }
 
