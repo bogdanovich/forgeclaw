@@ -55,6 +55,12 @@ type Channel interface {
 	ReasoningChannelID() string
 }
 
+// MessageDeliverySender preserves typed transport metadata that the legacy
+// Channel.Send signature cannot represent.
+type MessageDeliverySender interface {
+	SendMessageResult(ctx context.Context, pending []bus.OutboundMessage) DeliveryResult[bus.OutboundMessage]
+}
+
 // BaseChannelOption is a functional option for configuring a BaseChannel.
 type BaseChannelOption func(*BaseChannel)
 

@@ -292,6 +292,12 @@ func (al *AgentLoop) publishTransactionMessageAtBoundary(
 			return false, err
 		}
 	}
+	if admission.durable {
+		if err = admission.coordinator.PrepareAdmission(admission.lease); err != nil {
+			err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
+			return false, err
+		}
+	}
 	if err = al.bus.PublishOutbound(ctx, admission.message); err != nil {
 		if admission.durable {
 			err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
@@ -350,6 +356,12 @@ func (al *AgentLoop) publishTransactionMediaAtBoundary(
 			if admission.durable {
 				err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
 			}
+			return false, err
+		}
+	}
+	if admission.durable {
+		if err = admission.coordinator.PrepareAdmission(admission.lease); err != nil {
+			err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
 			return false, err
 		}
 	}

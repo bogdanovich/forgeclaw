@@ -51,6 +51,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/netbind"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/pid"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/state"
@@ -767,6 +768,41 @@ func replayGatewayInboundSnapshot(ctx context.Context, msgBus *bus.MessageBus, p
 	}
 }
 
+func replayGatewayOutboundIntents(
+	ctx context.Context,
+	msgBus *bus.MessageBus,
+	coordinator *outbox.Coordinator,
+	pending []outbox.Intent,
+) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	if msgBus == nil || coordinator == nil {
+		return errors.New("outbound recovery services are unavailable")
+	}
+	for _, intent := range pending {
+		var publishErr error
+		switch {
+		case intent.Message != nil && intent.Media == nil:
+			publishErr = msgBus.PublishOutbound(ctx, *intent.Message)
+		case intent.Media != nil && intent.Message == nil:
+			publishErr = msgBus.PublishOutboundMedia(ctx, *intent.Media)
+		default:
+			publishErr = errors.New("recovered outbound intent has invalid payload cardinality")
+		}
+		if publishErr == nil {
+			continue
+		}
+		persistErr := coordinator.MarkDispatchRejected(
+			intent.ID,
+			outbox.Outcome{Error: publishErr.Error()},
+		)
+		return errors.Join(publishErr, persistErr)
+	}
+	logger.InfoCF("gateway", "Replayed pending outbound intents", map[string]any{"count": len(pending)})
+	return nil
+}
+
 func setupAndStartServices(
 	ctx context.Context,
 	cfg *config.Config,
@@ -827,12 +863,32 @@ func setupAndStartServices(
 	}
 	mediaStore.Start()
 	runningServices.MediaStore = mediaStore
+	outboundOutbox, err := outbox.OpenCoordinator(cfg.WorkspacePath())
+	if err != nil {
+		mediaStore.Stop()
+		return nil, fmt.Errorf("error opening outbound outbox: %w", err)
+	}
+	agentLoop.SetOutboundOutbox(outboundOutbox)
+	recoveredOutbound, err := outboundOutbox.RecoverPending()
+	if err != nil {
+		mediaStore.Stop()
+		return nil, fmt.Errorf("recover pending outbound intents: %w", err)
+	}
+	retainOutboundOutbox := false
+	defer func() {
+		if retainOutboundOutbox {
+			return
+		}
+		agentLoop.SetOutboundOutbox(nil)
+		_ = outboundOutbox.Close()
+	}()
 
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
 		msgBus,
 		runningServices.MediaStore,
 		channels.WithRuntimeEvents(agentLoop.RuntimeEventBus()),
+		channels.WithOutboundOutbox(outboundOutbox),
 	)
 	if err != nil {
 		mediaStore.Stop()
@@ -898,6 +954,9 @@ func setupAndStartServices(
 		}
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
+	if err = replayGatewayOutboundIntents(ctx, msgBus, outboundOutbox, recoveredOutbound); err != nil {
+		return nil, fmt.Errorf("replay pending outbound intents: %w", err)
+	}
 	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
 
 	logChannelVoiceCapabilities(runningServices.ChannelManager, transcriber != nil, ttsAvailable)
@@ -928,6 +987,7 @@ func setupAndStartServices(
 		fmt.Println("✓ Device event service started")
 	}
 
+	retainOutboundOutbox = true
 	return runningServices, nil
 }
 
@@ -1067,6 +1127,10 @@ func handleConfigReload(
 	shutdownTimeout time.Duration,
 ) error {
 	logger.Info("🔄 Config file changed, reloading...")
+	currentCfg := al.GetConfig()
+	if currentCfg != nil && filepath.Clean(currentCfg.WorkspacePath()) != filepath.Clean(newCfg.WorkspacePath()) {
+		return fmt.Errorf("workspace changes require a gateway restart")
+	}
 
 	newModel := newCfg.Agents.Defaults.ModelName
 

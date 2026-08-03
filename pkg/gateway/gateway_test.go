@@ -19,9 +19,61 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
+
+func TestReplayGatewayOutboundIntentsPublishesRecoveredMedia(t *testing.T) {
+	root := t.TempDir()
+	first, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := outbox.Identity{
+		SourceID: "spool-browser-recovery", Kind: outbox.KindMedia,
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+	}
+	admission, err := first.AdmitMedia(
+		"/agents/browser",
+		identity,
+		bus.OutboundMediaMessage{
+			Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+			Parts: []bus.MediaPart{{Type: "image", Ref: "media://browser-screenshot"}},
+		},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMedia() = %+v, %v", admission, err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = recovered.Close() })
+	pending, err := recovered.RecoverPending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("RecoverPending() = %+v, %v", pending, err)
+	}
+	msgBus := bus.NewMessageBus()
+	if err = replayGatewayOutboundIntents(t.Context(), msgBus, recovered, pending); err != nil {
+		t.Fatalf("replayGatewayOutboundIntents() error = %v", err)
+	}
+	select {
+	case message := <-msgBus.OutboundMediaChan():
+		if message.DeliveryID != admission.Intent.ID || len(message.Parts) != 1 ||
+			message.Parts[0].Ref != "media://browser-screenshot" {
+			t.Fatalf("recovered media = %+v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovered media was not published")
+	}
+	if err = recovered.BeginAttempt(admission.Intent.ID); err != nil {
+		t.Fatalf("BeginAttempt(recovered) error = %v", err)
+	}
+}
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
 	t.Parallel()
@@ -328,6 +380,37 @@ func TestConfigReloadRetainsOldRegistryWhenBrowserLeaseCannotDrain(t *testing.T)
 		if !slices.Contains(toolNames, name) {
 			t.Fatalf("registered tools after failed reload = %#v, want %s", toolNames, name)
 		}
+	}
+}
+
+func TestConfigReloadRequiresRestartForWorkspaceChange(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
+	msgBus := bus.NewMessageBus()
+	t.Cleanup(msgBus.Close)
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	t.Cleanup(al.Close)
+
+	reloadCfg := *cfg
+	reloadCfg.Agents.Defaults.Workspace = t.TempDir()
+	provider := providers.LLMProvider(&startupBlockedProvider{reason: "not used"})
+	err := handleConfigReload(
+		context.Background(),
+		al,
+		&reloadCfg,
+		&provider,
+		&services{},
+		msgBus,
+		true,
+		false,
+		time.Second,
+	)
+	if err == nil || !strings.Contains(err.Error(), "workspace changes require a gateway restart") {
+		t.Fatalf("handleConfigReload() error = %v, want restart requirement", err)
+	}
+	if al.GetConfig().WorkspacePath() != cfg.WorkspacePath() {
+		t.Fatalf("active workspace = %q, want %q", al.GetConfig().WorkspacePath(), cfg.WorkspacePath())
 	}
 }
 
