@@ -196,7 +196,10 @@ func ProjectServiceDescriptorForProfile(
 		contract.Availability = ModelAvailable
 		contract.Constraints.ProfileAliases = nil
 		if descriptor.Name == "service.logs.v1" {
-			contract.OutputBytesMax = profile.LogLimits.BytesMax
+			contract.OutputBytesMax = min(
+				contract.OutputBytesMax,
+				profile.LogLimits.BytesMax,
+			)
 		}
 		if descriptor.Name == "service.action.v1" {
 			if profile.ActionApproval == "required" {

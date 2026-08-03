@@ -91,6 +91,43 @@ func TestServiceActionSchemaFitsMaximumSingleProfileAuthority(t *testing.T) {
 	}
 }
 
+func TestProjectServiceLogsPreservesStricterContractOutputLimit(t *testing.T) {
+	profiles := []ServiceProfileDescriptor{{
+		Alias:    "server-services",
+		Revision: "server-services-v1",
+		Manager:  "systemd",
+		Services: []ServiceDescriptor{{Alias: "vpn", Logs: true}},
+		LogLimits: ServiceLogLimits{
+			EntriesMax: 100, BytesMax: 256 * 1024, AgeSecondsMax: 3600,
+		},
+		ActionApproval: "required",
+	}}
+	descriptor := CommandDescriptor{
+		Name:         "service.logs.v1",
+		InputSchema:  ServiceCommandInputSchema("service.logs.v1", profiles),
+		OutputSchema: ServiceCommandOutputSchema("service.logs.v1"),
+		Risk:         RiskRead,
+		ModelContract: &CommandModelContract{
+			Availability: ModelUnavailable, TimeoutSecondsMax: 30,
+			OutputBytesMax: 64 * 1024, ResultKind: "json",
+			AuthorityDigest: strings.Repeat("a", 64),
+			Guidance:        []string{}, Examples: []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
+	}
+	projected, ok := ProjectServiceDescriptorForProfile(descriptor, "server-services")
+	if !ok {
+		t.Fatal("project service logs descriptor")
+	}
+	if projected.ModelContract.OutputBytesMax != 64*1024 {
+		t.Fatalf(
+			"projected output limit = %d, want %d",
+			projected.ModelContract.OutputBytesMax,
+			64*1024,
+		)
+	}
+}
+
 func TestServiceProfileRejectsDescriptionProjectionBeyondBudget(t *testing.T) {
 	services := make([]ServiceDescriptor, MaxServicesPerProfile)
 	for index := range services {
