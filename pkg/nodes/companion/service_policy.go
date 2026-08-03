@@ -223,6 +223,9 @@ func normalizeServicePolicyEntry(service ServicePolicyEntry) (ServicePolicyEntry
 		}
 	}
 	service.Actions = actions
+	if len(actions) > 0 && !service.Status {
+		return ServicePolicyEntry{}, errors.New("service actions require status verification")
+	}
 	if service.ExpectedActiveState != "" && service.ExpectedActiveState != "active" {
 		return ServicePolicyEntry{}, errors.New("expected_active_state must be active when configured")
 	}

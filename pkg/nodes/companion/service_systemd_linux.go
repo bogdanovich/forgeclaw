@@ -31,13 +31,14 @@ var (
 )
 
 type systemdServiceManager struct {
-	profiles    map[string]systemdReadProfile
+	profiles    map[string]systemdProfile
 	descriptors []nodes.CommandDescriptor
 	runner      systemdProcessRunner
 	now         func() time.Time
+	enforcement serviceEnforcement
 }
 
-type systemdReadProfile struct {
+type systemdProfile struct {
 	services  map[string]ServicePolicyEntry
 	logLimits nodes.ServiceLogLimits
 }
@@ -49,8 +50,10 @@ type systemdProcessRunner struct {
 }
 
 type commandExecutable struct {
-	path   string
-	prefix []string
+	path     string
+	prefix   []string
+	file     *os.File
+	identity string
 }
 
 type systemdProcessResult struct {
@@ -99,38 +102,64 @@ func newSystemdServiceManager(
 	runner systemdProcessRunner,
 	now func() time.Time,
 ) (*systemdServiceManager, error) {
+	needStatus, needLogs := serviceReadRequirements(policies)
+	return newSystemdServiceManagerWithEnforcement(
+		policies,
+		runner,
+		now,
+		serviceEnforcement{status: needStatus, logs: needLogs},
+	)
+}
+
+func newSystemdServiceManagerWithEnforcement(
+	policies ServicePolicies,
+	runner systemdProcessRunner,
+	now func() time.Time,
+	enforcement serviceEnforcement,
+) (*systemdServiceManager, error) {
 	if now == nil {
 		return nil, errors.New("systemd service manager clock is required")
 	}
-	profiles := make(map[string]systemdReadProfile)
+	if enforcement.empty() {
+		return nil, errors.New("systemd service manager enforcement is empty")
+	}
+	profiles := make(map[string]systemdProfile)
 	for alias, profile := range policies {
 		if !profile.Enabled {
 			continue
 		}
 		services := make(map[string]ServicePolicyEntry)
 		for serviceAlias, service := range profile.Services {
-			if !service.Status && !service.Logs {
+			if !(enforcement.status && service.Status) &&
+				!(enforcement.logs && service.Logs) &&
+				!(enforcement.actions && len(service.Actions) > 0) {
 				continue
 			}
 			services[serviceAlias] = service
 		}
 		if len(services) > 0 {
-			profiles[alias] = systemdReadProfile{
+			profiles[alias] = systemdProfile{
 				services:  services,
 				logLimits: profile.LogLimits,
 			}
 		}
 	}
 	if len(profiles) == 0 {
-		return nil, errors.New("systemd service manager has no readable profile")
+		return nil, errors.New("systemd service manager has no enforced profile")
 	}
 	needStatus, needLogs := serviceReadRequirements(policies)
+	needStatus = needStatus && enforcement.status
+	needLogs = needLogs && enforcement.logs
+	needActions := serviceActionRequired(policies) && enforcement.actions
 	if (needStatus && runner.systemctl.path == "") || (needLogs && runner.journal.path == "") {
 		return nil, errors.New("systemd service manager has an incomplete process backend")
 	}
+	if needActions && runner.systemctl.path == "" {
+		return nil, errors.New("systemd service manager has no action process backend")
+	}
 	descriptors, err := serviceCapabilityDescriptors(
 		policies,
-		serviceEnforcement{status: needStatus, logs: needLogs},
+		serviceEnforcement{status: needStatus, logs: needLogs, actions: needActions},
 		"linux",
 	)
 	if err != nil {
@@ -141,6 +170,7 @@ func newSystemdServiceManager(
 		descriptors: descriptors,
 		runner:      runner,
 		now:         now,
+		enforcement: serviceEnforcement{status: needStatus, logs: needLogs, actions: needActions},
 	}, nil
 }
 
@@ -166,6 +196,20 @@ func serviceReadRequirements(policies ServicePolicies) (bool, bool) {
 	return needStatus, needLogs
 }
 
+func serviceActionRequired(policies ServicePolicies) bool {
+	for _, profile := range policies {
+		if !profile.Enabled {
+			continue
+		}
+		for _, service := range profile.Services {
+			if len(service.Actions) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (manager *systemdServiceManager) Status(
 	ctx context.Context,
 	request ServiceStatusRequest,
@@ -174,7 +218,7 @@ func (manager *systemdServiceManager) Status(
 	if err != nil {
 		return ServiceStatus{}, err
 	}
-	if !service.Status || manager.runner.systemctl.path == "" {
+	if !manager.enforcement.status || !service.Status || manager.runner.systemctl.path == "" {
 		return ServiceStatus{}, &ServiceManagerError{Code: "command_denied"}
 	}
 	args := []string{
@@ -241,7 +285,7 @@ func (manager *systemdServiceManager) Logs(
 		return ServiceLogs{}, err
 	}
 	profile := manager.profiles[request.Profile]
-	if !service.Logs || manager.runner.journal.path == "" {
+	if !manager.enforcement.logs || !service.Logs || manager.runner.journal.path == "" {
 		return ServiceLogs{}, &ServiceManagerError{Code: "command_denied"}
 	}
 	entries, sinceSeconds, boundErr := boundedServiceLogRequest(request, profile.logLimits)
@@ -313,7 +357,7 @@ func (manager *systemdServiceManager) resolve(
 	return service, nil
 }
 
-func (runner systemdProcessRunner) run(
+func (runner *systemdProcessRunner) run(
 	ctx context.Context,
 	executable commandExecutable,
 	args []string,
@@ -325,7 +369,8 @@ func (runner systemdProcessRunner) run(
 	commandArgs := append(append([]string(nil), executable.prefix...), args...)
 	processCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	command := exec.CommandContext(processCtx, executable.path, commandArgs...)
+	command := exec.CommandContext(processCtx, executable.executionPath(), commandArgs...)
+	executable.attach(command)
 	command.Env = append([]string(nil), runner.env...)
 	stdout := &boundedProcessBuffer{
 		remaining: outputLimit,
@@ -358,6 +403,39 @@ func (runner systemdProcessRunner) run(
 		return result, nil
 	}
 	return systemdProcessResult{}, errors.New("systemd process could not start")
+}
+
+func (executable *commandExecutable) executionPath() string {
+	if executable.file != nil {
+		return "/proc/self/fd/3"
+	}
+	return executable.path
+}
+
+func (executable *commandExecutable) attach(command *exec.Cmd) {
+	if executable.file != nil {
+		command.ExtraFiles = []*os.File{executable.file}
+	}
+}
+
+func (executable *commandExecutable) close() error {
+	if executable == nil || executable.file == nil {
+		return nil
+	}
+	err := executable.file.Close()
+	executable.file = nil
+	return err
+}
+
+func (runner *systemdProcessRunner) close() error {
+	if runner == nil {
+		return nil
+	}
+	result := runner.systemctl.close()
+	if err := runner.journal.close(); err != nil && result == nil {
+		result = err
+	}
+	return result
 }
 
 func (writer *boundedProcessBuffer) Write(data []byte) (int, error) {

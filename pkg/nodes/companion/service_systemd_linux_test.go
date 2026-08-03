@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -97,17 +98,9 @@ func TestSystemdServiceManagerRequiresCompleteReadEnforcement(t *testing.T) {
 	service.Status = false
 	service.Logs = false
 	actionOnly.Services["vpn"] = service
-	actionPolicies, err := normalizeServicePolicies(ServicePolicies{"server-services": actionOnly})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = newSystemdServiceManager(
-		actionPolicies,
-		systemdProcessRunner{systemctl: commandExecutable{path: os.Args[0]}},
-		time.Now,
-	)
-	if err == nil || !strings.Contains(err.Error(), "no readable profile") {
-		t.Fatalf("action-only read backend error = %v", err)
+	_, err = normalizeServicePolicies(ServicePolicies{"server-services": actionOnly})
+	if err == nil || !strings.Contains(err.Error(), "actions require status verification") {
+		t.Fatalf("unverifiable action-only policy error = %v", err)
 	}
 }
 
@@ -206,6 +199,79 @@ func TestSystemdServiceManagerReturnsEmptyLogsAtExactOutputBudget(t *testing.T) 
 	}
 }
 
+func TestSystemdServiceControllerProvesRestart(t *testing.T) {
+	manager, marker := testSystemdServiceController(t, nodes.ServiceActionRestart, "controller")
+	result, err := manager.Action(t.Context(), ServiceActionRequest{
+		Profile: "server-services",
+		Service: "vpn",
+		Action:  nodes.ServiceActionRestart,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "completed" || result.AcceptedAt != 1_700_000_000 ||
+		result.Status == nil || result.Status.ActiveState != "active" {
+		t.Fatalf("restart result = %#v", result)
+	}
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("restart helper did not cross action boundary: %v", statErr)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var descriptor nodes.CommandDescriptor
+	for _, candidate := range manager.Descriptors() {
+		if candidate.Name == "service.action.v1" {
+			descriptor = candidate
+		}
+	}
+	if _, err = nodes.ValidateInvocationOutput(descriptor, data, 64*1024); err != nil {
+		t.Fatalf("action output contract: %v", err)
+	}
+}
+
+func TestSystemdServiceControllerCancelsBeforeAcceptance(t *testing.T) {
+	manager, marker := testSystemdServiceController(t, nodes.ServiceActionRestart, "controller")
+	result, err := manager.executeAction(t.Context(), ServiceActionRequest{
+		Profile: "server-services",
+		Service: "vpn",
+		Action:  nodes.ServiceActionRestart,
+	}, func() bool { return false })
+	if err != nil || result.State != "canceled" || result.AcceptedAt != 0 {
+		t.Fatalf("pre-acceptance cancellation = %#v, error %v", result, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled action reached systemctl: %v", err)
+	}
+}
+
+func TestSystemdServiceControllerKeepsEnableSeparateFromStart(t *testing.T) {
+	manager, _ := testSystemdServiceController(t, nodes.ServiceActionEnable, "enable-controller")
+	result, err := manager.Action(t.Context(), ServiceActionRequest{
+		Profile: "server-services",
+		Service: "vpn",
+		Action:  nodes.ServiceActionEnable,
+	})
+	if err != nil || result.State != "completed" ||
+		result.Status == nil || result.Status.Enabled != "enabled" {
+		t.Fatalf("enable result = %#v, error %v", result, err)
+	}
+}
+
+func TestSystemdServiceControllerReportsAcceptedFailureAsUnknown(t *testing.T) {
+	manager, _ := testSystemdServiceController(t, nodes.ServiceActionRestart, "action-fail")
+	result, err := manager.Action(t.Context(), ServiceActionRequest{
+		Profile: "server-services",
+		Service: "vpn",
+		Action:  nodes.ServiceActionRestart,
+	})
+	if err != nil || result.State != "unknown" || result.AcceptedAt == 0 ||
+		result.Code != "manager_outcome_unknown" {
+		t.Fatalf("accepted failure result = %#v, error %v", result, err)
+	}
+}
+
 func TestSystemdServiceManagerDoesNotExposeProcessFailure(t *testing.T) {
 	manager := testSystemdServiceManager(t, "fail", "fail")
 	status, err := manager.Status(t.Context(), ServiceStatusRequest{
@@ -260,6 +326,40 @@ func TestSystemdServiceManagerCancellationTerminatesProcess(t *testing.T) {
 				t.Fatalf("%s cancellation error = %v", operation, err)
 			}
 		})
+	}
+}
+
+func TestSystemdProcessRunnerExecutesPinnedDescriptorAfterPathReplacement(t *testing.T) {
+	source, err := exec.LookPath("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/systemctl"
+	if writeErr := os.WriteFile(path, content, 0o700); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	pinned, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	if renameErr := os.Rename(path, path+".replaced"); renameErr != nil {
+		t.Fatal(renameErr)
+	}
+	if writeErr := os.WriteFile(path, []byte("#!/bin/sh\necho replacement\n"), 0o700); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	runner := systemdProcessRunner{env: fixedSystemdEnvironment()}
+	result, err := runner.run(t.Context(), commandExecutable{path: path, file: pinned}, []string{"pinned"}, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.stdout) != "pinned\n" {
+		t.Fatalf("pinned descriptor reopened replacement path: %q", result.stdout)
 	}
 }
 
@@ -344,6 +444,10 @@ func TestSystemdReadProcessHelper(t *testing.T) {
 		if !slices.Equal(args, want) {
 			os.Exit(92)
 		}
+	case "controller", "action-fail":
+		runSystemdControllerHelper(mode, args)
+	case "enable-controller":
+		runSystemdEnableControllerHelper(args)
 	case "fail":
 		fmt.Fprint(os.Stderr, "secret-manager-detail wg-quick@wg0.service")
 		os.Exit(4)
@@ -360,6 +464,63 @@ func TestSystemdReadProcessHelper(t *testing.T) {
 		os.Exit(93)
 	}
 	os.Exit(0)
+}
+
+func runSystemdControllerHelper(mode string, args []string) {
+	marker := os.Getenv("MINTCLAW_SYSTEMD_ACTION_MARKER")
+	statusArgs := []string{
+		"--system", "--no-pager", "--no-ask-password", "--plain", "show",
+		"--property=LoadState", "--property=ActiveState",
+		"--property=SubState", "--property=UnitFileState",
+		"wg-quick@wg0.service",
+	}
+	activationArgs := []string{
+		"--system", "--no-pager", "--no-ask-password", "--plain", "show",
+		"--property=ActiveEnterTimestampMonotonic", "--value", "wg-quick@wg0.service",
+	}
+	actionArgs := []string{
+		"--system", "--no-pager", "--no-ask-password", "--plain",
+		"restart", "wg-quick@wg0.service",
+	}
+	switch {
+	case slices.Equal(args, statusArgs):
+		fmt.Print("LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\n")
+	case slices.Equal(args, activationArgs):
+		if _, err := os.Stat(marker); err == nil {
+			fmt.Print("200\n")
+		} else {
+			fmt.Print("100\n")
+		}
+	case slices.Equal(args, actionArgs):
+		if marker == "" || os.WriteFile(marker, []byte("accepted"), 0o600) != nil {
+			os.Exit(96)
+		}
+		if mode == "action-fail" {
+			os.Exit(4)
+		}
+	default:
+		os.Exit(95)
+	}
+}
+
+func runSystemdEnableControllerHelper(args []string) {
+	statusArgs := []string{
+		"--system", "--no-pager", "--no-ask-password", "--plain", "show",
+		"--property=LoadState", "--property=ActiveState",
+		"--property=SubState", "--property=UnitFileState",
+		"wg-quick@wg0.service",
+	}
+	actionArgs := []string{
+		"--system", "--no-pager", "--no-ask-password", "--plain",
+		"enable", "wg-quick@wg0.service",
+	}
+	switch {
+	case slices.Equal(args, statusArgs):
+		fmt.Print("LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=enabled\n")
+	case slices.Equal(args, actionArgs):
+	default:
+		os.Exit(95)
+	}
 }
 
 func waitForSystemdReadMarker(t *testing.T, path string) {
@@ -412,4 +573,48 @@ func testSystemdServiceManager(
 		t.Fatal(err)
 	}
 	return manager
+}
+
+func testSystemdServiceController(
+	t *testing.T,
+	action nodes.ServiceAction,
+	mode string,
+) (*systemdServiceManager, string) {
+	t.Helper()
+	profile := servicePolicyFixture()
+	service := profile.Services["vpn"]
+	service.Logs = false
+	service.Actions = []nodes.ServiceAction{action}
+	if action == nodes.ServiceActionStart || action == nodes.ServiceActionRestart ||
+		action == nodes.ServiceActionReload {
+		service.ExpectedActiveState = "active"
+	} else {
+		service.ExpectedActiveState = ""
+	}
+	profile.Services["vpn"] = service
+	policies, err := normalizeServicePolicies(ServicePolicies{"server-services": profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := t.TempDir() + "/accepted"
+	manager, err := newSystemdServiceManagerWithEnforcement(
+		policies,
+		systemdProcessRunner{
+			systemctl: commandExecutable{
+				path:   os.Args[0],
+				prefix: []string{"-test.run=^TestSystemdReadProcessHelper$", "--", mode},
+			},
+			env: append(
+				fixedSystemdEnvironment(),
+				systemdReadHelperEnvironment+"=1",
+				"MINTCLAW_SYSTEMD_ACTION_MARKER="+marker,
+			),
+		},
+		func() time.Time { return time.Unix(1_700_000_000, 0) },
+		serviceEnforcement{status: true, actions: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, marker
 }
