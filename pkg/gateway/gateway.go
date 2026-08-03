@@ -73,6 +73,7 @@ type services struct {
 	HeartbeatService *heartbeat.HeartbeatService
 	MediaStore       media.MediaStore
 	ChannelManager   *channels.Manager
+	OutboundRecovery *gatewayOutboundReconciler
 	DeviceService    *devices.Service
 	NodeAdmission    *nodeAdmissionRuntime
 	browserMu        sync.RWMutex
@@ -768,46 +769,6 @@ func replayGatewayInboundSnapshot(ctx context.Context, msgBus *bus.MessageBus, p
 	}
 }
 
-func replayGatewayOutboundIntents(
-	ctx context.Context,
-	msgBus *bus.MessageBus,
-	coordinator *outbox.Coordinator,
-	nodeRuntime *nodeAdmissionRuntime,
-	pending []outbox.Intent,
-) error {
-	if len(pending) == 0 {
-		return nil
-	}
-	if msgBus == nil || coordinator == nil {
-		return errors.New("outbound recovery services are unavailable")
-	}
-	for _, intent := range pending {
-		var publishErr error
-		switch {
-		case intent.Message != nil && intent.Media == nil:
-			publishErr = msgBus.PublishOutbound(ctx, *intent.Message)
-		case intent.Media != nil && intent.Message == nil:
-			if intent.Media.Recovery != nil {
-				publishErr = recoverBrowserScreenshotDelivery(
-					nodeRuntime, intent.OwnerWorkspace, *intent.Media.Recovery,
-				)
-			}
-			if publishErr == nil {
-				publishErr = msgBus.PublishOutboundMedia(ctx, *intent.Media)
-			}
-		default:
-			publishErr = errors.New("recovered outbound intent has invalid payload cardinality")
-		}
-		if publishErr == nil {
-			continue
-		}
-		releaseErr := coordinator.ReleaseRecovered(intent.ID)
-		return errors.Join(publishErr, releaseErr)
-	}
-	logger.InfoCF("gateway", "Replayed pending outbound intents", map[string]any{"count": len(pending)})
-	return nil
-}
-
 func setupAndStartServices(
 	ctx context.Context,
 	cfg *config.Config,
@@ -874,11 +835,6 @@ func setupAndStartServices(
 		return nil, fmt.Errorf("error opening outbound outbox: %w", err)
 	}
 	agentLoop.SetOutboundOutbox(outboundOutbox)
-	recoveredOutbound, err := outboundOutbox.RecoverPending()
-	if err != nil {
-		mediaStore.Stop()
-		return nil, fmt.Errorf("recover pending outbound intents: %w", err)
-	}
 	retainOutboundOutbox := false
 	defer func() {
 		if retainOutboundOutbox {
@@ -887,6 +843,11 @@ func setupAndStartServices(
 		agentLoop.SetOutboundOutbox(nil)
 		_ = outboundOutbox.Close()
 	}()
+	recoveredOutbound, err := outboundOutbox.Recover()
+	if err != nil {
+		mediaStore.Stop()
+		return nil, fmt.Errorf("error recovering outbound outbox: %w", err)
+	}
 
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
@@ -959,10 +920,24 @@ func setupAndStartServices(
 		}
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
-	if err = replayGatewayOutboundIntents(
-		ctx, msgBus, outboundOutbox, runningServices.NodeAdmission, recoveredOutbound,
-	); err != nil {
-		return nil, fmt.Errorf("replay pending outbound intents: %w", err)
+	runningServices.OutboundRecovery, err = startGatewayOutboundReconciler(
+		ctx,
+		outboundOutbox,
+		msgBus,
+		recoveredOutbound,
+		runningServices.NodeAdmission,
+	)
+	if err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serviceShutdownTimeout)
+		defer cancel()
+		_ = runningServices.ChannelManager.StopAll(shutdownCtx)
+		if rollbackBrowserRuntime(runningServices) != nil {
+			return nil, errors.Join(
+				fmt.Errorf("error reconciling outbound outbox: %w", err),
+				errors.New("browser runtime rollback failed"),
+			)
+		}
+		return nil, fmt.Errorf("error reconciling outbound outbox: %w", err)
 	}
 	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
 
@@ -999,6 +974,9 @@ func setupAndStartServices(
 }
 
 func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Duration, isReload bool) error {
+	if !isReload && runningServices.OutboundRecovery != nil {
+		runningServices.OutboundRecovery.stop()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 	if err := closeBrowserRuntime(shutdownCtx, runningServices); err != nil {

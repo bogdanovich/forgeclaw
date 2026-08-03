@@ -86,63 +86,6 @@ func newCoordinator(store *Store) *Coordinator {
 	}
 }
 
-// RecoverPending returns durable intents whose transport call never started
-// and authorizes their exact delivery IDs for bus publication. Interrupted
-// attempts are made ambiguous by Store.Recover and are intentionally omitted.
-func (c *Coordinator) RecoverPending() ([]Intent, error) {
-	if c == nil || c.store == nil {
-		return nil, errors.New("outbox coordinator is unavailable")
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.validateOpenLocked(); err != nil {
-		return nil, err
-	}
-	intents, err := c.store.Recover()
-	if err != nil {
-		return nil, err
-	}
-	for _, intent := range intents {
-		if c.leases[intent.ID] != 0 || c.published[intent.ID] ||
-			c.publishing[intent.ID] != 0 || c.attempting[intent.ID] {
-			return nil, fmt.Errorf("outbox intent %q already has an in-process owner", intent.ID)
-		}
-	}
-	for _, intent := range intents {
-		c.published[intent.ID] = true
-	}
-	return intents, nil
-}
-
-// ReleaseRecovered relinquishes startup publication ownership without
-// changing the durable pending state, so the next startup can retry.
-func (c *Coordinator) ReleaseRecovered(deliveryID string) error {
-	if c == nil || c.store == nil {
-		return errors.New("outbox coordinator is unavailable")
-	}
-	if err := validateID(deliveryID); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.validateOpenLocked(); err != nil {
-		return err
-	}
-	if !c.published[deliveryID] || c.leases[deliveryID] != 0 ||
-		c.publishing[deliveryID] != 0 || c.attempting[deliveryID] {
-		return fmt.Errorf("recovered outbox intent %q is not releasable", deliveryID)
-	}
-	intent, err := c.store.Get(deliveryID)
-	if err != nil {
-		return err
-	}
-	if intent.Status != StatusPending {
-		return fmt.Errorf("recovered outbox intent %q is %q, not pending", deliveryID, intent.Status)
-	}
-	delete(c.published, deliveryID)
-	return nil
-}
-
 // PrepareAdmission authorizes bus visibility while retaining the exact lease
 // needed to roll back a failed publication.
 func (c *Coordinator) PrepareAdmission(lease DispatchLease) error {
@@ -261,6 +204,31 @@ func (c *Coordinator) Get(deliveryID string) (Intent, error) {
 		return Intent{}, err
 	}
 	return c.store.Get(deliveryID)
+}
+
+// Recover classifies persisted crash states and claims every intent that is
+// safe for this process to publish again.
+func (c *Coordinator) Recover() ([]Admission, error) {
+	if c == nil || c.store == nil {
+		return nil, errors.New("outbox coordinator is unavailable")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return nil, err
+	}
+	intents, err := c.store.Recover()
+	if err != nil {
+		return nil, err
+	}
+	admissions := make([]Admission, 0, len(intents))
+	for _, intent := range intents {
+		admission := c.claimDispatchLocked(intent)
+		if admission.Dispatch {
+			admissions = append(admissions, admission)
+		}
+	}
+	return admissions, nil
 }
 
 func (c *Coordinator) transitionPublished(
@@ -393,6 +361,10 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 	if err != nil {
 		return Admission{}, err
 	}
+	return c.claimDispatchLocked(intent), nil
+}
+
+func (c *Coordinator) claimDispatchLocked(intent Intent) Admission {
 	dispatchable := intent.Status == StatusPending || intent.Status == StatusDefinitelyFailed
 	_, leased := c.leases[intent.ID]
 	published := c.published[intent.ID]
@@ -404,7 +376,7 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 		lease = DispatchLease{deliveryID: intent.ID, generation: generation}
 	}
 	inFlight := dispatchable && leased
-	return Admission{Intent: intent, Dispatch: dispatch, InFlight: inFlight, Lease: lease}, nil
+	return Admission{Intent: intent, Dispatch: dispatch, InFlight: inFlight, Lease: lease}
 }
 
 func (c *Coordinator) validateOpenLocked() error {

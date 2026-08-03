@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
@@ -314,44 +315,124 @@ func TestCoordinatorReopenUsesOneCanonicalStore(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRecoverPendingAuthorizesCrashBeforeBusPublication(t *testing.T) {
+func TestCoordinatorRecoverClaimsOnlyReplaySafeCanonicalIntents(t *testing.T) {
 	instanceRoot := t.TempDir()
 	first, err := OpenCoordinator(instanceRoot)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("OpenCoordinator(first) error = %v", err)
 	}
-	identity := testIdentity()
-	identity.Kind = KindMedia
-	admission, err := first.AdmitMedia(
-		"/agents/browser",
-		identity,
-		bus.OutboundMediaMessage{Parts: []bus.MediaPart{{Type: "image", Ref: "media://screenshot"}}},
+	pendingIdentity := testIdentity()
+	pending, err := first.AdmitMessage(
+		"/agents/main",
+		pendingIdentity,
+		bus.OutboundMessage{Content: "canonical pending"},
 	)
-	if err != nil || !admission.Dispatch {
-		t.Fatalf("AdmitMedia() = %+v, %v", admission, err)
+	if err != nil {
+		t.Fatalf("AdmitMessage(pending) error = %v", err)
 	}
-	if err = first.PrepareAdmission(admission.Lease); err != nil {
-		t.Fatalf("PrepareAdmission() error = %v", err)
+
+	failedIdentity := testIdentity()
+	failedIdentity.Ordinal = 1
+	failed, err := first.AdmitMedia("/agents/media", failedIdentity, bus.OutboundMediaMessage{
+		Parts: []bus.MediaPart{{Type: "image", Ref: "media://canonical"}},
+	})
+	if err != nil {
+		t.Fatalf("AdmitMedia(failed) error = %v", err)
 	}
-	if err = first.Close(); err != nil {
+	commitTestAdmission(t, first, failed.Lease)
+	if err := first.BeginAttempt(failed.Intent.ID); err != nil {
+		t.Fatalf("BeginAttempt(failed) error = %v", err)
+	}
+	retryAt := time.Now().UTC().Add(time.Minute)
+	if err := first.MarkDefinitelyFailed(failed.Intent.ID, Outcome{
+		RetryAfter: retryAt,
+		Error:      "rate limited",
+	}); err != nil {
+		t.Fatalf("MarkDefinitelyFailed() error = %v", err)
+	}
+
+	interruptedIdentity := testIdentity()
+	interruptedIdentity.Ordinal = 2
+	interrupted, err := first.AdmitMessage(
+		"/agents/main",
+		interruptedIdentity,
+		bus.OutboundMessage{Content: "possibly accepted"},
+	)
+	if err != nil {
+		t.Fatalf("AdmitMessage(interrupted) error = %v", err)
+	}
+	commitTestAdmission(t, first, interrupted.Lease)
+	if err := first.BeginAttempt(interrupted.Intent.ID); err != nil {
+		t.Fatalf("BeginAttempt(interrupted) error = %v", err)
+	}
+	if err := first.Close(); err != nil {
 		t.Fatalf("Close(first) error = %v", err)
 	}
 
-	recovered, err := OpenCoordinator(instanceRoot)
+	second, err := OpenCoordinator(instanceRoot)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("OpenCoordinator(second) error = %v", err)
 	}
-	t.Cleanup(func() { _ = recovered.Close() })
-	pending, err := recovered.RecoverPending()
-	if err != nil || len(pending) != 1 || pending[0].ID != admission.Intent.ID ||
-		pending[0].Media == nil {
-		t.Fatalf("RecoverPending() = %+v, %v", pending, err)
+	t.Cleanup(func() { _ = second.Close() })
+	recovered, err := second.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
 	}
-	if err = recovered.BeginAttempt(admission.Intent.ID); err != nil {
-		t.Fatalf("BeginAttempt(recovered) error = %v", err)
+	if len(recovered) != 2 || !recovered[0].Dispatch || !recovered[1].Dispatch {
+		t.Fatalf("Recover() = %#v, want two dispatch claims", recovered)
 	}
-	if err = recovered.MarkDelivered(admission.Intent.ID, Outcome{}); err != nil {
-		t.Fatalf("MarkDelivered(recovered) error = %v", err)
+	recoveredByID := map[string]Admission{
+		recovered[0].Intent.ID: recovered[0],
+		recovered[1].Intent.ID: recovered[1],
+	}
+	recoveredPending := recoveredByID[pending.Intent.ID]
+	if recoveredPending.Intent.Message == nil || recoveredPending.Intent.Message.Content != "canonical pending" {
+		t.Fatalf("recovered pending intent = %#v", recoveredPending.Intent)
+	}
+	recoveredFailed := recoveredByID[failed.Intent.ID]
+	if recoveredFailed.Intent.Media == nil || recoveredFailed.Intent.Media.Parts[0].Ref != "media://canonical" ||
+		recoveredFailed.Intent.RetryAfter != retryAt {
+		t.Fatalf("recovered failed intent = %#v", recoveredFailed.Intent)
+	}
+	interruptedIntent, err := second.Get(interrupted.Intent.ID)
+	if err != nil || interruptedIntent.Status != StatusAmbiguous {
+		t.Fatalf("interrupted intent = %#v, %v", interruptedIntent, err)
+	}
+	recoveredAgain, err := second.Recover()
+	if err != nil || len(recoveredAgain) != 0 {
+		t.Fatalf("second Recover() = %#v, %v, want no duplicate claims", recoveredAgain, err)
+	}
+}
+
+func TestCoordinatorRecoverFailsClosedOnCorruptRecord(t *testing.T) {
+	instanceRoot := t.TempDir()
+	first, err := OpenCoordinator(instanceRoot)
+	if err != nil {
+		t.Fatalf("OpenCoordinator(first) error = %v", err)
+	}
+	admission, err := first.AdmitMessage(
+		"/agents/main",
+		testIdentity(),
+		bus.OutboundMessage{Content: "must not be silently skipped"},
+	)
+	if err != nil {
+		t.Fatalf("AdmitMessage() error = %v", err)
+	}
+	recordPath := first.store.recordPath(admission.Intent.ID)
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+	if err := os.WriteFile(recordPath, []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(corrupt record) error = %v", err)
+	}
+
+	second, err := OpenCoordinator(instanceRoot)
+	if err != nil {
+		t.Fatalf("OpenCoordinator(second) error = %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if recovered, err := second.Recover(); err == nil || len(recovered) != 0 {
+		t.Fatalf("Recover() = %#v, %v, want fail-closed error", recovered, err)
 	}
 }
 

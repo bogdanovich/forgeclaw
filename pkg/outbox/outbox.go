@@ -278,8 +278,8 @@ func (s *Store) MarkAmbiguous(id string, outcome Outcome) (Intent, error) {
 	return s.transition(id, StatusAmbiguous, outcome, false, StatusAttempting)
 }
 
-// Recover converts interrupted attempts to ambiguous and returns only records
-// that are known not to have started a transport call.
+// Recover converts interrupted attempts to ambiguous and returns records that
+// are known safe to dispatch again.
 func (s *Store) Recover() ([]Intent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -288,11 +288,11 @@ func (s *Store) Recover() ([]Intent, error) {
 	if err != nil {
 		return nil, err
 	}
-	pending := make([]Intent, 0, len(records))
+	dispatchable := make([]Intent, 0, len(records))
 	for _, intent := range records {
 		switch intent.Status {
-		case StatusPending:
-			pending = append(pending, intent)
+		case StatusPending, StatusDefinitelyFailed:
+			dispatchable = append(dispatchable, intent)
 		case StatusAttempting:
 			intent.Status = StatusAmbiguous
 			intent.LastError = interruptedAttemptError
@@ -308,7 +308,7 @@ func (s *Store) Recover() ([]Intent, error) {
 			}
 		}
 	}
-	return pending, nil
+	return dispatchable, nil
 }
 
 // Get loads one intent by delivery ID.

@@ -162,14 +162,16 @@ func TestGatewayOutboundRecoveryClaimsFilesystemScreenshotBeforePublication(t *t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = recovered.Close() })
-	pending, err := recovered.RecoverPending()
-	if err != nil || len(pending) != 1 {
-		t.Fatalf("RecoverPending() = %+v, %v", pending, err)
+	admissions, err := recovered.Recover()
+	if err != nil || len(admissions) != 1 {
+		t.Fatalf("Recover() = %+v, %v", admissions, err)
 	}
 	msgBus := bus.NewMessageBus()
-	if err = replayGatewayOutboundIntents(ctx, msgBus, recovered, runtime, pending); err != nil {
-		t.Fatalf("replayGatewayOutboundIntents() error = %v", err)
+	reconciler, err := startGatewayOutboundReconciler(ctx, recovered, msgBus, admissions, runtime)
+	if err != nil {
+		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
 	}
+	t.Cleanup(reconciler.stop)
 	owner := browser.Owner{ActorID: "actor", AgentID: "agent", SessionKey: "route", ExecutionID: "execution"}
 	replayed, found, err := source.LookupScreenshot(ctx, owner, request.RequestID, "session_recovery")
 	if err != nil || !found || replayed.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed {
@@ -183,6 +185,74 @@ func TestGatewayOutboundRecoveryClaimsFilesystemScreenshotBeforePublication(t *t
 		}
 	case <-time.After(time.Second):
 		t.Fatal("recovered screenshot was not published")
+	}
+}
+
+func TestGatewayOutboundRecoveryReleasesAdmissionWhenScreenshotClaimFails(t *testing.T) {
+	workspace := t.TempDir()
+	first, err := outbox.OpenCoordinator(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := &bus.OutboundRecovery{
+		Kind:        bus.OutboundRecoveryBrowserScreenshot,
+		ArtifactRef: "transfer-artifact://missing",
+		MediaRef:    "media://missing",
+		WorkspaceID: "workspace",
+		AgentID:     "agent",
+		ActorID:     "actor",
+		RouteID:     "route",
+		SessionID:   "session",
+		ToolCallID:  "tool-call",
+	}
+	admission, err := first.AdmitMedia(workspace, outbox.Identity{
+		SourceID: "missing-screenshot-recovery", Kind: outbox.KindMedia,
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+	}, bus.OutboundMediaMessage{
+		Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1",
+		Parts: []bus.MediaPart{{Type: "image", Ref: recovery.MediaRef}}, Recovery: recovery,
+	})
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMedia() = %+v, %v", admission, err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := outbox.OpenCoordinator(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admissions, err := second.Recover()
+	if err != nil || len(admissions) != 1 {
+		t.Fatalf("Recover() = %+v, %v", admissions, err)
+	}
+	runtime := &nodeAdmissionRuntime{}
+	msgBus := bus.NewMessageBus()
+	if _, err = startGatewayOutboundReconciler(
+		t.Context(), second, msgBus, admissions, runtime,
+	); err == nil {
+		t.Fatal("startGatewayOutboundReconciler() succeeded without the screenshot artifact")
+	}
+	msgBus.Close()
+	if runtime.transferSpool != nil {
+		_ = runtime.transferSpool.Close()
+	}
+	if err = second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	third, err := outbox.OpenCoordinator(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = third.Close() })
+	recovered, err := third.Recover()
+	if err != nil {
+		t.Fatalf("Recover() after prerequisite failure error = %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].Intent.ID != admission.Intent.ID {
+		t.Fatalf("Recover() after prerequisite failure = %#v", recovered)
 	}
 }
 
