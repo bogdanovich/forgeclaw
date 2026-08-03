@@ -415,13 +415,21 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	if terminal.retain && entry.terminalRetained > 0 {
 		entry.terminalRetained--
 	}
-	if success && !terminal.retain && entry.terminalRetained > 0 {
+	previousSuccess := entry.terminalSuccess
+	if previousSuccess == toolFeedbackTerminalSuccessRetained {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		return
 	}
-	if !success {
-		if entry.terminalSuccess != toolFeedbackTerminalSuccessNone || entry.terminalPending > 0 {
+	if success {
+		if terminal.retain {
+			entry.terminalSuccess = toolFeedbackTerminalSuccessRetained
+			entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
+		} else if previousSuccess == toolFeedbackTerminalSuccessNone {
+			entry.terminalSuccess = toolFeedbackTerminalSuccessTransient
+		}
+	} else if previousSuccess == toolFeedbackTerminalSuccessNone {
+		if entry.terminalPending > 0 {
 			entry.mu.Unlock()
 			entry.opMu.Unlock()
 			return
@@ -438,53 +446,50 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		entry.opMu.Unlock()
 		return
 	}
-	if entry.terminalSuccess != toolFeedbackTerminalSuccessNone {
+
+	clearCurrent := success && previousSuccess == toolFeedbackTerminalSuccessNone
+	if clearCurrent {
+		current := entry.current
+		entry.current = trackedToolFeedbackMessage{}
+		if !separate && current.messageID != "" && current.operations.delete != nil {
+			entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(current))
+		}
+	}
+	entry.mu.Unlock()
+	if clearCurrent {
+		c.animator.Clear(terminal.key)
+		c.retryPendingCleanup(ctx, entry)
+	}
+	entry.mu.Lock()
+	pendingCleanup := len(entry.pendingCleanup) != 0
+	if entry.terminalSuccess == toolFeedbackTerminalSuccessTransient && entry.terminalRetained > 0 {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		return
 	}
-
-	if terminal.retain {
-		entry.terminalSuccess = toolFeedbackTerminalSuccessRetained
-	} else {
-		entry.terminalSuccess = toolFeedbackTerminalSuccessTransient
-	}
-	current := entry.current
-	entry.current = trackedToolFeedbackMessage{}
-	if !separate && current.messageID != "" && current.operations.delete != nil {
-		entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(current))
-	}
-	if terminal.retain {
-		entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
-	}
-	entry.mu.Unlock()
-	c.animator.Clear(terminal.key)
-	c.retryPendingCleanup(ctx, entry)
-	entry.mu.Lock()
-	pendingCleanup := len(entry.pendingCleanup) != 0
-	retainedPending := !terminal.retain && entry.terminalRetained > 0
-	if !terminal.retain {
-		if retainedPending {
-			entry.terminalSuccess = toolFeedbackTerminalSuccessNone
-		} else {
-			entry.terminal = false
-			entry.terminalUntil = time.Time{}
-			entry.terminalPending = 0
-			entry.terminalRetained = 0
-			entry.terminalSuccess = toolFeedbackTerminalSuccessNone
-			if !pendingCleanup {
-				entry.retired = true
-			}
+	retained := entry.terminalSuccess == toolFeedbackTerminalSuccessRetained
+	if !retained {
+		entry.terminal = false
+		entry.terminalUntil = time.Time{}
+		entry.terminalPending = 0
+		entry.terminalRetained = 0
+		entry.terminalSuccess = toolFeedbackTerminalSuccessNone
+		if !pendingCleanup {
+			entry.retired = true
 		}
 	}
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
 
-	if retainedPending {
-		return
-	} else if pendingCleanup {
-		c.scheduleTerminalMaintenance(terminal, toolFeedbackCleanupRetryDelay)
-	} else if terminal.retain {
+	maintenanceTerminal := terminal
+	if !retained && terminal.retain {
+		maintenanceTerminal = &toolFeedbackTerminal{
+			key: terminal.key, entry: entry, generation: terminal.generation,
+		}
+	}
+	if pendingCleanup {
+		c.scheduleTerminalMaintenance(maintenanceTerminal, toolFeedbackCleanupRetryDelay)
+	} else if retained {
 		c.scheduleTerminalMaintenance(terminal, toolFeedbackTerminalTombstoneTTL)
 	} else {
 		c.removeEntry(terminal.key, entry)

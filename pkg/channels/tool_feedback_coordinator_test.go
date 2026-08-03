@@ -756,6 +756,50 @@ func TestToolFeedbackCoordinator_RetainedTerminalWinsOverOverlappingTransient(t 
 	}
 }
 
+func TestToolFeedbackCoordinator_TransientSuccessSurvivesRetainedFailure(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteCalls := 0
+	editCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error {
+			editCalls++
+			return nil
+		},
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			if deleteCalls < 3 {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	const key = "telegram:chat-1"
+	if _, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking", operations, send); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	transient := coordinator.BeginTransientTerminal(key)
+	retained := coordinator.BeginTerminal(key)
+	coordinator.CompleteTerminal(t.Context(), transient, true)
+	coordinator.CompleteTerminal(t.Context(), retained, false)
+
+	ids, err := coordinator.Deliver(t.Context(), key, "chat-1", "checking ports", operations, send)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 2 {
+		t.Fatalf("later Deliver() = (%v, %v), sends %d, want new progress-2", ids, err, sends)
+	}
+	if editCalls != 0 {
+		t.Fatalf("edit calls = %d, want stale carrier left detached", editCalls)
+	}
+	if deleteCalls != 3 {
+		t.Fatalf("delete calls = %d, want transient attempt, final retry, and delivery retry", deleteCalls)
+	}
+}
+
 func TestToolFeedbackCoordinator_RetainedTerminalJoinsTransientCleanup(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()
