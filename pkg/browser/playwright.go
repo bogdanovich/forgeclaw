@@ -525,8 +525,7 @@ func (worker *playwrightWorker) callAndConsume(
 ) (string, error) {
 	denialsBefore := worker.networkProxy.Denials()
 	result, err := worker.client.CallTool(ctx, tool, arguments)
-	policyDenied := worker.networkProxy.Denials() > denialsBefore
-	if policyDenied && (err != nil || result == nil || result.IsError) {
+	if worker.networkProxy.Denials() > denialsBefore {
 		return "", ErrDenied
 	}
 	if err != nil || result == nil {

@@ -1004,12 +1004,16 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 			}
 			return
 		}
+		privateImage := ""
+		if request.URL.Path == "/private-subresource-page" {
+			privateImage = fmt.Sprintf(`<img src="%s" alt="private probe">`, privateProbeURL)
+		}
 		_, _ = fmt.Fprintf(writer, `<!doctype html><title>MintClaw Fixture</title>
 <form onsubmit="event.preventDefault(); document.querySelector('output').textContent='Saved '+document.querySelector('input').value">
 <label>Name <input aria-label="Name"></label>
 <label>State <select aria-label="State"><option value="CA">California</option><option value="NY">New York</option></select></label>
 <button type="submit">Save</button><button type="button" onclick="prompt('Type DELETE'); alert('Saved')">Prompt</button>
-</form><output></output><img src="%s" alt="private probe"><div style="height:2000px"></div>`, privateProbeURL)
+</form><output></output>%s<div style="height:2000px"></div>`, privateImage)
 	}))
 	defer fixture.Close()
 	privateProbeURL = fixture.URL + "/private-probe"
@@ -1138,11 +1142,19 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 		t.Fatalf("Observe(large fixture) = bytes %d, elements %d, truncated %t, error %v",
 			len(observation.Snapshot), len(observation.Elements), observation.Truncated, err)
 	}
+	if err = worker.Execute(ctx, DriverAction{
+		Kind: DriverNavigate, URL: fixtureOrigin + "/private-subresource-page",
+	}); !errors.Is(err, ErrDenied) {
+		t.Fatalf("private subresource navigate error = %v, want ErrDenied", err)
+	}
+	if privateProbeRequests.Load() != 0 {
+		t.Fatalf("private subresource requests = %d, want 0", privateProbeRequests.Load())
+	}
 	privateNavigateErr := worker.Execute(ctx, DriverAction{
 		Kind: DriverNavigate, URL: fixture.URL + "/private-probe",
 	})
-	if privateNavigateErr != nil && !errors.Is(privateNavigateErr, ErrDenied) {
-		t.Fatalf("private fixture navigate error = %v", privateNavigateErr)
+	if !errors.Is(privateNavigateErr, ErrDenied) {
+		t.Fatalf("private fixture navigate error = %v, want ErrDenied", privateNavigateErr)
 	}
 	if privateProbeRequests.Load() != 0 || worker.networkProxy.Denials() == 0 {
 		t.Fatalf(
