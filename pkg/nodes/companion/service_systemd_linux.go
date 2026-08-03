@@ -50,8 +50,10 @@ type systemdProcessRunner struct {
 }
 
 type commandExecutable struct {
-	path   string
-	prefix []string
+	path     string
+	prefix   []string
+	file     *os.File
+	identity string
 }
 
 type systemdProcessResult struct {
@@ -367,7 +369,8 @@ func (runner systemdProcessRunner) run(
 	commandArgs := append(append([]string(nil), executable.prefix...), args...)
 	processCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	command := exec.CommandContext(processCtx, executable.path, commandArgs...)
+	command := exec.CommandContext(processCtx, executable.executionPath(), commandArgs...)
+	executable.attach(command)
 	command.Env = append([]string(nil), runner.env...)
 	stdout := &boundedProcessBuffer{
 		remaining: outputLimit,
@@ -400,6 +403,39 @@ func (runner systemdProcessRunner) run(
 		return result, nil
 	}
 	return systemdProcessResult{}, errors.New("systemd process could not start")
+}
+
+func (executable commandExecutable) executionPath() string {
+	if executable.file != nil {
+		return "/proc/self/fd/3"
+	}
+	return executable.path
+}
+
+func (executable commandExecutable) attach(command *exec.Cmd) {
+	if executable.file != nil {
+		command.ExtraFiles = []*os.File{executable.file}
+	}
+}
+
+func (executable *commandExecutable) close() error {
+	if executable == nil || executable.file == nil {
+		return nil
+	}
+	err := executable.file.Close()
+	executable.file = nil
+	return err
+}
+
+func (runner *systemdProcessRunner) close() error {
+	if runner == nil {
+		return nil
+	}
+	result := runner.systemctl.close()
+	if err := runner.journal.close(); err != nil && result == nil {
+		result = err
+	}
+	return result
 }
 
 func (writer *boundedProcessBuffer) Write(data []byte) (int, error) {

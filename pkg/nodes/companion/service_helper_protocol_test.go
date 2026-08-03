@@ -79,6 +79,55 @@ func TestServiceHelperProtocolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestServiceHelperProtocolRequiresStateDependentActionProof(t *testing.T) {
+	active := ServiceStatus{
+		Service: "vpn", LoadState: "loaded", ActiveState: "active",
+		Substate: "running", Enabled: "enabled", ObservedAt: 1,
+	}
+	valid := ServiceActionResult{
+		Service: "vpn", Action: nodes.ServiceActionRestart,
+		State: "completed", AcceptedAt: 1, Status: &active,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ServiceActionResult)
+	}{
+		{name: "missing status", mutate: func(value *ServiceActionResult) { value.Status = nil }},
+		{name: "wrong service", mutate: func(value *ServiceActionResult) { value.Status.Service = "other" }},
+		{name: "unproven action", mutate: func(value *ServiceActionResult) {
+			value.Status.ActiveState = "inactive"
+		}},
+		{name: "unknown before acceptance", mutate: func(value *ServiceActionResult) {
+			value.State = "unknown"
+			value.Status = nil
+			value.AcceptedAt = 0
+			value.Code = "verification_unavailable"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := valid
+			status := active
+			result.Status = &status
+			test.mutate(&result)
+			response := serviceHelperResponse{
+				Version: ServiceHelperProtocolVersion, Kind: serviceHelperRequestAction,
+				RequestID: "request_1", Action: &result,
+			}
+			if response.validate() == nil {
+				t.Fatalf("invalid action terminal accepted: %#v", result)
+			}
+		})
+	}
+	response := serviceHelperResponse{
+		Version: ServiceHelperProtocolVersion, Kind: serviceHelperRequestAction,
+		RequestID: "request_1", Action: &valid,
+	}
+	if err := response.validate(); err != nil {
+		t.Fatalf("valid completed action rejected: %v", err)
+	}
+}
+
 func TestServiceHelperProtocolRejectsMalformedAuthority(t *testing.T) {
 	valid := serviceHelperRequest{
 		Version:        ServiceHelperProtocolVersion,
@@ -171,5 +220,7 @@ func serviceHelperConfigFixture(t *testing.T) ServiceHelperServiceConfig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.systemctlIdentity = strings.Repeat("a", 64)
+	config.journalIdentity = strings.Repeat("b", 64)
 	return config
 }

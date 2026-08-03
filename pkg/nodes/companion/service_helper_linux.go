@@ -280,15 +280,28 @@ func (client *ServiceHelperClient) invoke(
 		return serviceHelperResponse{}, err
 	}
 	if response.RequestID != requestID {
-		return serviceHelperResponse{}, errors.New("service helper response request binding changed")
+		return serviceHelperResponse{}, serviceHelperResponseBindingError(
+			request.Kind,
+			errors.New("service helper response request binding changed"),
+		)
 	}
 	if response.Kind == "error" {
 		return serviceHelperResponse{}, &ServiceManagerError{Code: "helper_denied"}
 	}
 	if response.Kind != request.Kind {
-		return serviceHelperResponse{}, errors.New("service helper response kind changed")
+		return serviceHelperResponse{}, serviceHelperResponseBindingError(
+			request.Kind,
+			errors.New("service helper response kind changed"),
+		)
 	}
 	return response, nil
+}
+
+func serviceHelperResponseBindingError(kind string, err error) error {
+	if kind == serviceHelperRequestAction {
+		return &serviceHelperExchangeError{err: err, uncertain: true}
+	}
+	return err
 }
 
 func (client *ServiceHelperClient) allows(request serviceHelperRequest) bool {

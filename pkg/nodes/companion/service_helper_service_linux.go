@@ -4,6 +4,9 @@ package companion
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -114,14 +117,11 @@ func RunServiceHelper(ctx context.Context, config ServiceHelperServiceConfig) er
 	if !config.normalized {
 		return errors.New("service helper config is not normalized")
 	}
-	if err := validateServiceHelperExecutables(config); err != nil {
+	config, runner, err := pinServiceHelperExecutables(config)
+	if err != nil {
 		return err
 	}
-	runner := systemdProcessRunner{
-		systemctl: commandExecutable{path: config.SystemctlPath},
-		journal:   commandExecutable{path: config.JournalctlPath},
-		env:       fixedSystemdEnvironment(),
-	}
+	defer runner.close()
 	manager, err := newSystemdServiceManagerWithEnforcement(
 		config.Profiles,
 		runner,
@@ -354,19 +354,95 @@ func (server *serviceHelperServer) validateRequestAuthority(request serviceHelpe
 	return nil
 }
 
-func validateServiceHelperExecutables(config ServiceHelperServiceConfig) error {
-	systemctl, err := trustedSystemdExecutable(config.SystemctlPath)
-	if err != nil || systemctl != config.SystemctlPath {
-		return errors.New("service helper systemctl identity is invalid")
+func pinServiceHelperExecutables(
+	config ServiceHelperServiceConfig,
+) (ServiceHelperServiceConfig, systemdProcessRunner, error) {
+	runner := systemdProcessRunner{env: fixedSystemdEnvironment()}
+	var err error
+	runner.systemctl, err = openPinnedSystemdExecutable(config.SystemctlPath)
+	if err != nil {
+		return ServiceHelperServiceConfig{}, systemdProcessRunner{},
+			fmt.Errorf("pin service helper systemctl: %w", err)
 	}
-	if config.JournalctlPath == "" {
-		return nil
+	config.SystemctlPath = runner.systemctl.path
+	config.systemctlIdentity = runner.systemctl.identity
+	if config.JournalctlPath != "" {
+		runner.journal, err = openPinnedSystemdExecutable(config.JournalctlPath)
+		if err != nil {
+			_ = runner.close()
+			return ServiceHelperServiceConfig{}, systemdProcessRunner{},
+				fmt.Errorf("pin service helper journalctl: %w", err)
+		}
+		config.JournalctlPath = runner.journal.path
+		config.journalIdentity = runner.journal.identity
 	}
-	journalctl, err := trustedSystemdExecutable(config.JournalctlPath)
-	if err != nil || journalctl != config.JournalctlPath {
-		return errors.New("service helper journalctl identity is invalid")
+	return config, runner, nil
+}
+
+func openPinnedSystemdExecutable(path string) (commandExecutable, error) {
+	resolved, err := trustedSystemdExecutable(path)
+	if err != nil {
+		return commandExecutable{}, err
 	}
-	return nil
+	if directoryErr := verifyAuthorityBrokerDirectoryChain(filepath.Dir(resolved)); directoryErr != nil {
+		return commandExecutable{}, fmt.Errorf("validate executable directory: %w", directoryErr)
+	}
+	descriptor, err := unix.Open(resolved, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return commandExecutable{}, err
+	}
+	file := os.NewFile(uintptr(descriptor), resolved)
+	if file == nil {
+		_ = unix.Close(descriptor)
+		return commandExecutable{}, errors.New("open pinned systemd executable: invalid descriptor")
+	}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = file.Close()
+		}
+	}()
+	var opened unix.Stat_t
+	if statErr := unix.Fstat(descriptor, &opened); statErr != nil {
+		return commandExecutable{}, statErr
+	}
+	var current unix.Stat_t
+	if statErr := unix.Fstatat(unix.AT_FDCWD, resolved, &current, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
+		return commandExecutable{}, statErr
+	}
+	if opened.Dev != current.Dev || opened.Ino != current.Ino ||
+		opened.Uid != 0 || opened.Mode&unix.S_IFMT != unix.S_IFREG ||
+		opened.Mode&0o111 == 0 || opened.Mode&0o022 != 0 {
+		return commandExecutable{}, errors.New("pinned systemd executable identity is invalid")
+	}
+	content := sha256.New()
+	if _, copyErr := io.Copy(content, file); copyErr != nil {
+		return commandExecutable{}, copyErr
+	}
+	if _, seekErr := file.Seek(0, 0); seekErr != nil {
+		return commandExecutable{}, seekErr
+	}
+	binding, err := json.Marshal(struct {
+		Path    string `json:"path"`
+		Device  uint64 `json:"device"`
+		Inode   uint64 `json:"inode"`
+		Mode    uint32 `json:"mode"`
+		UID     uint32 `json:"uid"`
+		GID     uint32 `json:"gid"`
+		Content string `json:"content_sha256"`
+	}{
+		Path: resolved, Device: opened.Dev, Inode: opened.Ino,
+		Mode: opened.Mode, UID: opened.Uid, GID: opened.Gid,
+		Content: hex.EncodeToString(content.Sum(nil)),
+	})
+	if err != nil {
+		return commandExecutable{}, err
+	}
+	identity := sha256.Sum256(binding)
+	closeOnError = false
+	return commandExecutable{
+		path: resolved, file: file, identity: hex.EncodeToString(identity[:]),
+	}, nil
 }
 
 func (server *serviceHelperServer) register(

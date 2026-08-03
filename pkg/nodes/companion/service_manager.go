@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"errors"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
@@ -53,6 +54,51 @@ type ServiceActionResult struct {
 	AcceptedAt int64               `json:"accepted_at,omitempty"`
 	Status     *ServiceStatus      `json:"status,omitempty"`
 	Code       string              `json:"code,omitempty"`
+}
+
+func (result ServiceActionResult) validateTerminal() error {
+	if err := (nodes.Alias(result.Service)).Validate(); err != nil || !result.Action.Valid() {
+		return errors.New("service action terminal identity is invalid")
+	}
+	if result.Status != nil && result.Status.Service != result.Service {
+		return errors.New("service action terminal status binding is invalid")
+	}
+	switch result.State {
+	case "completed":
+		if result.AcceptedAt <= 0 || result.Status == nil || result.Code != "" ||
+			!serviceActionStatusMatches(result.Action, *result.Status) {
+			return errors.New("completed service action lacks terminal proof")
+		}
+	case "unknown":
+		if result.AcceptedAt <= 0 || result.Code == "" {
+			return errors.New("unknown service action lacks acceptance evidence")
+		}
+	case "failed", "canceled":
+		if result.AcceptedAt != 0 || result.Status != nil || result.Code == "" {
+			return errors.New("pre-acceptance service action terminal is invalid")
+		}
+	default:
+		return errors.New("service action terminal state is invalid")
+	}
+	return nil
+}
+
+func serviceActionStatusMatches(action nodes.ServiceAction, status ServiceStatus) bool {
+	if status.Code != "" {
+		return false
+	}
+	switch action {
+	case nodes.ServiceActionStart, nodes.ServiceActionRestart, nodes.ServiceActionReload:
+		return status.ActiveState == "active"
+	case nodes.ServiceActionStop:
+		return status.ActiveState == "inactive"
+	case nodes.ServiceActionEnable:
+		return status.Enabled == "enabled"
+	case nodes.ServiceActionDisable:
+		return status.Enabled == "disabled"
+	default:
+		return false
+	}
 }
 
 // serviceActionAcceptor atomically marks the manager acceptance boundary. A

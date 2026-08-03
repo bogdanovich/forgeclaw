@@ -90,7 +90,7 @@ func TestServiceHelperDescriptorsBindHelperAuthority(t *testing.T) {
 		t.Fatalf("service helper descriptors leaked hidden authority: %s", data)
 	}
 	changed := cloneServiceHelperConfig(config)
-	changed.SystemctlPath = "/bin/systemctl"
+	changed.systemctlIdentity = strings.Repeat("c", 64)
 	changedDigest, err := serviceHelperServiceDigest(changed)
 	if err != nil {
 		t.Fatal(err)

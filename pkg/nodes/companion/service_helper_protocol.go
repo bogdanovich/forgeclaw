@@ -201,6 +201,10 @@ func (response serviceHelperResponse) validate() error {
 		if payloads != 1 || response.Action == nil {
 			return errors.New("service helper action response is invalid")
 		}
+		if response.Action.Code != "" && !fileHelperCodePattern.MatchString(response.Action.Code) {
+			return errors.New("service helper action response code is invalid")
+		}
+		return response.Action.validateTerminal()
 	case serviceHelperRequestCancel:
 		if payloads != 0 {
 			return errors.New("service helper cancel response is invalid")

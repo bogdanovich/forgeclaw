@@ -28,7 +28,9 @@ type ServiceHelperServiceConfig struct {
 	JournalctlPath  string          `json:"journalctl_path,omitempty"`
 	Profiles        ServicePolicies `json:"node_service_policies"`
 
-	normalized bool
+	normalized        bool
+	systemctlIdentity string
+	journalIdentity   string
 }
 
 func NormalizeServiceHelperServiceConfig(
@@ -109,6 +111,11 @@ func (config ServiceHelperServiceConfig) Descriptors() ([]nodes.CommandDescripto
 	if !config.normalized {
 		return nil, errors.New("service helper configuration is not normalized")
 	}
+	if !validFileHelperDigest(config.systemctlIdentity) ||
+		(config.JournalctlPath != "" && !validFileHelperDigest(config.journalIdentity)) ||
+		(config.JournalctlPath == "" && config.journalIdentity != "") {
+		return nil, errors.New("service helper executables are not pinned")
+	}
 	digest, err := serviceHelperServiceDigest(config)
 	if err != nil {
 		return nil, err
@@ -152,6 +159,8 @@ func serviceHelperServiceDigest(config ServiceHelperServiceConfig) (string, erro
 		CompanionCgroup string          `json:"companion_cgroup"`
 		SystemctlPath   string          `json:"systemctl_path"`
 		JournalctlPath  string          `json:"journalctl_path,omitempty"`
+		SystemctlID     string          `json:"systemctl_identity"`
+		JournalctlID    string          `json:"journalctl_identity,omitempty"`
 		Profiles        ServicePolicies `json:"node_service_policies"`
 	}{
 		Version:         ServiceHelperProtocolVersion,
@@ -161,6 +170,8 @@ func serviceHelperServiceDigest(config ServiceHelperServiceConfig) (string, erro
 		CompanionCgroup: config.CompanionCgroup,
 		SystemctlPath:   config.SystemctlPath,
 		JournalctlPath:  config.JournalctlPath,
+		SystemctlID:     config.systemctlIdentity,
+		JournalctlID:    config.journalIdentity,
 		Profiles:        config.Profiles,
 	}
 	data, err := json.Marshal(binding)

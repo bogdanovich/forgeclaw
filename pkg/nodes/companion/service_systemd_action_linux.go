@@ -180,24 +180,6 @@ func (manager *systemdServiceManager) activationIdentity(
 	return identity, nil
 }
 
-func serviceActionStatusMatches(action nodes.ServiceAction, status ServiceStatus) bool {
-	if status.Code != "" {
-		return false
-	}
-	switch action {
-	case nodes.ServiceActionStart, nodes.ServiceActionRestart, nodes.ServiceActionReload:
-		return status.ActiveState == "active"
-	case nodes.ServiceActionStop:
-		return status.ActiveState == "inactive"
-	case nodes.ServiceActionEnable:
-		return status.Enabled == "enabled"
-	case nodes.ServiceActionDisable:
-		return status.Enabled == "disabled"
-	default:
-		return false
-	}
-}
-
 func (runner systemdProcessRunner) runAccepted(
 	ctx context.Context,
 	executable commandExecutable,
@@ -211,7 +193,8 @@ func (runner systemdProcessRunner) runAccepted(
 	commandArgs := append(append([]string(nil), executable.prefix...), args...)
 	processContext, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	command := exec.CommandContext(processContext, executable.path, commandArgs...)
+	command := exec.CommandContext(processContext, executable.executionPath(), commandArgs...)
+	executable.attach(command)
 	command.Env = append([]string(nil), runner.env...)
 	stdout := &boundedProcessBuffer{
 		remaining: outputLimit,

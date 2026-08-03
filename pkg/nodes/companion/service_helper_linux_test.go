@@ -215,65 +215,113 @@ func TestServiceHelperServerRejectsWrongPeerBoundary(t *testing.T) {
 	}
 }
 
-func TestServiceHelperClientReportsLostActionResponseAsUnknown(t *testing.T) {
-	config := serviceHelperLinuxConfigFixture(t)
-	snapshot, err := newServiceHelperSnapshot(config)
-	if err != nil {
-		t.Fatal(err)
+func TestServiceHelperClientReportsUnboundActionResponseAsUnknown(t *testing.T) {
+	tests := []struct {
+		name    string
+		respond func(net.Conn, serviceHelperRequest) error
+	}{
+		{name: "lost", respond: func(net.Conn, serviceHelperRequest) error { return nil }},
+		{name: "wrong request", respond: func(connection net.Conn, request serviceHelperRequest) error {
+			return writeServiceHelperResponse(connection, completedServiceActionResponse(request.RequestID+"x"))
+		}},
+		{name: "wrong kind", respond: func(connection net.Conn, request serviceHelperRequest) error {
+			status := activeServiceStatus()
+			return writeServiceHelperResponse(connection, serviceHelperResponse{
+				Version: ServiceHelperProtocolVersion, Kind: serviceHelperRequestStatus,
+				RequestID: request.RequestID, Status: &status,
+			})
+		}},
+		{name: "invalid proof", respond: func(connection net.Conn, request serviceHelperRequest) error {
+			response := completedServiceActionResponse(request.RequestID)
+			response.Action.Status = nil
+			return writeAuthorityBrokerFrame(connection, response)
+		}},
 	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: config.SocketPath, Net: "unix"})
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := serviceHelperLinuxConfigFixture(t)
+			snapshot, err := newServiceHelperSnapshot(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: config.SocketPath, Net: "unix"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener.SetUnlinkOnClose(true)
+			done := make(chan error, 1)
+			go serveServiceHelperActionResponse(listener, snapshot, test.respond, done)
+			client, err := newServiceHelperClient(
+				t.Context(), config.SocketPath, uint32(os.Geteuid()), uint32(os.Getegid()),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := client.Action(t.Context(), ServiceActionRequest{
+				Profile: "server-services", Service: "vpn", Action: nodes.ServiceActionRestart,
+			})
+			if err != nil || result.State != "unknown" || result.Code != "helper_response_lost" {
+				t.Fatalf("unbound helper action response = %#v, error %v", result, err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
-	listener.SetUnlinkOnClose(true)
-	done := make(chan error, 1)
-	go func() {
-		defer listener.Close()
-		connection, acceptErr := listener.AcceptUnix()
-		if acceptErr != nil {
-			done <- acceptErr
-			return
-		}
-		request, requestErr := readServiceHelperRequest(connection)
-		if requestErr == nil {
-			requestErr = writeServiceHelperResponse(connection, serviceHelperResponse{
-				Version:   ServiceHelperProtocolVersion,
-				Kind:      serviceHelperRequestSnapshot,
-				RequestID: request.RequestID,
-				Snapshot:  &snapshot,
+}
+
+func serveServiceHelperActionResponse(
+	listener *net.UnixListener,
+	snapshot serviceHelperSnapshot,
+	respond func(net.Conn, serviceHelperRequest) error,
+	done chan<- error,
+) {
+	defer listener.Close()
+	connection, err := listener.AcceptUnix()
+	if err == nil {
+		var request serviceHelperRequest
+		request, err = readServiceHelperRequest(connection)
+		if err == nil {
+			err = writeServiceHelperResponse(connection, serviceHelperResponse{
+				Version: ServiceHelperProtocolVersion, Kind: serviceHelperRequestSnapshot,
+				RequestID: request.RequestID, Snapshot: &snapshot,
 			})
 		}
 		_ = connection.Close()
-		if requestErr != nil {
-			done <- requestErr
-			return
+	}
+	if err == nil {
+		connection, err = listener.AcceptUnix()
+	}
+	if err == nil {
+		var request serviceHelperRequest
+		request, err = readServiceHelperRequest(connection)
+		if err == nil && request.Kind != serviceHelperRequestAction {
+			err = errors.New("unexpected service helper request")
 		}
-		connection, acceptErr = listener.AcceptUnix()
-		if acceptErr != nil {
-			done <- acceptErr
-			return
+		if err == nil {
+			err = respond(connection, request)
 		}
-		request, requestErr = readServiceHelperRequest(connection)
 		_ = connection.Close()
-		if requestErr == nil && request.Kind != serviceHelperRequestAction {
-			requestErr = errors.New("unexpected service helper request")
-		}
-		done <- requestErr
-	}()
-	client, err := newServiceHelperClient(
-		t.Context(), config.SocketPath, uint32(os.Geteuid()), uint32(os.Getegid()),
-	)
-	if err != nil {
-		t.Fatal(err)
 	}
-	result, err := client.Action(t.Context(), ServiceActionRequest{
-		Profile: "server-services", Service: "vpn", Action: nodes.ServiceActionRestart,
-	})
-	if err != nil || result.State != "unknown" || result.Code != "helper_response_lost" {
-		t.Fatalf("lost helper action response = %#v, error %v", result, err)
+	done <- err
+}
+
+func activeServiceStatus() ServiceStatus {
+	return ServiceStatus{
+		Service: "vpn", LoadState: "loaded", ActiveState: "active",
+		Substate: "running", Enabled: "enabled", ObservedAt: 1,
 	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
+}
+
+func completedServiceActionResponse(requestID string) serviceHelperResponse {
+	status := activeServiceStatus()
+	return serviceHelperResponse{
+		Version: ServiceHelperProtocolVersion, Kind: serviceHelperRequestAction,
+		RequestID: requestID,
+		Action: &ServiceActionResult{
+			Service: "vpn", Action: nodes.ServiceActionRestart,
+			State: "completed", AcceptedAt: 1, Status: &status,
+		},
 	}
 }
 

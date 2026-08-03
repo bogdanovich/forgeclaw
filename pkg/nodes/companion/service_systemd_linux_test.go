@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -325,6 +326,40 @@ func TestSystemdServiceManagerCancellationTerminatesProcess(t *testing.T) {
 				t.Fatalf("%s cancellation error = %v", operation, err)
 			}
 		})
+	}
+}
+
+func TestSystemdProcessRunnerExecutesPinnedDescriptorAfterPathReplacement(t *testing.T) {
+	source, err := exec.LookPath("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/systemctl"
+	if writeErr := os.WriteFile(path, content, 0o700); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	pinned, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	if renameErr := os.Rename(path, path+".replaced"); renameErr != nil {
+		t.Fatal(renameErr)
+	}
+	if writeErr := os.WriteFile(path, []byte("#!/bin/sh\necho replacement\n"), 0o700); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	runner := systemdProcessRunner{env: fixedSystemdEnvironment()}
+	result, err := runner.run(t.Context(), commandExecutable{path: path, file: pinned}, []string{"pinned"}, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.stdout) != "pinned\n" {
+		t.Fatalf("pinned descriptor reopened replacement path: %q", result.stdout)
 	}
 }
 
