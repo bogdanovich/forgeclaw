@@ -423,6 +423,7 @@ func spawnSubTurn(
 	// admission in runTurn.
 	detachedCtx, releaseInheritedAdmission := inheritAgentTurnAdmissions(context.Background(), ctx)
 	defer releaseInheritedAdmission()
+	detachedCtx = inheritOutboundSource(detachedCtx, ctx)
 	childCtx, cancel := context.WithTimeout(detachedCtx, timeout)
 	defer cancel()
 
@@ -494,6 +495,8 @@ func spawnSubTurn(
 		RouteResult:     cloneResolvedRoute(parentTS.opts.Dispatch.RouteResult),
 		SessionScope:    session.CloneScope(parentTS.opts.Dispatch.SessionScope),
 	}
+	durableUserDelivery := hasOutboundSource(childCtx) && !cfg.Async &&
+		(deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent)
 	opts := processOptions{
 		TaskID:                  strings.TrimSpace(cfg.TaskID),
 		InteractionWorkspace:    parentTS.workspace,
@@ -508,7 +511,7 @@ func spawnSubTurn(
 		InitialSteeringMessages: cfg.InitialMessages,
 		DefaultResponse:         "",
 		EnableSummary:           false,
-		SendResponse: !cfg.Async &&
+		SendResponse: !durableUserDelivery && !cfg.Async &&
 			(deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent),
 		SuppressToolUserDelivery: !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly,
 		SuppressToolFeedback:     parentTS.opts.SuppressToolFeedback,
@@ -631,6 +634,27 @@ func spawnSubTurn(
 	// 8. Execute sub-turn via the real agent loop.
 	pipeline := NewPipeline(al)
 	turnRes, turnErr := al.runTurn(childCtx, childTS, pipeline)
+	if turnErr == nil && durableUserDelivery && turnRes.status == TurnEndStatusCompleted {
+		deliveryCtx := inheritOutboundSource(context.Background(), childCtx)
+		deliveryCtx, cancelDelivery := context.WithTimeout(deliveryCtx, finalDeliveryFallbackTimeout)
+		defer cancelDelivery()
+		admission := al.publishResponseWithMetadataAndScopes(
+			deliveryCtx,
+			agent.Workspace,
+			agent.ID,
+			dispatch.Channel(),
+			dispatch.ChatID(),
+			childSessionKey,
+			turnRes.finalContent,
+			dispatch.InboundContext,
+			finalResponseAlwaysPublish,
+			outboundMetadataForTurnResult(turnRes),
+			nil,
+		)
+		if !admission.permitsInboundAck() {
+			turnErr = admission.err
+		}
+	}
 
 	// Release the concurrency semaphore immediately after runTurn completes,
 	// before the cleanup defer runs. This prevents a deadlock where:

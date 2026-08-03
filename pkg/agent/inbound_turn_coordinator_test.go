@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -137,6 +138,93 @@ func TestFinalResponseAdmissionPersistsOutboxBeforeBusPublish(t *testing.T) {
 		}
 	default:
 		t.Fatal("durable final response was not published")
+	}
+}
+
+func TestProcessMessageSyncAdmitsSystemCompletionOnceOnOriginRoute(t *testing.T) {
+	tests := []struct {
+		name    string
+		sender  string
+		content string
+		raw     map[string]string
+	}{
+		{
+			name:    "system completion",
+			sender:  "subagent:worker",
+			content: "Task 'worker' completed.\n\nResult:\nfinished",
+		},
+		{
+			name:    "async completion",
+			sender:  "async:spawn",
+			content: asyncCompletionPrompt("spawn", "finished"),
+			raw: systemFollowUpAsyncCompletionRaw(
+				&bus.InboundContext{Channel: "telegram", ChatID: "chat-1", ChatType: "direct"},
+				"telegram",
+				"chat-1",
+				"completion-durable",
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+			defer cleanup()
+			coordinator := outbox.NewCoordinator()
+			al.SetOutboundOutbox(coordinator)
+			agent := al.registry.GetDefaultAgent()
+
+			msg := bus.InboundMessage{
+				Channel:  "system",
+				ChatID:   "telegram:chat-1",
+				SenderID: tt.sender,
+				SpoolID:  "spool-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Content:  tt.content,
+				Context: bus.InboundContext{
+					Channel:  "system",
+					ChatID:   "telegram:chat-1",
+					ChatType: "direct",
+					SenderID: tt.sender,
+					Raw:      tt.raw,
+				},
+			}
+			admission := al.processMessageSync(withOutboundSource(t.Context(), msg.SpoolID), msg)
+			if !admission.permitsInboundAck() || admission.err != nil {
+				t.Fatalf("processMessageSync() admission = %+v", admission)
+			}
+
+			select {
+			case outbound := <-msgBus.OutboundChan():
+				if outbound.Context.Channel != "telegram" || outbound.Context.ChatID != "chat-1" ||
+					outbound.DeliveryID == "" || outbound.SessionKey != session.BuildMainSessionKey(agent.ID) {
+					t.Fatalf("outbound = %+v", outbound)
+				}
+				store, err := outbox.Open(agent.Workspace)
+				if err != nil {
+					t.Fatalf("Open(outbox) error = %v", err)
+				}
+				intent, err := store.Get(outbound.DeliveryID)
+				if err != nil || intent.Message == nil || intent.Message.Content != outbound.Content {
+					t.Fatalf("durable intent = %+v, %v", intent, err)
+				}
+			default:
+				t.Fatal("system completion did not publish durable origin response")
+			}
+			select {
+			case duplicate := <-msgBus.OutboundChan():
+				t.Fatalf("system completion published twice: %+v", duplicate)
+			default:
+			}
+
+			replay := al.processMessageSync(withOutboundSource(t.Context(), msg.SpoolID), msg)
+			if !replay.permitsInboundAck() || replay.err != nil {
+				t.Fatalf("processMessageSync(replay) admission = %+v", replay)
+			}
+			select {
+			case duplicate := <-msgBus.OutboundChan():
+				t.Fatalf("system completion replay published duplicate: %+v", duplicate)
+			default:
+			}
+		})
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
@@ -2283,6 +2284,127 @@ func TestSpawnSubTurn_ReturnsStructuredCompletionWithMedia(t *testing.T) {
 	}
 	if !strings.Contains(result.ContentForLLM(), "Structured child completion:") {
 		t.Fatalf("ContentForLLM missing structured completion: %q", result.ContentForLLM())
+	}
+}
+
+func TestSpawnSubTurnAdmitsDurableUserOnlyFinal(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	al.SetOutboundOutbox(outbox.NewCoordinator())
+	agent := al.registry.GetDefaultAgent()
+	parentTS := &turnState{
+		ctx:            t.Context(),
+		turnID:         "parent-durable-user-only",
+		agent:          agent,
+		agentID:        agent.ID,
+		workspace:      agent.Workspace,
+		session:        newEphemeralSession(nil),
+		pendingResults: make(chan *tools.ToolResult, 16),
+		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
+		opts: processOptions{Dispatch: DispatchRequest{
+			SessionKey: "parent-session",
+			InboundContext: &bus.InboundContext{
+				Channel: "telegram",
+				ChatID:  "chat-1",
+			},
+		}, NoHistory: true},
+	}
+	ctx := withOutboundSource(t.Context(), "spool-durable-subturn")
+	ctx = withTurnState(ctx, parentTS)
+	ctx = WithAgentLoop(ctx, al)
+
+	result, err := spawnSubTurn(ctx, al, parentTS, SubTurnConfig{
+		SystemPrompt: "answer the user",
+		Model:        agent.Model,
+		DeliveryMode: tools.AsyncDeliveryUserOnly,
+	})
+	if err != nil {
+		t.Fatalf("spawnSubTurn() error = %v", err)
+	}
+	if result == nil || !result.ResponseHandled || !result.Silent || result.ForUser != "" {
+		t.Fatalf("spawnSubTurn() result = %+v, want handled user-only result", result)
+	}
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content != "Mock response" || outbound.Context.Channel != "telegram" ||
+			outbound.Context.ChatID != "chat-1" || outbound.DeliveryID == "" {
+			t.Fatalf("durable child outbound = %+v", outbound)
+		}
+		store, openErr := outbox.Open(agent.Workspace)
+		if openErr != nil {
+			t.Fatalf("Open(outbox) error = %v", openErr)
+		}
+		intent, getErr := store.Get(outbound.DeliveryID)
+		if getErr != nil || intent.Message == nil || intent.Message.Content != "Mock response" {
+			t.Fatalf("durable child intent = %+v, %v", intent, getErr)
+		}
+	default:
+		t.Fatal("durable user-only subturn did not publish final response")
+	}
+
+	replayCtx := withOutboundSource(t.Context(), "spool-durable-subturn")
+	replayCtx = withTurnState(replayCtx, parentTS)
+	replayCtx = WithAgentLoop(replayCtx, al)
+	if _, replayErr := spawnSubTurn(replayCtx, al, parentTS, SubTurnConfig{
+		SystemPrompt: "answer the user again",
+		Model:        agent.Model,
+		DeliveryMode: tools.AsyncDeliveryUserOnly,
+	}); replayErr != nil {
+		t.Fatalf("spawnSubTurn(replay) error = %v", replayErr)
+	}
+	select {
+	case duplicate := <-msgBus.OutboundChan():
+		t.Fatalf("durable user-only subturn replay published duplicate: %+v", duplicate)
+	default:
+	}
+}
+
+func TestSpawnSubTurnPropagatesDurableUserFinalAdmissionFailure(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	al.SetOutboundOutbox(outbox.NewCoordinator())
+	al.bus = &finalResponseAdmissionTestBus{
+		MessageBus: msgBus,
+		publishErr: errors.New("bus unavailable"),
+	}
+	agent := al.registry.GetDefaultAgent()
+	parentTS := &turnState{
+		ctx:            t.Context(),
+		turnID:         "parent-durable-admission-failure",
+		agent:          agent,
+		agentID:        agent.ID,
+		workspace:      agent.Workspace,
+		session:        newEphemeralSession(nil),
+		pendingResults: make(chan *tools.ToolResult, 16),
+		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
+		opts: processOptions{Dispatch: DispatchRequest{
+			SessionKey: "parent-session",
+			InboundContext: &bus.InboundContext{
+				Channel: "telegram",
+				ChatID:  "chat-1",
+			},
+		}, NoHistory: true},
+	}
+	ctx := withOutboundSource(t.Context(), "spool-durable-subturn-failure")
+	ctx = withTurnState(ctx, parentTS)
+	ctx = WithAgentLoop(ctx, al)
+
+	_, err := spawnSubTurn(ctx, al, parentTS, SubTurnConfig{
+		SystemPrompt: "answer the user",
+		Model:        agent.Model,
+		DeliveryMode: tools.AsyncDeliveryUserOnly,
+	})
+	if err == nil || !strings.Contains(err.Error(), "bus unavailable") {
+		t.Fatalf("spawnSubTurn() error = %v, want bus admission failure", err)
+	}
+	store, openErr := outbox.Open(agent.Workspace)
+	if openErr != nil {
+		t.Fatalf("Open(outbox) error = %v", openErr)
+	}
+	pending, recoverErr := store.Recover()
+	if recoverErr != nil || len(pending) != 1 || pending[0].Status != outbox.StatusPending {
+		t.Fatalf("Recover() = %+v, %v, want one pending child final", pending, recoverErr)
 	}
 }
 

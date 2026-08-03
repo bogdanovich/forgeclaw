@@ -32,6 +32,17 @@ func withOutboundSource(ctx context.Context, sourceID string) context.Context {
 	return context.WithValue(ctx, outboundSourceKey{}, &outboundSource{id: sourceID})
 }
 
+func inheritOutboundSource(dst, src context.Context) context.Context {
+	if dst == nil || src == nil {
+		return dst
+	}
+	source, ok := src.Value(outboundSourceKey{}).(*outboundSource)
+	if !ok || source == nil || strings.TrimSpace(source.id) == "" {
+		return dst
+	}
+	return context.WithValue(dst, outboundSourceKey{}, source)
+}
+
 func hasOutboundSource(ctx context.Context) bool {
 	if ctx == nil {
 		return false

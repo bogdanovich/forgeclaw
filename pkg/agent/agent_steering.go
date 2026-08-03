@@ -13,6 +13,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) finalResponseAdmission {
@@ -22,6 +23,17 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 
 	_, routedAgent, _ := al.resolveMessageRoute(msg)
 	workspace, agentID := "", ""
+	channel, chatID, sessionKey := msg.Channel, msg.ChatID, msg.SessionKey
+	inboundCtx := &msg.Context
+	if msg.Channel == "system" {
+		origin := systemMessageOrigin(msg)
+		channel, chatID = origin.Channel, origin.ChatID
+		inboundCtx = &origin
+		routedAgent = al.GetRegistry().GetDefaultAgent()
+		if routedAgent != nil {
+			sessionKey = session.BuildMainSessionKey(routedAgent.ID)
+		}
+	}
 	if routedAgent != nil {
 		workspace, agentID = routedAgent.Workspace, routedAgent.ID
 	}
@@ -31,9 +43,9 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 			ctx,
 			workspace,
 			agentID,
-			msg.Channel,
-			msg.ChatID,
-			msg.SessionKey,
+			channel,
+			chatID,
+			sessionKey,
 			err,
 			finalResponseAlwaysPublish,
 		)
@@ -42,11 +54,11 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		ctx,
 		workspace,
 		agentID,
-		msg.Channel,
-		msg.ChatID,
-		msg.SessionKey,
+		channel,
+		chatID,
+		sessionKey,
 		response,
-		&msg.Context,
+		inboundCtx,
 		finalResponseAlwaysPublish,
 	)
 }

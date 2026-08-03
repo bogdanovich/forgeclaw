@@ -446,50 +446,10 @@ func (al *AgentLoop) processSystemMessage(
 			"chat_id":   msg.ChatID,
 		})
 
-	// Parse origin channel from chat_id (format: "channel:chat_id")
-	var originChannel, originChatID string
-	if idx := strings.Index(msg.ChatID, ":"); idx > 0 {
-		originChannel = msg.ChatID[:idx]
-		originChatID = msg.ChatID[idx+1:]
-	} else {
-		originChannel = "cli"
-		originChatID = msg.ChatID
-	}
-	originChatType := "direct"
-	originTopicID := strings.TrimSpace(msg.Context.TopicID)
-	originMessageID := strings.TrimSpace(msg.Context.MessageID)
-	originReplyToMessageID := strings.TrimSpace(msg.Context.ReplyToMessageID)
-	if raw := msg.Context.Raw; len(raw) > 0 {
-		if value := strings.TrimSpace(raw[systemFollowUpOriginChannelKey]); value != "" {
-			originChannel = value
-		}
-		if value := strings.TrimSpace(raw[systemFollowUpOriginChatIDKey]); value != "" {
-			originChatID = value
-		}
-		if value := strings.TrimSpace(raw[systemFollowUpOriginChatTypeKey]); value != "" {
-			originChatType = value
-		}
-		if value := strings.TrimSpace(raw[systemFollowUpOriginTopicIDKey]); value != "" {
-			originTopicID = value
-		}
-		if value := strings.TrimSpace(raw[systemFollowUpOriginMessageIDKey]); value != "" {
-			originMessageID = value
-		}
-		if value := strings.TrimSpace(raw[systemFollowUpOriginReplyToMessageIDKey]); value != "" {
-			originReplyToMessageID = value
-		}
-	}
+	origin := systemMessageOrigin(msg)
 
 	if isAsyncCompletionSystemMessage(msg) {
-		return al.processAsyncCompletionMessage(ctx, msg, bus.InboundContext{
-			Channel:          originChannel,
-			ChatID:           originChatID,
-			ChatType:         originChatType,
-			TopicID:          originTopicID,
-			SenderID:         msg.SenderID,
-			MessageID:        originMessageID,
-			ReplyToMessageID: originReplyToMessageID,
-		})
+		return al.processAsyncCompletionMessage(ctx, msg, origin)
 	}
 
 	// Extract subagent result from message content
@@ -500,12 +460,12 @@ func (al *AgentLoop) processSystemMessage(
 	}
 
 	// Skip internal channels - only log, don't send to user
-	if constants.IsInternalChannel(originChannel) {
+	if constants.IsInternalChannel(origin.Channel) {
 		logger.InfoCF("agent", "Subagent completed (internal channel)",
 			map[string]any{
 				"sender_id":   msg.SenderID,
 				"content_len": len(content),
-				"channel":     originChannel,
+				"channel":     origin.Channel,
 			})
 		return "", nil
 	}
@@ -522,24 +482,53 @@ func (al *AgentLoop) processSystemMessage(
 		SessionKey:  sessionKey,
 		UserMessage: fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content),
 	}
-	if originChannel != "" || originChatID != "" {
-		dispatch.InboundContext = &bus.InboundContext{
-			Channel:          originChannel,
-			ChatID:           originChatID,
-			ChatType:         originChatType,
-			TopicID:          originTopicID,
-			SenderID:         msg.SenderID,
-			MessageID:        originMessageID,
-			ReplyToMessageID: originReplyToMessageID,
-		}
+	if origin.Channel != "" || origin.ChatID != "" {
+		dispatch.InboundContext = &origin
 	}
 
 	return al.runAgentLoop(ctx, agent, processOptions{
 		Dispatch:        dispatch,
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
-		SendResponse:    true,
+		SendResponse:    false,
 	})
+}
+
+func systemMessageOrigin(msg bus.InboundMessage) bus.InboundContext {
+	origin := bus.InboundContext{
+		Channel:          "cli",
+		ChatID:           msg.ChatID,
+		ChatType:         "direct",
+		TopicID:          strings.TrimSpace(msg.Context.TopicID),
+		SenderID:         msg.SenderID,
+		MessageID:        strings.TrimSpace(msg.Context.MessageID),
+		ReplyToMessageID: strings.TrimSpace(msg.Context.ReplyToMessageID),
+	}
+	if idx := strings.Index(msg.ChatID, ":"); idx > 0 {
+		origin.Channel = msg.ChatID[:idx]
+		origin.ChatID = msg.ChatID[idx+1:]
+	}
+	if raw := msg.Context.Raw; len(raw) > 0 {
+		if value := strings.TrimSpace(raw[systemFollowUpOriginChannelKey]); value != "" {
+			origin.Channel = value
+		}
+		if value := strings.TrimSpace(raw[systemFollowUpOriginChatIDKey]); value != "" {
+			origin.ChatID = value
+		}
+		if value := strings.TrimSpace(raw[systemFollowUpOriginChatTypeKey]); value != "" {
+			origin.ChatType = value
+		}
+		if value := strings.TrimSpace(raw[systemFollowUpOriginTopicIDKey]); value != "" {
+			origin.TopicID = value
+		}
+		if value := strings.TrimSpace(raw[systemFollowUpOriginMessageIDKey]); value != "" {
+			origin.MessageID = value
+		}
+		if value := strings.TrimSpace(raw[systemFollowUpOriginReplyToMessageIDKey]); value != "" {
+			origin.ReplyToMessageID = value
+		}
+	}
+	return origin
 }
 
 func (al *AgentLoop) processAsyncCompletionMessage(
@@ -547,18 +536,26 @@ func (al *AgentLoop) processAsyncCompletionMessage(
 	msg bus.InboundMessage,
 	origin bus.InboundContext,
 ) (response string, err error) {
-	return al.processAsyncCompletion(ctx, AsyncCompletionInput{
+	return al.processAsyncCompletionWithDelivery(ctx, AsyncCompletionInput{
 		SourceTool:   strings.TrimPrefix(strings.TrimSpace(msg.SenderID), "async:"),
 		CompletionID: strings.TrimSpace(msg.Context.Raw[systemFollowUpIDKey]),
 		Content:      msg.Content,
 		Origin:       origin,
 		SenderID:     msg.SenderID,
-	})
+	}, false)
 }
 
 func (al *AgentLoop) processAsyncCompletion(
 	ctx context.Context,
 	input AsyncCompletionInput,
+) (response string, err error) {
+	return al.processAsyncCompletionWithDelivery(ctx, input, true)
+}
+
+func (al *AgentLoop) processAsyncCompletionWithDelivery(
+	ctx context.Context,
+	input AsyncCompletionInput,
+	sendResponse bool,
 ) (response string, err error) {
 	origin := input.Origin
 	if constants.IsInternalChannel(origin.Channel) {
@@ -577,7 +574,7 @@ func (al *AgentLoop) processAsyncCompletion(
 	}
 
 	completionID := strings.TrimSpace(input.CompletionID)
-	if completionID != "" {
+	if completionID != "" && !hasOutboundSource(ctx) {
 		if _, loaded := al.asyncCompletions.LoadOrStore(completionID, struct{}{}); loaded {
 			logger.InfoCF("agent", "Skipping duplicate async completion",
 				map[string]any{
@@ -607,7 +604,7 @@ func (al *AgentLoop) processAsyncCompletion(
 		Dispatch:             dispatch,
 		DefaultResponse:      "",
 		EnableSummary:        false,
-		SendResponse:         true,
+		SendResponse:         sendResponse,
 		SuppressToolFeedback: true,
 		NoHistory:            true,
 	})
