@@ -175,6 +175,44 @@ func TestDiagnosticNodeFileMessagesRetainStructureWithoutAuthority(t *testing.T)
 	}
 }
 
+func TestDiagnosticNodeInvokeMessagesRetainStructureWithoutCommandContent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	rawUnit := "private-control-plane.service"
+	rawLog := "credential-bearing service output"
+	messages := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-node", Name: "nodes_invoke", Arguments: map[string]any{
+					"target": "private-node", "command": "service.logs.v1",
+				},
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-node",
+			Content: `{"result":{"records":[{"message":"` + rawUnit + `: ` + rawLog + `"}]}}`,
+		},
+	}
+
+	for _, preview := range []string{
+		diagnosticMessagesPreview(cfg, messages),
+		diagnosticToolCallsPreview(cfg, messages[0].ToolCalls),
+		formatMessagesForLog(messages),
+	} {
+		if !strings.Contains(preview, "nodes_invoke") ||
+			!strings.Contains(strings.ToLower(preview), "redact") {
+			t.Fatalf("node invocation preview was not structurally redacted: %s", preview)
+		}
+		for _, forbidden := range []string{rawUnit, rawLog, "private-node", "service.logs.v1"} {
+			if strings.Contains(preview, forbidden) {
+				t.Fatalf("node invocation preview leaked %q: %s", forbidden, preview)
+			}
+		}
+	}
+}
+
 func TestFormatMessagesForLogRedactsNodeFileHistory(t *testing.T) {
 	secretPath := "/private/node/config.json"
 	mediaRef := "media://private-upload"
