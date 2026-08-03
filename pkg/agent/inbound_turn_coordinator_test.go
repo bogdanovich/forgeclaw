@@ -12,6 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 )
@@ -26,6 +27,10 @@ type finalResponseAdmissionTestBus struct {
 	acked        []string
 	released     []string
 	releaseCause error
+	ackErrByID   map[string]error
+	publishStart chan struct{}
+	publishBlock chan struct{}
+	publishOnce  sync.Once
 }
 
 type failingRootTurnJournal struct {
@@ -65,6 +70,16 @@ func (b *finalResponseAdmissionTestBus) PublishOutbound(
 	ctx context.Context,
 	msg bus.OutboundMessage,
 ) error {
+	if b.publishStart != nil {
+		b.publishOnce.Do(func() { close(b.publishStart) })
+	}
+	if b.publishBlock != nil {
+		select {
+		case <-b.publishBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	b.mu.Lock()
 	if b.publishCalls < len(b.publishResults) {
 		err := b.publishResults[b.publishCalls]
@@ -82,14 +97,385 @@ func (b *finalResponseAdmissionTestBus) PublishOutbound(
 	return b.MessageBus.PublishOutbound(ctx, msg)
 }
 
+func TestOutboundTransactionRejectsDuplicateWhilePublicationIsInFlight(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus:   msgBus,
+		publishStart: make(chan struct{}),
+		publishBlock: make(chan struct{}),
+	}
+	al.bus = trackingBus
+	agent := al.registry.GetDefaultAgent()
+	publish := func(ctx context.Context) finalResponseAdmission {
+		return al.publishResponseWithContextIfNeeded(
+			ctx,
+			agent.Workspace,
+			agent.ID,
+			"telegram",
+			"chat-1",
+			"session-1",
+			"durable final",
+			nil,
+			finalResponseAlwaysPublish,
+		)
+	}
+	firstResult := make(chan finalResponseAdmission, 1)
+	go func() {
+		firstResult <- publish(withOutboundTransaction(t.Context(), "spool-in-flight"))
+	}()
+	select {
+	case <-trackingBus.publishStart:
+	case <-time.After(time.Second):
+		t.Fatal("first publication did not reach the bus")
+	}
+
+	duplicate := publish(withOutboundTransaction(t.Context(), "spool-in-flight"))
+	if duplicate.permitsInboundAck() || !errors.Is(duplicate.err, errOutboundPublicationInFlight) {
+		t.Fatalf("in-flight duplicate admission = %+v", duplicate)
+	}
+	close(trackingBus.publishBlock)
+	if first := <-firstResult; !first.permitsInboundAck() || first.err != nil {
+		t.Fatalf("first admission = %+v", first)
+	}
+
+	replay := publish(withOutboundTransaction(t.Context(), "spool-in-flight"))
+	if !replay.permitsInboundAck() || replay.err != nil {
+		t.Fatalf("committed replay admission = %+v", replay)
+	}
+	select {
+	case <-msgBus.OutboundChan():
+	default:
+		t.Fatal("first publication was not queued")
+	}
+	select {
+	case duplicateMessage := <-msgBus.OutboundChan():
+		t.Fatalf("committed replay published again: %+v", duplicateMessage)
+	default:
+	}
+}
+
+func TestSettleInboundAdmissionReleasesAfterAckFailure(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	ackErr := errors.New("root ack failed")
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: msgBus,
+		ackErrByID: map[string]error{"spool-root-ack": ackErr},
+	}
+	al.bus = trackingBus
+	msg := bus.InboundMessage{SpoolID: "spool-root-ack"}
+	err := al.settleInboundAdmission(
+		t.Context(),
+		msg,
+		finalResponseAdmission{status: finalResponseAdmissionAccepted},
+	)
+	if !errors.Is(err, ackErr) {
+		t.Fatalf("settleInboundAdmission() error = %v, want %v", err, ackErr)
+	}
+	_, released, cause := trackingBus.ownership()
+	if !containsExactly(released, msg.SpoolID) || !errors.Is(cause, ackErr) {
+		t.Fatalf("ack failure release = released:%v cause:%v", released, cause)
+	}
+}
+
+func TestInteractionNoticeReleasesInboundAfterAckFailure(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	ackErr := errors.New("interaction notice ack failed")
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: msgBus,
+		ackErrByID: map[string]error{"spool-interaction-ack": ackErr},
+	}
+	al.bus = trackingBus
+	agent := al.registry.GetDefaultAgent()
+	msg := bus.InboundMessage{
+		Context:  bus.InboundContext{Channel: "telegram", ChatID: "chat-1"},
+		SpoolID:  "spool-interaction-ack",
+		Channel:  "telegram",
+		ChatID:   "chat-1",
+		Content:  "/answer wrong answer",
+		SenderID: "user-1",
+	}
+	newInboundTurnCoordinator(al).consumeExplicitInteractionAnswer(
+		t.Context(),
+		msg,
+		&inboundDispatchTarget{Agent: agent, SessionKey: "session-1"},
+		explicitInteractionAnswer{Disposition: explicitInteractionAnswerWrongID},
+	)
+
+	_, released, cause := trackingBus.ownership()
+	if !containsExactly(released, msg.SpoolID) || !errors.Is(cause, ackErr) {
+		t.Fatalf("interaction ack failure = released:%v cause:%v", released, cause)
+	}
+}
+
 func (b *finalResponseAdmissionTestBus) AckInbound(
 	ctx context.Context,
 	msg bus.InboundMessage,
 ) error {
 	b.mu.Lock()
 	b.acked = append(b.acked, msg.SpoolID)
+	err := b.ackErrByID[msg.SpoolID]
 	b.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	return b.MessageBus.AckInbound(ctx, msg)
+}
+
+func TestOutboundTransactionPersistsBeforePublishAndSuppressesSameProcessReplay(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	root := t.TempDir()
+	installTestOutboundCoordinator(t, al, root)
+	trackingBus := &finalResponseAdmissionTestBus{MessageBus: msgBus}
+	al.bus = trackingBus
+	agent := al.registry.GetDefaultAgent()
+
+	ctx := withOutboundTransaction(t.Context(), "spool-durable-final")
+	admission := al.publishResponseWithContextIfNeeded(
+		ctx,
+		agent.Workspace,
+		agent.ID,
+		"telegram",
+		"chat-1",
+		"session-1",
+		"durable final",
+		&bus.InboundContext{Channel: "telegram", ChatID: "chat-1"},
+		finalResponseAlwaysPublish,
+	)
+	if !admission.permitsInboundAck() || admission.err != nil {
+		t.Fatalf("durable admission = %+v", admission)
+	}
+
+	var outbound bus.OutboundMessage
+	select {
+	case outbound = <-msgBus.OutboundChan():
+	case <-time.After(time.Second):
+		t.Fatal("durable final was not published")
+	}
+	if outbound.DeliveryID == "" {
+		t.Fatal("durable final has no delivery ID")
+	}
+	store, err := outbox.Open(root)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	intent, err := store.Get(outbound.DeliveryID)
+	if err != nil || intent.Message == nil || intent.Message.Content != "durable final" {
+		t.Fatalf("persisted intent = %+v, %v", intent, err)
+	}
+
+	replay := al.publishResponseWithContextIfNeeded(
+		withOutboundTransaction(t.Context(), "spool-durable-final"),
+		agent.Workspace,
+		agent.ID,
+		"telegram",
+		"chat-1",
+		"rotated-session",
+		"changed replay payload",
+		&bus.InboundContext{Channel: "telegram", ChatID: "chat-1"},
+		finalResponseAlwaysPublish,
+	)
+	if !replay.permitsInboundAck() || replay.err != nil {
+		t.Fatalf("replay admission = %+v", replay)
+	}
+	select {
+	case duplicate := <-msgBus.OutboundChan():
+		t.Fatalf("same-process replay published duplicate: %+v", duplicate)
+	default:
+	}
+}
+
+func TestOutboundTransactionRetainsChildFailureAfterSuccessfulRootPublish(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	rejection := errors.New("child bus admission rejected")
+	al.bus = &finalResponseAdmissionTestBus{
+		MessageBus:     msgBus,
+		publishResults: []error{rejection, nil},
+	}
+	agent := al.registry.GetDefaultAgent()
+	ctx := withOutboundTransaction(t.Context(), "spool-child-failure")
+
+	child := al.publishResponseWithContextIfNeeded(
+		ctx,
+		agent.Workspace,
+		agent.ID,
+		"telegram",
+		"chat-1",
+		"child-session",
+		"child final",
+		nil,
+		finalResponseAlwaysPublish,
+	)
+	if child.permitsInboundAck() || !errors.Is(child.err, rejection) {
+		t.Fatalf("child admission = %+v", child)
+	}
+	root := al.publishResponseWithContextIfNeeded(
+		ctx,
+		agent.Workspace,
+		agent.ID,
+		"telegram",
+		"chat-1",
+		"root-session",
+		"root final",
+		nil,
+		finalResponseAlwaysPublish,
+	)
+	root = transactionAdmission(ctx, root)
+	if root.permitsInboundAck() || !errors.Is(root.err, rejection) {
+		t.Fatalf("root admission after child failure = %+v", root)
+	}
+}
+
+func TestProcessMessageSyncDurablyPublishesSystemCompletionOnOriginRoute(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	agent := al.registry.GetDefaultAgent()
+	msg := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "system",
+			ChatID:   "telegram:chat-1",
+			ChatType: "direct",
+			SenderID: "subagent:worker",
+		},
+		Content:  "Task 'worker' completed.\n\nResult:\nfinished",
+		SpoolID:  "spool-system-completion",
+		Channel:  "system",
+		ChatID:   "telegram:chat-1",
+		SenderID: "subagent:worker",
+	}
+
+	admission := al.processMessageSync(withOutboundTransaction(t.Context(), msg.SpoolID), msg)
+	if !admission.permitsInboundAck() || admission.err != nil {
+		t.Fatalf("system completion admission = %+v", admission)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Channel != "telegram" || outbound.ChatID != "chat-1" ||
+			outbound.SessionKey != session.BuildMainSessionKey(agent.ID) || outbound.DeliveryID == "" {
+			t.Fatalf("system completion outbound = %+v", outbound)
+		}
+	default:
+		t.Fatal("system completion did not publish on origin route")
+	}
+	select {
+	case duplicate := <-msgBus.OutboundChan():
+		t.Fatalf("system completion published twice: %+v", duplicate)
+	default:
+	}
+}
+
+func TestProcessMessageSyncPreservesSystemOriginContextOnSynthesisError(t *testing.T) {
+	providerErr := errors.New("system synthesis failed")
+	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{errors: []error{providerErr}})
+	defer cleanup()
+	msgBus := al.bus.(*bus.MessageBus)
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	msg := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:          "system",
+			ChatID:           "telegram:chat-1",
+			ChatType:         "direct",
+			TopicID:          "topic-1",
+			MessageID:        "message-1",
+			ReplyToMessageID: "reply-1",
+			SenderID:         "subagent:worker",
+		},
+		Content:  "Task failed",
+		SpoolID:  "spool-system-error",
+		Channel:  "system",
+		ChatID:   "telegram:chat-1",
+		SenderID: "subagent:worker",
+	}
+
+	admission := al.processMessageSync(withOutboundTransaction(t.Context(), msg.SpoolID), msg)
+	if !admission.permitsInboundAck() || admission.err != nil {
+		t.Fatalf("system error admission = %+v", admission)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Channel != "telegram" || outbound.ChatID != "chat-1" ||
+			outbound.Context.TopicID != "topic-1" || outbound.Context.MessageID != "message-1" ||
+			outbound.Context.ReplyToMessageID != "reply-1" || outbound.DeliveryID == "" {
+			t.Fatalf("system error outbound = %+v", outbound)
+		}
+	default:
+		t.Fatal("system synthesis error was not published on origin route")
+	}
+}
+
+func TestProcessMessageSyncKeepsCancellationRetryable(t *testing.T) {
+	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{errors: []error{context.Canceled}})
+	defer cleanup()
+	msgBus := al.bus.(*bus.MessageBus)
+	trackingBus := &finalResponseAdmissionTestBus{MessageBus: msgBus}
+	al.bus = trackingBus
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	msg := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "system",
+			ChatID:    "telegram:chat-1",
+			TopicID:   "topic-1",
+			MessageID: "message-1",
+		},
+		Content: "Task canceled",
+		SpoolID: "spool-system-canceled",
+		Channel: "system",
+		ChatID:  "telegram:chat-1",
+	}
+
+	ctx := withOutboundTransaction(t.Context(), msg.SpoolID)
+	admission := al.processMessageSync(ctx, msg)
+	if admission.permitsInboundAck() || !errors.Is(admission.err, context.Canceled) {
+		t.Fatalf("system cancellation admission = %+v", admission)
+	}
+	if err := al.settleInboundAdmission(ctx, msg, admission); !errors.Is(err, context.Canceled) {
+		t.Fatalf("settleInboundAdmission() error = %v, want context canceled", err)
+	}
+	_, released, cause := trackingBus.ownership()
+	if !containsExactly(released, msg.SpoolID) || !errors.Is(cause, context.Canceled) {
+		t.Fatalf("system cancellation release = released:%v cause:%v", released, cause)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		t.Fatalf("system cancellation published outbound: %+v", outbound)
+	default:
+	}
+}
+
+func TestSteeringAckFailureRejectsRootSettlement(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	ackErr := errors.New("steering ack failed")
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: msgBus,
+		ackErrByID: map[string]error{"spool-steering": ackErr},
+	}
+	al.bus = trackingBus
+
+	err := al.settleSteeringMessages(
+		finalResponseAdmission{status: finalResponseAdmissionAccepted},
+		[]providers.Message{{InboundSpoolID: "spool-steering"}},
+	)
+	if !errors.Is(err, ackErr) {
+		t.Fatalf("settleSteeringMessages() error = %v, want %v", err, ackErr)
+	}
+	al.settleInboundAdmission(
+		withOutboundTransaction(t.Context(), "spool-root"),
+		bus.InboundMessage{SpoolID: "spool-root"},
+		rejectedFinalResponseAdmission(err),
+	)
+	acked, released, _ := trackingBus.ownership()
+	if containsExactly(acked, "spool-root") ||
+		!containsExactly(released, "spool-steering", "spool-root") {
+		t.Fatalf("ownership after steering ack failure = acked:%v released:%v", acked, released)
+	}
 }
 
 func (b *finalResponseAdmissionTestBus) ReleaseInbound(

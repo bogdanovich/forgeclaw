@@ -13,6 +13,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) finalResponseAdmission {
@@ -22,19 +23,34 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 
 	_, routedAgent, _ := al.resolveMessageRoute(msg)
 	workspace, agentID := "", ""
+	channel, chatID, sessionKey := msg.Channel, msg.ChatID, msg.SessionKey
+	inboundCtx := &msg.Context
+	if msg.Channel == "system" {
+		origin := systemMessageOrigin(msg)
+		channel, chatID = origin.Channel, origin.ChatID
+		inboundCtx = &origin
+		routedAgent = al.GetRegistry().GetDefaultAgent()
+		if routedAgent != nil {
+			sessionKey = session.BuildMainSessionKey(routedAgent.ID)
+		}
+	}
 	if routedAgent != nil {
 		workspace, agentID = routedAgent.Workspace, routedAgent.ID
 	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
-		return al.maybePublishErrorWithPolicy(
+		if errors.Is(err, context.Canceled) {
+			return rejectedFinalResponseAdmission(err)
+		}
+		return al.publishResponseWithContextIfNeeded(
 			ctx,
 			workspace,
 			agentID,
-			msg.Channel,
-			msg.ChatID,
-			msg.SessionKey,
-			err,
+			channel,
+			chatID,
+			sessionKey,
+			formatUserFacingAgentError(err),
+			inboundCtx,
 			finalResponseAlwaysPublish,
 		)
 	}
@@ -42,18 +58,18 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		ctx,
 		workspace,
 		agentID,
-		msg.Channel,
-		msg.ChatID,
-		msg.SessionKey,
+		channel,
+		chatID,
+		sessionKey,
 		response,
-		&msg.Context,
+		inboundCtx,
 		finalResponseAlwaysPublish,
 	)
 }
 
-func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessage) {
+func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessage) error {
 	if msg.SpoolID == "" || al.bus == nil {
-		return
+		return nil
 	}
 	if err := al.bus.AckInbound(ctx, msg); err != nil {
 		logger.WarnCF("agent", "Failed to ack inbound spool entry",
@@ -64,7 +80,9 @@ func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessa
 				"session_key": msg.SessionKey,
 				"error":       err.Error(),
 			})
+		return err
 	}
+	return nil
 }
 
 func (al *AgentLoop) releaseInboundMessage(
@@ -186,7 +204,9 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			target.traceScopes,
 		)
 	}
-	al.settleSteeringMessages(aggregateAdmission, steeringAggregate.messages)
+	if settleErr := al.settleSteeringMessages(aggregateAdmission, steeringAggregate.messages); settleErr != nil {
+		return rejectedFinalResponseAdmission(settleErr)
+	}
 	if initialResponsePublished {
 		return initialAdmission
 	}
@@ -221,12 +241,12 @@ func (t *continuationTarget) takeUnsettledSteering() []providers.Message {
 func (al *AgentLoop) settleSteeringMessages(
 	admission finalResponseAdmission,
 	messages []providers.Message,
-) {
+) error {
 	if admission.permitsInboundAck() {
-		al.ackAcceptedSteeringMessages(context.Background(), messages)
-		return
+		return al.ackAcceptedSteeringMessagesChecked(context.Background(), messages)
 	}
 	al.releaseSteeringMessages(context.Background(), messages, admission.err)
+	return nil
 }
 
 type steeringAggregateInput struct {

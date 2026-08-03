@@ -429,6 +429,30 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 	}
 }
 
+func TestConfiguredStreamingUsesChatInsideDurableOutboundTransaction(t *testing.T) {
+	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
+	streamer := &recordingStreamer{}
+	msgBus := bus.NewMessageBus()
+	msgBus.SetStreamDelegate(configuredStreamingDelegate{streamer: streamer})
+	provider := &configuredStreamingProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	_, err := al.runAgentLoop(
+		withOutboundTransaction(t.Context(), "spool-streaming"),
+		al.GetRegistry().GetDefaultAgent(),
+		configuredStreamingProcessOptions("mintclaw"),
+	)
+	if err != nil {
+		t.Fatalf("runAgentLoop() error = %v", err)
+	}
+	if provider.streamCalls != 0 || provider.chatCalls != 1 {
+		t.Fatalf("provider calls = stream:%d chat:%d, want stream:0 chat:1", provider.streamCalls, provider.chatCalls)
+	}
+	if len(streamer.updates) != 0 || len(streamer.finalized) != 0 {
+		t.Fatalf("streamer activity = updates:%v finalized:%v", streamer.updates, streamer.finalized)
+	}
+}
+
 func TestPipelineChannelStreamingConfig_UsesInjectedProvider(t *testing.T) {
 	provider := &testChannelStreamingProvider{
 		config:  config.StreamingConfig{Enabled: true},

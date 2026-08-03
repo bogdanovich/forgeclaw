@@ -1378,7 +1378,7 @@ func TestMalformedMultilineAnswerCanRetryAndResumeExactlyOnce(t *testing.T) {
 		Context: inboundContextForInteraction(request.Route),
 	}
 	malformed.Context.MessageID = "malformed-answer"
-	ownership, err := al.processInteractionInbound(t.Context(), malformed, target)
+	ownership, _, err := al.processInteractionInbound(t.Context(), malformed, target)
 	if err != nil || ownership != interactionInboundCallerOwned {
 		t.Fatalf("malformed processInteractionInbound() = (%v, %v)", ownership, err)
 	}
@@ -1401,7 +1401,7 @@ func TestMalformedMultilineAnswerCanRetryAndResumeExactlyOnce(t *testing.T) {
 		Context: inboundContextForInteraction(request.Route),
 	}
 	valid.Context.MessageID = "valid-answer"
-	ownership, err = al.processInteractionInbound(t.Context(), valid, target)
+	ownership, _, err = al.processInteractionInbound(t.Context(), valid, target)
 	if err != nil || ownership != interactionInboundClaimed {
 		t.Fatalf("valid processInteractionInbound() = (%v, %v)", ownership, err)
 	}
@@ -3081,7 +3081,7 @@ func TestReloadWhileWaitingResumesAgainstPersistedSession(t *testing.T) {
 		Context: inboundContextForInteraction(request.Route),
 	}
 	msg.Context.MessageID = "answer-after-reload"
-	ownership, err := al.processInteractionInbound(t.Context(), msg, target)
+	ownership, _, err := al.processInteractionInbound(t.Context(), msg, target)
 	if err != nil || ownership != interactionInboundClaimed {
 		t.Fatalf("processInteractionInbound() = (%v, %v)", ownership, err)
 	}

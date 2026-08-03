@@ -245,7 +245,11 @@ func (c *inboundTurnCoordinator) consumeExplicitInteractionAnswer(
 	record := classification.Record
 	logExplicitInteractionAnswerDisposition(record, msg, disposition)
 	if disposition == explicitInteractionAnswerReplay {
-		c.al.ackInboundMessage(ctx, msg)
+		c.al.settleInboundAdmission(
+			ctx,
+			msg,
+			finalResponseAdmission{status: finalResponseAdmissionNotRequired},
+		)
 		return
 	}
 	sessionKey := target.SessionKey
@@ -262,11 +266,11 @@ func (c *inboundTurnCoordinator) consumeExplicitInteractionAnswer(
 	case explicitInteractionAnswerUnavailable:
 		notice = "Pending input state is unavailable; this session cannot continue until it is recovered."
 	}
-	if err := c.al.publishInteractionNotice(ctx, msg, sessionKey, notice); err != nil {
-		c.al.releaseInboundMessage(context.Background(), msg, err)
-		return
-	}
-	c.al.ackInboundMessage(ctx, msg)
+	c.al.settleInboundAdmission(
+		ctx,
+		msg,
+		c.al.publishInteractionNoticeAdmission(ctx, msg, sessionKey, notice),
+	)
 }
 
 func logExplicitInteractionAnswerDisposition(
@@ -402,7 +406,7 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 		defer c.al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
-	ownership, processErr := c.al.processInteractionInbound(ctx, msg, target)
+	ownership, admission, processErr := c.al.processInteractionInbound(ctx, msg, target)
 	if processErr != nil {
 		logger.WarnCF("agent", "Failed to process human interaction answer", map[string]any{
 			"session_key": target.SessionKey,
@@ -417,7 +421,9 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 		return
 	}
 	if ownership == interactionInboundCallerOwned {
-		c.al.ackInboundMessage(ctx, msg)
+		if err := c.al.settleInboundAdmission(ctx, msg, admission); err != nil {
+			return
+		}
 	}
 	if c.al.hasNonterminalInteraction(target.Agent.Workspace, target.SessionKey) {
 		return
@@ -452,8 +458,11 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	}
 	steeringAggregate, err := al.drainSteeringForAggregate(ctx, target)
 	if err != nil {
-		al.settleSteeringMessages(rejectedFinalResponseAdmission(err), steeringAggregate.messages)
-		return err
+		settleErr := al.settleSteeringMessages(
+			rejectedFinalResponseAdmission(err),
+			steeringAggregate.messages,
+		)
+		return errors.Join(err, settleErr)
 	}
 	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	if strings.TrimSpace(steeringAggregate.response) != "" {
@@ -471,7 +480,9 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 			target.traceScopes,
 		)
 	}
-	al.settleSteeringMessages(admission, steeringAggregate.messages)
+	if settleErr := al.settleSteeringMessages(admission, steeringAggregate.messages); settleErr != nil {
+		return settleErr
+	}
 	if !admission.permitsInboundAck() {
 		return admission.err
 	}
@@ -482,10 +493,11 @@ func (al *AgentLoop) processInteractionInbound(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	target *inboundDispatchTarget,
-) (interactionInboundOwnership, error) {
+) (interactionInboundOwnership, finalResponseAdmission, error) {
+	notRequired := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
 	if registry.LastLoadError() != nil {
-		return interactionInboundCallerOwned, al.publishInteractionNotice(
+		return al.interactionNoticeResult(
 			ctx,
 			msg,
 			target.SessionKey,
@@ -494,15 +506,17 @@ func (al *AgentLoop) processInteractionInbound(
 	}
 	record, ok := activeInteractionForSession(registry, target.SessionKey)
 	if !ok {
-		return interactionInboundCallerOwned, fmt.Errorf(
+		return interactionInboundCallerOwned, notRequired, fmt.Errorf(
 			"active interaction disappeared for session %q",
 			target.SessionKey,
 		)
 	}
 	if record.Status == interactions.StatusClaimed || record.Status == interactions.StatusResuming {
 		if interactionInboundReplaysAnswer(record, msg.Context) {
-			al.ackInboundMessage(ctx, msg)
-			return interactionInboundClaimed, al.resumeClaimedInteraction(
+			if err := al.settleInboundAdmission(ctx, msg, notRequired); err != nil {
+				return interactionInboundClaimed, notRequired, err
+			}
+			return interactionInboundClaimed, notRequired, al.resumeClaimedInteraction(
 				ctx,
 				registry,
 				target.Agent.Workspace,
@@ -518,41 +532,41 @@ func (al *AgentLoop) processInteractionInbound(
 				msg,
 				explicitInteractionAnswerDuplicate,
 			)
-			return interactionInboundCallerOwned, al.publishInteractionNotice(
+			return interactionInboundCallerOwned, al.publishInteractionNoticeAdmission(
 				ctx,
 				msg,
 				target.SessionKey,
 				"An answer has already been accepted for this interaction.",
-			)
+			), nil
 		}
 		if err := newInboundTurnCoordinator(al).enqueueDeferredInteractionInbound(
 			ctx,
 			msg,
 			target,
 		); err != nil {
-			return interactionInboundCallerOwned, err
+			return interactionInboundCallerOwned, notRequired, err
 		}
-		return interactionInboundDeferred, nil
+		return interactionInboundDeferred, notRequired, nil
 	}
 	if record.Status != interactions.StatusWaiting {
-		return interactionInboundCallerOwned, fmt.Errorf(
+		return interactionInboundCallerOwned, notRequired, fmt.Errorf(
 			"interaction %q is not accepting input from status %q",
 			record.ID,
 			record.Status,
 		)
 	}
 	if !interactionRouteAuthorizes(record.Route, target, msg.Context) {
-		return interactionInboundCallerOwned, al.publishInteractionNotice(
+		return interactionInboundCallerOwned, al.publishInteractionNoticeAdmission(
 			ctx,
 			msg,
 			target.SessionKey,
 			"This session is waiting for an answer from the authorized user.",
-		)
+		), nil
 	}
 	answerContent := al.interactionAnswerContent(record, msg)
 	answer, err := parseInteractionAnswer(record, answerContent, msg.Context.MessageID)
 	if err != nil {
-		return interactionInboundCallerOwned, al.publishInteractionNotice(
+		return al.interactionNoticeResult(
 			ctx,
 			msg,
 			target.SessionKey,
@@ -568,17 +582,19 @@ func (al *AgentLoop) processInteractionInbound(
 	)
 	if err != nil {
 		if errors.Is(err, interactions.ErrAnswerTooLate) || errors.Is(err, interactions.ErrDuplicateAnswer) {
-			return interactionInboundCallerOwned, al.publishInteractionNotice(
+			return interactionInboundCallerOwned, al.publishInteractionNoticeAdmission(
 				ctx,
 				msg,
 				target.SessionKey,
 				"An answer is already being processed for this session.",
-			)
+			), nil
 		}
-		return interactionInboundCallerOwned, err
+		return interactionInboundCallerOwned, notRequired, err
 	}
-	al.ackInboundMessage(ctx, msg)
-	return interactionInboundClaimed, al.resumeClaimedInteraction(
+	if err := al.settleInboundAdmission(ctx, msg, notRequired); err != nil {
+		return interactionInboundClaimed, notRequired, err
+	}
+	return interactionInboundClaimed, notRequired, al.resumeClaimedInteraction(
 		ctx,
 		registry,
 		target.Agent.Workspace,
@@ -587,6 +603,15 @@ func (al *AgentLoop) processInteractionInbound(
 		msg.Context,
 		claimed,
 	)
+}
+
+func (al *AgentLoop) interactionNoticeResult(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	sessionKey string,
+	content string,
+) (interactionInboundOwnership, finalResponseAdmission, error) {
+	return interactionInboundCallerOwned, al.publishInteractionNoticeAdmission(ctx, msg, sessionKey, content), nil
 }
 
 func (al *AgentLoop) interactionAnswerContent(record interactions.Record, msg bus.InboundMessage) string {
@@ -790,22 +815,30 @@ func isInteractionAnswerCommandToken(token string) bool {
 	return true
 }
 
-func (al *AgentLoop) publishInteractionNotice(
+func (al *AgentLoop) publishInteractionNoticeAdmission(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	sessionKey string,
 	content string,
-) error {
+) finalResponseAdmission {
 	if al == nil || al.bus == nil {
-		return fmt.Errorf("message bus unavailable")
+		return rejectedFinalResponseAdmission(fmt.Errorf("message bus unavailable"))
 	}
-	return al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-		Channel:    msg.Channel,
-		ChatID:     msg.ChatID,
-		Context:    outboundContextFromInbound(&msg.Context, msg.Channel, msg.ChatID, msg.MessageID),
-		SessionKey: sessionKey,
-		Content:    content,
-	})
+	workspace, agentID := "", ""
+	if _, routedAgent, _ := al.resolveMessageRoute(msg); routedAgent != nil {
+		workspace, agentID = routedAgent.Workspace, routedAgent.ID
+	}
+	return al.publishResponseWithContextIfNeeded(
+		ctx,
+		workspace,
+		agentID,
+		msg.Channel,
+		msg.ChatID,
+		sessionKey,
+		content,
+		&msg.Context,
+		finalResponseAlwaysPublish,
+	)
 }
 
 type interactionToolResultPayload struct {
@@ -962,7 +995,12 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		if deliveryErr != nil {
 			admission = rejectedFinalResponseAdmission(deliveryErr)
 		}
-		al.settleSteeringMessages(admission, deliveryObservation.takeUnsettledSteering())
+		if settleErr := al.settleSteeringMessages(
+			admission,
+			deliveryObservation.takeUnsettledSteering(),
+		); settleErr != nil {
+			deliveryErr = errors.Join(deliveryErr, settleErr)
+		}
 	}
 	return deliveryErr
 }

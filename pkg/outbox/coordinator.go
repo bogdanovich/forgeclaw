@@ -15,12 +15,13 @@ import (
 // Coordinator owns admission to one instance-wide outbox. Agent workspaces are
 // record metadata, never independent stores or delivery-ID lookup scopes.
 type Coordinator struct {
-	mu     sync.Mutex
-	store  *Store
-	root   string
-	leases map[string]uint64
-	now    func() time.Time
-	closed bool
+	mu        sync.Mutex
+	store     *Store
+	root      string
+	leases    map[string]uint64
+	published map[string]bool
+	now       func() time.Time
+	closed    bool
 }
 
 var coordinatorRoots = struct {
@@ -42,6 +43,7 @@ type DispatchLease struct {
 type Admission struct {
 	Intent   Intent
 	Dispatch bool
+	InFlight bool
 	Lease    DispatchLease
 }
 
@@ -73,10 +75,33 @@ func OpenCoordinator(instanceRoot string) (*Coordinator, error) {
 
 func newCoordinator(store *Store) *Coordinator {
 	return &Coordinator{
-		store:  store,
-		leases: make(map[string]uint64),
-		now:    time.Now,
+		store:     store,
+		leases:    make(map[string]uint64),
+		published: make(map[string]bool),
+		now:       time.Now,
 	}
+}
+
+// CommitAdmission records successful transfer to the in-memory delivery bus.
+// It suppresses same-process replay while the durable channel outcome remains pending.
+func (c *Coordinator) CommitAdmission(lease DispatchLease) error {
+	if c == nil || c.store == nil {
+		return errors.New("outbox coordinator is unavailable")
+	}
+	if lease.deliveryID == "" || lease.generation == 0 {
+		return errors.New("dispatch lease is required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return err
+	}
+	if c.leases[lease.deliveryID] != lease.generation {
+		return fmt.Errorf("dispatch lease for %q is stale", lease.deliveryID)
+	}
+	delete(c.leases, lease.deliveryID)
+	c.published[lease.deliveryID] = true
+	return nil
 }
 
 // Close releases the process-wide ownership fence for this instance root.
@@ -149,6 +174,10 @@ func (c *Coordinator) ReleaseAdmission(lease DispatchLease) error {
 	if c.leases[lease.deliveryID] != lease.generation {
 		return fmt.Errorf("dispatch lease for %q is stale", lease.deliveryID)
 	}
+	// The exact lease is sufficient proof that this caller owns the unsent
+	// publication. Relinquish it even if the diagnostic record read fails, so a
+	// later admission can retry instead of mistaking a stale lease for an owner.
+	delete(c.leases, lease.deliveryID)
 	intent, err := c.store.Get(lease.deliveryID)
 	if err != nil {
 		return err
@@ -156,7 +185,6 @@ func (c *Coordinator) ReleaseAdmission(lease DispatchLease) error {
 	if intent.Status != StatusPending && intent.Status != StatusDefinitelyFailed {
 		return fmt.Errorf("outbox intent %q is %q, not dispatchable", lease.deliveryID, intent.Status)
 	}
-	delete(c.leases, lease.deliveryID)
 	return nil
 }
 
@@ -173,14 +201,15 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 	}
 	dispatchable := intent.Status == StatusPending || intent.Status == StatusDefinitelyFailed
 	_, leased := c.leases[intent.ID]
-	dispatch := dispatchable && !leased
+	published := c.published[intent.ID]
+	dispatch := dispatchable && !leased && !published
 	var lease DispatchLease
 	if dispatch {
 		generation := dispatchLeaseSequence.Add(1)
 		c.leases[intent.ID] = generation
 		lease = DispatchLease{deliveryID: intent.ID, generation: generation}
 	}
-	return Admission{Intent: intent, Dispatch: dispatch, Lease: lease}, nil
+	return Admission{Intent: intent, Dispatch: dispatch, InFlight: dispatchable && leased, Lease: lease}, nil
 }
 
 func (c *Coordinator) validateOpenLocked() error {

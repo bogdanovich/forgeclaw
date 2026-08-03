@@ -282,10 +282,10 @@ func (al *AgentLoop) publishResponseWithMetadataAndScopes(
 	}
 	metadata.ApplyToContext(&msg.Context)
 	markFinalOutbound(&msg)
-	if err := al.bus.PublishOutbound(ctx, msg); err != nil {
+	if _, err := al.publishTransactionMessage(ctx, workspace, msg); err != nil {
 		return rejectedFinalResponseAdmission(err)
 	}
-	return finalResponseAdmission{status: finalResponseAdmissionAccepted}
+	return transactionAdmission(ctx, finalResponseAdmission{status: finalResponseAdmissionAccepted})
 }
 
 func outboundMetadataForTurnResult(result turnResult) bus.OutboundMetadata {
@@ -525,7 +525,8 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 			return nil, toolResultDeliveryNone, err
 		}
 		outboundMedia.TraceSettlement = traceSettlement
-		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
+		if !hasOutboundTransaction(ctx) && al.channelManager != nil && ts.channel != "" &&
+			!constants.IsInternalChannel(ts.channel) {
 			sendMedia := al.channelManager.SendMedia
 			if toolName == "final_turn" {
 				provisional, ok := al.channelManager.(agentinterfaces.ProvisionalChannelSender)
@@ -554,7 +555,7 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 			return buildProviderAttachments(al.mediaStore, mediaRefs), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
-			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
+			if _, err := al.publishTransactionMedia(ctx, ts.workspace, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
 			return nil, toolResultDeliveryQueued, nil
@@ -577,7 +578,7 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 	}
 	applyToolResultOutboundMetadata(result, &outbound.Context)
 	outbound.TraceSettlement = traceSettlement
-	if err := al.bus.PublishOutbound(ctx, outbound); err != nil {
+	if _, err := al.publishTransactionMessage(ctx, ts.workspace, outbound); err != nil {
 		return nil, toolResultDeliveryNone, err
 	}
 	logger.DebugCF("agent", "Sent tool result to user",
@@ -628,10 +629,8 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			return nil, toolResultDeliveryNone, err
 		}
 		outboundMedia.TraceSettlement = traceSettlement
-		if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
-			if err := commitToolResultOutbound(ctx, result); err != nil {
-				return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool media: %w", err)
-			}
+		if !hasOutboundTransaction(ctx) && al.channelManager != nil && channel != "" &&
+			!constants.IsInternalChannel(channel) {
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
 				logger.WarnCF("agent", "Failed to deliver explicit tool media",
 					map[string]any{
@@ -643,14 +642,17 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 					})
 				return nil, toolResultDeliveryNone, err
 			}
+			if err := commitToolResultOutbound(ctx, result); err != nil {
+				return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool media delivery: %w", err)
+			}
 			return buildProviderAttachmentsFromMediaParts(out.Media), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
-			if err := commitToolResultOutbound(ctx, result); err != nil {
-				return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool media: %w", err)
-			}
-			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
+			if _, err := al.publishTransactionMedia(ctx, ts.workspace, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
+			}
+			if err := commitToolResultOutbound(ctx, result); err != nil {
+				return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool media delivery: %w", err)
 			}
 			return nil, toolResultDeliveryQueued, nil
 		}
@@ -674,21 +676,22 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		return nil, toolResultDeliveryNone, err
 	}
 	outboundMessage.TraceSettlement = traceSettlement
-	if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
-		if err := commitToolResultOutbound(ctx, result); err != nil {
-			return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool message: %w", err)
-		}
+	if !hasOutboundTransaction(ctx) && al.channelManager != nil && channel != "" &&
+		!constants.IsInternalChannel(channel) {
 		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
+		}
+		if err := commitToolResultOutbound(ctx, result); err != nil {
+			return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool message delivery: %w", err)
 		}
 		return nil, toolResultDeliveryDirect, nil
 	}
 	if al.bus != nil {
-		if err := commitToolResultOutbound(ctx, result); err != nil {
-			return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool message: %w", err)
-		}
-		if err := al.bus.PublishOutbound(ctx, outboundMessage); err != nil {
+		if _, err := al.publishTransactionMessage(ctx, ts.workspace, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
+		}
+		if err := commitToolResultOutbound(ctx, result); err != nil {
+			return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool message delivery: %w", err)
 		}
 		return nil, toolResultDeliveryQueued, nil
 	}
