@@ -461,22 +461,40 @@ func (runtime *Runtime) executeAccepted(
 	raw, err := json.Marshal(result)
 	if err != nil {
 		encodeErr := fmt.Errorf("encode command output: %w", err)
-		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
-			Code:    "INVALID_OUTPUT",
-			Message: "node command returned invalid output",
-		}, encodeErr)
+		return nil, runtime.completeInvalidOutput(plan, encodeErr)
 	}
 	raw, err = nodes.ValidateInvocationOutput(handler.descriptor(), raw, plan.OutputLimitBytes)
 	if err != nil {
-		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
-			Code:    "INVALID_OUTPUT",
-			Message: "node command returned invalid output",
-		}, err)
+		return nil, runtime.completeInvalidOutput(plan, err)
 	}
 	if _, err := runtime.ledger.CompleteSuccess(plan.InvocationID, raw); err != nil {
 		return nil, fmt.Errorf("%w: persist successful result: %v", ErrInvocationOutcomeUnknown, err)
 	}
 	return raw, nil
+}
+
+func (runtime *Runtime) completeInvalidOutput(
+	plan nodes.ExecutionPlan,
+	err error,
+) error {
+	if plan.Command == "service.action.v1" {
+		if _, markErr := runtime.ledger.MarkUnknown(plan.InvocationID); markErr != nil {
+			return fmt.Errorf(
+				"%w: persist uncertain service action output: %v",
+				ErrInvocationOutcomeUnknown,
+				markErr,
+			)
+		}
+		return fmt.Errorf(
+			"%w: service action completed with invalid output: %v",
+			ErrInvocationOutcomeUnknown,
+			err,
+		)
+	}
+	return runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+		Code:    "INVALID_OUTPUT",
+		Message: "node command returned invalid output",
+	}, err)
 }
 
 func (runtime *Runtime) Cancel(

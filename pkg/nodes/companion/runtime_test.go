@@ -901,7 +901,15 @@ func testRuntimePlan(
 	command string,
 	input json.RawMessage,
 ) nodes.ExecutionPlan {
-	return testRuntimePlanAt(t, runtime, command, input, time.Now(), time.Minute)
+	return testRuntimePlanAtWithOutputLimit(
+		t,
+		runtime,
+		command,
+		input,
+		time.Now(),
+		time.Minute,
+		4096,
+	)
 }
 
 func testRuntimePlanAt(
@@ -911,6 +919,26 @@ func testRuntimePlanAt(
 	input json.RawMessage,
 	preparedAt time.Time,
 	ttl time.Duration,
+) nodes.ExecutionPlan {
+	return testRuntimePlanAtWithOutputLimit(
+		t,
+		runtime,
+		command,
+		input,
+		preparedAt,
+		ttl,
+		4096,
+	)
+}
+
+func testRuntimePlanAtWithOutputLimit(
+	t *testing.T,
+	runtime *Runtime,
+	command string,
+	input json.RawMessage,
+	preparedAt time.Time,
+	ttl time.Duration,
+	outputLimitBytes int,
 ) nodes.ExecutionPlan {
 	t.Helper()
 	catalog := runtime.Catalog()
@@ -949,7 +977,7 @@ func testRuntimePlanAt(
 		SessionID:        "session_test",
 		ActorID:          "actor_test",
 		TimeoutSeconds:   5,
-		OutputLimitBytes: 4096,
+		OutputLimitBytes: outputLimitBytes,
 	}, descriptor, LocalExecutor, runtime.policy.Revision, preparedAt, ttl)
 	if err != nil {
 		t.Fatal(err)

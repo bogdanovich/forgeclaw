@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -105,6 +106,16 @@ func (handler *serviceCommandHandler) execute(
 		result, logsErr = boundServiceLogs(result, invocation.OutputLimitBytes)
 		return result, serviceCommandError(ctx, logsErr)
 	case ServiceActionRequest:
+		if envelopeErr := handler.validateActionOutputEnvelope(
+			typed,
+			invocation.OutputLimitBytes,
+		); envelopeErr != nil {
+			return nil, newCommandFailure(
+				"OUTPUT_LIMIT_TOO_SMALL",
+				"service action output limit is too small",
+				envelopeErr,
+			)
+		}
 		result, actionErr := handler.controller.Action(ctx, typed)
 		if actionErr != nil {
 			return nil, serviceCommandError(ctx, actionErr)
@@ -124,6 +135,22 @@ func (handler *serviceCommandHandler) execute(
 	default:
 		return nil, ErrCommandUnavailable
 	}
+}
+
+func (handler *serviceCommandHandler) validateActionOutputEnvelope(
+	request ServiceActionRequest,
+	bytesMax int,
+) error {
+	minimum := ServiceActionResult{
+		Service: request.Service, Action: request.Action,
+		State: "unknown", AcceptedAt: 1, Code: "unknown",
+	}
+	raw, err := json.Marshal(minimum)
+	if err != nil {
+		return err
+	}
+	_, err = nodes.ValidateInvocationOutput(handler.descriptorValue, raw, bytesMax)
+	return err
 }
 
 func boundServiceLogs(logs ServiceLogs, bytesMax int) (ServiceLogs, error) {

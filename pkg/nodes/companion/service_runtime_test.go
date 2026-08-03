@@ -204,6 +204,68 @@ func TestRuntimePersistsUnknownServiceActionWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestRuntimePreservesUnknownAfterAcceptedActionOutputFailure(t *testing.T) {
+	manager := newFakeServiceController()
+	runtime := newServiceTestRuntime(t, manager)
+	minimum, err := json.Marshal(ServiceActionResult{
+		Service: "vpn", Action: nodes.ServiceActionRestart,
+		State: "unknown", AcceptedAt: 1, Code: "unknown",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := json.Marshal(manager.actionResult)
+	if err != nil || len(completed) <= len(minimum) {
+		t.Fatalf("action output fixture sizes = (%d, %d), error %v", len(minimum), len(completed), err)
+	}
+	plan := testRuntimePlanAtWithOutputLimit(
+		t,
+		runtime,
+		"service.action.v1",
+		json.RawMessage(`{"service":"vpn","action":"restart"}`),
+		time.Now(),
+		time.Minute,
+		len(minimum),
+	)
+	if _, err := runtime.Invoke(t.Context(), plan); !errors.Is(err, ErrInvocationOutcomeUnknown) {
+		t.Fatalf("accepted action output error = %v", err)
+	}
+	if _, err := runtime.Invoke(t.Context(), plan); !errors.Is(err, ErrInvocationOutcomeUnknown) {
+		t.Fatalf("duplicate accepted action output error = %v", err)
+	}
+	record, found, err := runtime.Invocation(plan.InvocationID)
+	if err != nil || !found || record.State != nodes.InvocationUnknown {
+		t.Fatalf("accepted action output record = %#v, found %v, error %v", record, found, err)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.actionCalls != 1 {
+		t.Fatalf("accepted action output executions = %d", manager.actionCalls)
+	}
+}
+
+func TestRuntimeRejectsImpossibleActionOutputBeforeController(t *testing.T) {
+	manager := newFakeServiceController()
+	runtime := newServiceTestRuntime(t, manager)
+	plan := testRuntimePlanAtWithOutputLimit(
+		t,
+		runtime,
+		"service.action.v1",
+		json.RawMessage(`{"service":"vpn","action":"restart"}`),
+		time.Now(),
+		time.Minute,
+		1,
+	)
+	if _, err := runtime.Invoke(t.Context(), plan); err == nil || errors.Is(err, ErrInvocationOutcomeUnknown) {
+		t.Fatalf("impossible action output error = %v", err)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.actionCalls != 0 {
+		t.Fatalf("impossible action output reached controller: %d", manager.actionCalls)
+	}
+}
+
 func TestRuntimeConfirmsPreAcceptanceServiceCancellation(t *testing.T) {
 	manager := newFakeServiceController()
 	manager.blockAction = true
