@@ -306,6 +306,88 @@ func TestToolFeedbackCoordinator_ReplacementTerminalDeletesBothMessages(t *testi
 	}
 }
 
+func TestToolFeedbackCoordinator_ReplacementTerminalRetriesLateMessageCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	replacementStarted := make(chan struct{})
+	releaseReplacement := make(chan struct{})
+	progressTwoDeleteAttempts := 0
+	progressOneDeleted := false
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return ErrSendFailed },
+		delete: func(_ context.Context, _, messageID string) error {
+			if messageID == "progress-1" {
+				progressOneDeleted = true
+				return nil
+			}
+			progressTwoDeleteAttempts++
+			if progressTwoDeleteAttempts <= 3 {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	deliverDone := make(chan []string, 1)
+	go func() {
+		ids, _ := coordinator.Deliver(
+			context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+			func(context.Context, string) ([]string, error) {
+				close(replacementStarted)
+				<-releaseReplacement
+				return []string{"progress-2"}, nil
+			},
+		)
+		deliverDone <- ids
+	}()
+	<-replacementStarted
+
+	terminal := coordinator.BeginTerminal("feishu:chat-1")
+	terminalDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(terminalDone)
+	}()
+	close(releaseReplacement)
+	if ids := <-deliverDone; len(ids) != 0 {
+		t.Fatalf("replacement IDs = %v, want none after terminal", ids)
+	}
+	<-terminalDone
+
+	entry := coordinator.findEntry("feishu:chat-1")
+	if entry == nil {
+		t.Fatal("retained terminal entry was removed")
+	}
+	entry.mu.Lock()
+	pending := len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if !progressOneDeleted || pending != 1 || progressTwoDeleteAttempts != 3 {
+		t.Fatalf(
+			"current deleted = %v, pending = %d, late attempts = %d; want true, 1, 3",
+			progressOneDeleted,
+			pending,
+			progressTwoDeleteAttempts,
+		)
+	}
+
+	coordinator.maintainCleanup("feishu:chat-1", entry)
+	entry.mu.Lock()
+	pending = len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if progressTwoDeleteAttempts != 4 || pending != 0 {
+		t.Fatalf(
+			"late attempts = %d, pending = %d; want 4, 0",
+			progressTwoDeleteAttempts,
+			pending,
+		)
+	}
+}
+
 func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()
@@ -499,6 +581,73 @@ func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testin
 	<-completed
 	if count := coordinator.ActiveCount(); count != 0 {
 		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_PendingSendTerminalRetriesLateMessageCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	deleteAttempts := 0
+	deliverDone := make(chan []string, 1)
+
+	go func() {
+		ids, err := coordinator.Deliver(
+			context.Background(),
+			"telegram:chat-1",
+			"chat-1",
+			"Working...",
+			toolFeedbackOperations{delete: func(context.Context, string, string) error {
+				deleteAttempts++
+				if deleteAttempts <= 3 {
+					return ErrTemporary
+				}
+				return nil
+			}},
+			func(context.Context, string) ([]string, error) {
+				close(sendStarted)
+				<-releaseSend
+				return []string{"progress-1"}, nil
+			},
+		)
+		if err != nil {
+			t.Errorf("Deliver() error = %v", err)
+		}
+		deliverDone <- ids
+	}()
+	<-sendStarted
+
+	terminal := coordinator.BeginTransientTerminal("telegram:chat-1")
+	terminalDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(terminalDone)
+	}()
+	close(releaseSend)
+	if ids := <-deliverDone; len(ids) != 0 {
+		t.Fatalf("superseded Deliver() IDs = %v, want none", ids)
+	}
+	<-terminalDone
+
+	entry := coordinator.findEntry("telegram:chat-1")
+	if entry == nil {
+		t.Fatal("late cleanup failure did not retain the coordinator entry")
+	}
+	entry.mu.Lock()
+	pending := len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if pending != 1 || deleteAttempts != 3 {
+		t.Fatalf("pending cleanup = %d, attempts = %d; want 1, 3", pending, deleteAttempts)
+	}
+
+	coordinator.maintainCleanup("telegram:chat-1", entry)
+	if deleteAttempts != 4 || coordinator.ActiveCount() != 0 {
+		t.Fatalf(
+			"cleanup attempts = %d, active = %d; want 4, 0",
+			deleteAttempts,
+			coordinator.ActiveCount(),
+		)
 	}
 }
 

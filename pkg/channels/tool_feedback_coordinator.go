@@ -233,7 +233,9 @@ func (c *ToolFeedbackCoordinator) deliver(
 	entry.mu.Unlock()
 
 	if len(messageIDs) > 0 && (terminal || retired) {
-		deleteToolFeedbackMessage(ctx, operations.delete, chatID, messageIDs[0])
+		c.cleanupLateMessage(ctx, key, entry, trackedToolFeedbackMessage{
+			chatID: chatID, messageID: messageIDs[0], operations: operations,
+		})
 		messageIDs = nil
 	}
 	if !terminal && !retired {
@@ -271,7 +273,9 @@ func (c *ToolFeedbackCoordinator) replaceTrackedMessage(
 	if len(messageIDs) == 0 || !trackable || terminal || retired || !unchanged {
 		entry.mu.Unlock()
 		if len(messageIDs) > 0 && (terminal || retired || !unchanged) {
-			deleteToolFeedbackMessage(ctx, operations.delete, chatID, messageIDs[0])
+			c.cleanupLateMessage(ctx, key, entry, trackedToolFeedbackMessage{
+				chatID: chatID, messageID: messageIDs[0], operations: operations,
+			})
 			messageIDs = nil
 		}
 		return messageIDs, sendErr
@@ -337,6 +341,28 @@ func newPendingToolFeedbackCleanup(message trackedToolFeedbackMessage) pendingTo
 		message:   message,
 		expiresAt: time.Now().Add(toolFeedbackCleanupRetention),
 	}
+}
+
+func (c *ToolFeedbackCoordinator) cleanupLateMessage(
+	ctx context.Context,
+	key string,
+	entry *toolFeedbackEntry,
+	message trackedToolFeedbackMessage,
+) {
+	err := tryDeleteToolFeedbackMessage(
+		ctx, message.operations.delete, message.chatID, message.messageID,
+	)
+	if err == nil || errors.Is(err, ErrSendFailed) || errors.Is(err, ErrNotRunning) {
+		return
+	}
+	entry.mu.Lock()
+	if entry.retired {
+		entry.mu.Unlock()
+		return
+	}
+	entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(message))
+	entry.mu.Unlock()
+	c.scheduleCleanupMaintenance(key, entry, toolFeedbackCleanupRetryDelay)
 }
 
 func (c *ToolFeedbackCoordinator) BeginTerminal(key string) *toolFeedbackTerminal {
