@@ -108,7 +108,13 @@ though the causal user input and tool transcript are absent from canonical histo
 - Fault-injection tests cover append, flush, rename, and fsync failures.
 - Request cancellation and shutdown behavior are deterministic and do not depend on hidden background contexts.
 
-### R2: Outbound Delivery Has No Durable Owner
+### R2: Durable Outbound Delivery Ownership
+
+Status: implemented. Final text and media responses transfer to one canonical
+outbox before inbound acknowledgement. Typed adapter outcomes persist remote
+acceptance, platform IDs, and retry deadlines; startup replays only `pending`
+and `definitely_failed` records while interrupted attempts become `ambiguous`.
+See [Durable Outbound Delivery](durable-outbound-delivery.md).
 
 Fixing error propagation in R0 closes immediate fail-open behavior but does not protect a reply already accepted by
 the in-memory bus. A durable outbound outbox is needed to survive the process boundary.
