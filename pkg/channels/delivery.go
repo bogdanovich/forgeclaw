@@ -37,6 +37,7 @@ type DeliveryResult[T any] struct {
 	Acceptance DeliveryAcceptance
 	Remaining  []T
 	RetryAfter time.Duration
+	RetryAt    time.Time
 	Attempts   int
 	Err        error
 }
@@ -169,6 +170,9 @@ func DeliverWithRetry[T any](
 		if !result.Delivered() && result.Err == nil {
 			result.Err = errors.New("incomplete delivery result has no error")
 		}
+		if result.RetryAfter > 0 && result.RetryAt.IsZero() {
+			result.RetryAt = time.Now().UTC().Add(result.RetryAfter)
+		}
 		acceptanceUnknown = acceptanceUnknown || result.Ambiguous()
 		result.Attempts = attempt + 1
 		confirmedIDs = append(confirmedIDs, result.MessageIDs...)
@@ -233,10 +237,14 @@ func waitForDeliveryRetry[T any](
 	attempt int,
 ) error {
 	delay := result.RetryAfter
-	if delay <= 0 && errors.Is(result.Err, ErrRateLimit) {
+	hasDeadline := !result.RetryAt.IsZero()
+	if hasDeadline {
+		delay = time.Until(result.RetryAt)
+	}
+	if delay <= 0 && !hasDeadline && errors.Is(result.Err, ErrRateLimit) {
 		delay = policy.RateLimitDelay
 	}
-	if delay <= 0 && policy.BaseBackoff > 0 {
+	if delay <= 0 && !hasDeadline && policy.BaseBackoff > 0 {
 		delay = time.Duration(float64(policy.BaseBackoff) * math.Pow(2, float64(attempt)))
 		if policy.MaxBackoff > 0 {
 			delay = min(delay, policy.MaxBackoff)

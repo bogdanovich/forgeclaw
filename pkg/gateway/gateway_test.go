@@ -331,6 +331,37 @@ func TestConfigReloadRetainsOldRegistryWhenBrowserLeaseCannotDrain(t *testing.T)
 	}
 }
 
+func TestConfigReloadRequiresRestartForWorkspaceChange(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
+	msgBus := bus.NewMessageBus()
+	t.Cleanup(msgBus.Close)
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	t.Cleanup(al.Close)
+
+	reloadCfg := *cfg
+	reloadCfg.Agents.Defaults.Workspace = t.TempDir()
+	provider := providers.LLMProvider(&startupBlockedProvider{reason: "not used"})
+	err := handleConfigReload(
+		context.Background(),
+		al,
+		&reloadCfg,
+		&provider,
+		&services{},
+		msgBus,
+		true,
+		false,
+		time.Second,
+	)
+	if err == nil || !strings.Contains(err.Error(), "workspace changes require a gateway restart") {
+		t.Fatalf("handleConfigReload() error = %v, want restart requirement", err)
+	}
+	if al.GetConfig().WorkspacePath() != cfg.WorkspacePath() {
+		t.Fatalf("active workspace = %q, want %q", al.GetConfig().WorkspacePath(), cfg.WorkspacePath())
+	}
+}
+
 func TestBrowserToolLeaseRejectsRevokedGrantAfterSuccessfulReload(t *testing.T) {
 	cfg := gatewayBrowserConfig(t.TempDir())
 	cfg.Agents.Defaults.ContextManager = "none"

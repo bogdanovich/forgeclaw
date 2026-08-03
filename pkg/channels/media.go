@@ -13,3 +13,9 @@ import (
 type MediaSender interface {
 	SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error)
 }
+
+// MediaDeliverySender preserves typed transport metadata that the legacy
+// MediaSender signature cannot represent.
+type MediaDeliverySender interface {
+	SendMediaResult(ctx context.Context, pending []bus.OutboundMediaMessage) DeliveryResult[bus.OutboundMediaMessage]
+}

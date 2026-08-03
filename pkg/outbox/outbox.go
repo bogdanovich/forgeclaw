@@ -255,22 +255,27 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 
 // BeginAttempt persists the crash boundary immediately before a transport call.
 func (s *Store) BeginAttempt(id string) (Intent, error) {
-	return s.transition(id, StatusAttempting, Outcome{}, StatusPending, StatusAttempting, StatusDefinitelyFailed)
+	return s.transition(id, StatusAttempting, Outcome{}, false, StatusPending, StatusAttempting, StatusDefinitelyFailed)
+}
+
+// MarkDispatchRejected records a failure before any transport call was made.
+func (s *Store) MarkDispatchRejected(id string, outcome Outcome) (Intent, error) {
+	return s.transition(id, StatusDefinitelyFailed, outcome, true, StatusPending, StatusDefinitelyFailed)
 }
 
 // MarkDelivered records confirmed remote acceptance and platform message IDs.
 func (s *Store) MarkDelivered(id string, outcome Outcome) (Intent, error) {
-	return s.transition(id, StatusDelivered, outcome, StatusAttempting)
+	return s.transition(id, StatusDelivered, outcome, false, StatusAttempting)
 }
 
 // MarkDefinitelyFailed records a failure known to precede remote acceptance.
 func (s *Store) MarkDefinitelyFailed(id string, outcome Outcome) (Intent, error) {
-	return s.transition(id, StatusDefinitelyFailed, outcome, StatusAttempting)
+	return s.transition(id, StatusDefinitelyFailed, outcome, false, StatusAttempting)
 }
 
 // MarkAmbiguous records an outcome that may have been accepted remotely.
 func (s *Store) MarkAmbiguous(id string, outcome Outcome) (Intent, error) {
-	return s.transition(id, StatusAmbiguous, outcome, StatusAttempting)
+	return s.transition(id, StatusAmbiguous, outcome, false, StatusAttempting)
 }
 
 // Recover converts interrupted attempts to ambiguous and returns only records
@@ -313,7 +318,13 @@ func (s *Store) Get(id string) (Intent, error) {
 	return s.read(id)
 }
 
-func (s *Store) transition(id string, next Status, outcome Outcome, allowed ...Status) (Intent, error) {
+func (s *Store) transition(
+	id string,
+	next Status,
+	outcome Outcome,
+	refreshSame bool,
+	allowed ...Status,
+) (Intent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -321,7 +332,7 @@ func (s *Store) transition(id string, next Status, outcome Outcome, allowed ...S
 	if err != nil {
 		return Intent{}, err
 	}
-	if intent.Status == next && next != StatusAttempting {
+	if intent.Status == next && next != StatusAttempting && !refreshSame {
 		if err := s.write(intent); err != nil {
 			return Intent{}, err
 		}
