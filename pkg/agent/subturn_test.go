@@ -16,6 +16,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
@@ -3204,5 +3205,163 @@ func TestDelegateToolRegistered_MultiAgent(t *testing.T) {
 		if _, has := agent.Tools.Get("delegate"); !has {
 			t.Errorf("agent %q should have delegate tool in multi-agent setup", id)
 		}
+	}
+}
+
+func TestDurableSyncDelegateUserOnlyPublishesExactlyOnce(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call-delegate-user-only",
+				Name: "delegate",
+				Arguments: map[string]any{
+					"agent_id":      "beta",
+					"task":          "answer the user",
+					"delivery_mode": string(tools.AsyncDeliveryUserOnly),
+				},
+			}},
+		},
+		{Content: "child durable response", FinishReason: "stop"},
+	}}
+	al, cleanup := newMultiAgentLoop(t, provider)
+	defer cleanup()
+	root := t.TempDir()
+	installTestOutboundCoordinator(t, al, root)
+	msgBus, ok := al.bus.(*bus.MessageBus)
+	if !ok {
+		t.Fatal("test agent loop does not use MessageBus")
+	}
+	alpha, ok := al.registry.GetAgent("alpha")
+	if !ok {
+		t.Fatal("alpha agent not found")
+	}
+	alpha.Subagents = &config.SubagentsConfig{AllowAgents: []string{"beta"}}
+	ctx := withOutboundTransaction(t.Context(), "spool-delegate-user-only")
+
+	response, err := al.runAgentLoop(ctx, alpha, processOptions{
+		Dispatch: DispatchRequest{
+			SessionKey:  "delegate-parent-session",
+			UserMessage: "delegate this",
+			InboundContext: &bus.InboundContext{
+				Channel: "telegram",
+				ChatID:  "chat-1",
+			},
+		},
+		DefaultResponse:     defaultResponse,
+		ExpectFinalDelivery: true,
+		SendResponse:        false,
+		NoHistory:           true,
+	})
+	if err != nil {
+		t.Fatalf("runAgentLoop() error = %v", err)
+	}
+	if strings.TrimSpace(response) != "" {
+		admission := al.publishResponseWithContextIfNeeded(
+			ctx,
+			alpha.Workspace,
+			alpha.ID,
+			"telegram",
+			"chat-1",
+			"delegate-parent-session",
+			response,
+			nil,
+			finalResponseAlwaysPublish,
+		)
+		if !admission.permitsInboundAck() {
+			t.Fatalf("parent final admission = %+v", admission)
+		}
+	}
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content != "child durable response" || outbound.DeliveryID == "" {
+			t.Fatalf("delegate outbound = %+v", outbound)
+		}
+		store, openErr := outbox.Open(root)
+		if openErr != nil {
+			t.Fatalf("Open() error = %v", openErr)
+		}
+		if _, getErr := store.Get(outbound.DeliveryID); getErr != nil {
+			t.Fatalf("Get(%q) error = %v", outbound.DeliveryID, getErr)
+		}
+	default:
+		t.Fatal("delegate user-only result was not published")
+	}
+	select {
+	case duplicate := <-msgBus.OutboundChan():
+		t.Fatalf("delegate user-only result published twice: %+v", duplicate)
+	default:
+	}
+}
+
+func TestDurableSyncDelegateFailureRejectsRecoveredParentFinal(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call-delegate-rejected",
+				Name: "delegate",
+				Arguments: map[string]any{
+					"agent_id":      "beta",
+					"task":          "answer the user",
+					"delivery_mode": string(tools.AsyncDeliveryUserOnly),
+				},
+			}},
+		},
+		{Content: "child response", FinishReason: "stop"},
+		{Content: "parent recovered response", FinishReason: "stop"},
+	}}
+	al, cleanup := newMultiAgentLoop(t, provider)
+	defer cleanup()
+	installTestOutboundCoordinator(t, al, t.TempDir())
+	msgBus, ok := al.bus.(*bus.MessageBus)
+	if !ok {
+		t.Fatal("test agent loop does not use MessageBus")
+	}
+	childRejection := errors.New("child outbound rejected")
+	al.bus = &finalResponseAdmissionTestBus{
+		MessageBus:     msgBus,
+		publishResults: []error{childRejection, nil},
+	}
+	alpha, ok := al.registry.GetAgent("alpha")
+	if !ok {
+		t.Fatal("alpha agent not found")
+	}
+	alpha.Subagents = &config.SubagentsConfig{AllowAgents: []string{"beta"}}
+	ctx := withOutboundTransaction(t.Context(), "spool-delegate-rejected")
+
+	response, err := al.runAgentLoop(ctx, alpha, processOptions{
+		Dispatch: DispatchRequest{
+			SessionKey:  "delegate-rejected-session",
+			UserMessage: "delegate this",
+			InboundContext: &bus.InboundContext{
+				Channel: "telegram",
+				ChatID:  "chat-1",
+			},
+		},
+		DefaultResponse:     defaultResponse,
+		ExpectFinalDelivery: true,
+		SendResponse:        false,
+		NoHistory:           true,
+	})
+	if err != nil {
+		t.Fatalf("runAgentLoop() error = %v", err)
+	}
+	if response != "parent recovered response" {
+		t.Fatalf("parent response = %q", response)
+	}
+	admission := al.publishResponseWithContextIfNeeded(
+		ctx,
+		alpha.Workspace,
+		alpha.ID,
+		"telegram",
+		"chat-1",
+		"delegate-rejected-session",
+		response,
+		nil,
+		finalResponseAlwaysPublish,
+	)
+	admission = transactionAdmission(ctx, admission)
+	if admission.permitsInboundAck() || !errors.Is(admission.err, childRejection) {
+		t.Fatalf("recovered parent admission = %+v", admission)
 	}
 }

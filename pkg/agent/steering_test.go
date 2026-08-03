@@ -19,6 +19,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
@@ -709,6 +710,16 @@ func TestAgentLoop_Continue_AcksSteeringAcceptedDuringActiveTurn(t *testing.T) {
 	}
 }
 
+func installTestOutboundCoordinator(t *testing.T, al *AgentLoop, root string) {
+	t.Helper()
+	coordinator, err := outbox.OpenCoordinator(root)
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	al.SetOutboundOutbox(coordinator)
+	t.Cleanup(func() { _ = al.closeOutboundOutbox() })
+}
+
 // slowTool simulates a tool that takes some time to execute.
 type slowTool struct {
 	name     string
@@ -1264,6 +1275,7 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 		releaseFirstCall: make(chan struct{}),
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	installTestOutboundCoordinator(t, al, tmpDir)
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
@@ -1396,6 +1408,7 @@ func TestAgentLoop_Run_BatchesDeferredMessagesBySenderIntoOneContinuationTurn(t 
 		releaseFirstCall: make(chan struct{}),
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	installTestOutboundCoordinator(t, al, tmpDir)
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
@@ -1711,6 +1724,7 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 		releaseFirstCall: make(chan struct{}),
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	installTestOutboundCoordinator(t, al, tmpDir)
 	monitoredBus := &recordingMessageBus{MessageBus: al.bus}
 	al.bus = monitoredBus
 
