@@ -260,7 +260,10 @@ func (server *serviceHelperServer) handleConnection(
 		return
 	}
 	if request.Kind == serviceHelperRequestCancel {
-		server.cancel(request.TargetRequestID, request.ExpiresAt)
+		if !server.cancel(request.TargetRequestID, request.ExpiresAt) {
+			server.writeError(connection, request.RequestID, request.ExpiresAt, "CANCEL_CAPACITY")
+			return
+		}
 		_ = writeServiceHelperConnectionResponse(connection, request.ExpiresAt, serviceHelperResponse{
 			Version:   ServiceHelperProtocolVersion,
 			Kind:      serviceHelperRequestCancel,
@@ -488,7 +491,7 @@ func (server *serviceHelperServer) accept(
 	return true
 }
 
-func (server *serviceHelperServer) cancel(requestID string, expiresAt int64) {
+func (server *serviceHelperServer) cancel(requestID string, expiresAt int64) bool {
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	server.pruneCanceledLocked(server.now().Unix())
@@ -497,11 +500,17 @@ func (server *serviceHelperServer) cancel(requestID string, expiresAt int64) {
 			active.canceled = true
 			active.cancel()
 		}
-		return
+		return true
 	}
-	if len(server.preCanceled) < maxServiceHelperActiveRequests {
+	if _, retained := server.preCanceled[requestID]; retained {
 		server.preCanceled[requestID] = expiresAt
+		return true
 	}
+	if len(server.preCanceled) >= maxServiceHelperActiveRequests {
+		return false
+	}
+	server.preCanceled[requestID] = expiresAt
+	return true
 }
 
 func (server *serviceHelperServer) finish(

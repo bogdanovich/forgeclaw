@@ -5,6 +5,7 @@ package companion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -354,6 +355,27 @@ func TestServiceHelperCancellationBoundary(t *testing.T) {
 		t.Fatal("post-acceptance cancellation interrupted mutation")
 	}
 	postCancel()
+}
+
+func TestServiceHelperCancellationCapacityFailsClosed(t *testing.T) {
+	now := time.Now()
+	server := &serviceHelperServer{
+		now:         func() time.Time { return now },
+		active:      make(map[string]*serviceHelperActiveRequest),
+		preCanceled: make(map[string]int64),
+	}
+	expiresAt := now.Add(time.Minute).Unix()
+	for index := range maxServiceHelperActiveRequests {
+		if !server.cancel(fmt.Sprintf("request-%d", index), expiresAt) {
+			t.Fatalf("retain cancellation %d", index)
+		}
+	}
+	if !server.cancel("request-0", expiresAt) {
+		t.Fatal("refreshing a retained cancellation failed at capacity")
+	}
+	if server.cancel("overflow", expiresAt) {
+		t.Fatal("unretained cancellation was acknowledged at capacity")
+	}
 }
 
 func testServiceHelperClient(t *testing.T) (*ServiceHelperClient, func()) {
