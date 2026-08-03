@@ -372,6 +372,10 @@ The delivery order is N1 first and N2 only after N1 has merged and has live
 gateway evidence. N2 must reuse the same broker and driver contract; it is a
 clearly labeled destination-policy expansion, not a second browser stack.
 
+N1 is now merged and has live gateway evidence for both public navigation and
+loopback denial. N2 is admitted separately in
+[Browser Capability N2 Admission](browser-capability-n2-admission.md).
+
 ### Mandatory stop conditions
 
 Stop B1 if:
