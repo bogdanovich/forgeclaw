@@ -347,7 +347,16 @@ func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
 	// Parse the untouched host before applying DNS-only trailing-dot
 	// canonicalization. A trailing dot can be part of an IPv6 zone name and
 	// therefore affects the interface selected for a scoped destination.
-	if address, addressErr := netip.ParseAddr(host); addressErr == nil {
+	address, addressErr := netip.ParseAddr(host)
+	if addressErr != nil && trimmedHost != host {
+		// Browsers accept a DNS root dot after a canonical dotted-quad IPv4
+		// literal. Preserve that compatibility without admitting shorthand or
+		// other ambiguous numeric forms such as 127.1.
+		if trimmedAddress, trimmedErr := netip.ParseAddr(trimmedHost); trimmedErr == nil && trimmedAddress.Is4() {
+			address, addressErr = trimmedAddress, nil
+		}
+	}
+	if addressErr == nil {
 		if publicOnly && !IsPublicBrowserIP(net.IP(address.AsSlice())) {
 			return "", errors.New("origin IP is outside the public network policy")
 		}

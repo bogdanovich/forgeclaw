@@ -423,9 +423,17 @@ func TestNormalizeBrowserOriginCanonicalizesPublicNumericIPv4(t *testing.T) {
 	}
 }
 
+func TestNormalizeBrowserOriginCanonicalizesIPv4RootDot(t *testing.T) {
+	origin, err := NormalizeBrowserOrigin("http://8.8.8.8./")
+	if err != nil || origin != "http://8.8.8.8" {
+		t.Fatalf("NormalizeBrowserOrigin() = %q, %v", origin, err)
+	}
+}
+
 func TestNormalizeBrowserHTTPOriginAdmitsPrivateScopesButRejectsAmbiguousNumericHosts(t *testing.T) {
 	tests := map[string]string{
 		"http://127.0.0.1:8080":           "http://127.0.0.1:8080",
+		"http://127.0.0.1./":              "http://127.0.0.1",
 		"HTTP://LOCALHOST:80/":            "http://localhost",
 		"http://service.internal/":        "http://service.internal",
 		"http://metadata.google.internal": "http://metadata.google.internal",
@@ -444,7 +452,7 @@ func TestNormalizeBrowserHTTPOriginAdmitsPrivateScopesButRejectsAmbiguousNumeric
 			t.Errorf("NormalizeBrowserHTTPOrigin(%q) = %q, %v, want %q", raw, got, err, want)
 		}
 	}
-	for _, raw := range []string{"http://127.1", "http://0x7f000001", "file:///tmp/test", "http://user@localhost"} {
+	for _, raw := range []string{"http://127.1", "http://127.1./", "http://0x7f000001", "file:///tmp/test", "http://user@localhost"} {
 		if got, err := NormalizeBrowserHTTPOrigin(raw); err == nil {
 			t.Errorf("NormalizeBrowserHTTPOrigin(%q) = %q, want error", raw, got)
 		}

@@ -361,6 +361,16 @@ func TestNavigationOriginPreservesMappedIPv6AddressFamily(t *testing.T) {
 	}
 }
 
+func TestNavigationOriginCanonicalizesIPv4RootDotButRejectsShorthand(t *testing.T) {
+	origin, err := originFromURL("http://127.0.0.1./health")
+	if err != nil || origin != "http://127.0.0.1" {
+		t.Fatalf("originFromURL(canonical IPv4) = %q, %v", origin, err)
+	}
+	if _, err = originFromURL("http://127.1./health"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("originFromURL(shorthand IPv4) error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestNavigationOriginPreservesScopedIPv6Zone(t *testing.T) {
 	normalized, err := normalizeDriverNavigationURL("http://[FE80::1%25EtherNet]:8080/health")
 	if err != nil || normalized != "http://[fe80::1%25EtherNet]:8080/health" {
