@@ -75,7 +75,7 @@ func TestStorePersistsDeliveryLifecycle(t *testing.T) {
 	}
 }
 
-func TestRecoverRetriesOnlyPendingAndMarksInterruptedAttemptAmbiguous(t *testing.T) {
+func TestRecoverRetriesSafeIntentsAndMarksInterruptedAttemptAmbiguous(t *testing.T) {
 	store := openTestStore(t)
 	pending := createTestIntent(t, store, "pending")
 	attempting := createTestIntentWithOrdinal(t, store, "attempting", 1)
@@ -89,13 +89,37 @@ func TestRecoverRetriesOnlyPendingAndMarksInterruptedAttemptAmbiguous(t *testing
 	if _, err := store.MarkDelivered(delivered.ID, Outcome{}); err != nil {
 		t.Fatalf("MarkDelivered() error = %v", err)
 	}
+	definitelyFailed := createTestIntentWithOrdinal(t, store, "definitely failed", 3)
+	if _, err := store.BeginAttempt(definitelyFailed.ID); err != nil {
+		t.Fatalf("BeginAttempt(definitely failed) error = %v", err)
+	}
+	retryAt := time.Now().UTC().Add(time.Minute)
+	if _, err := store.MarkDefinitelyFailed(definitelyFailed.ID, Outcome{
+		RetryAfter: retryAt,
+		Error:      "rate limited",
+	}); err != nil {
+		t.Fatalf("MarkDefinitelyFailed() error = %v", err)
+	}
+	ambiguous := createTestIntentWithOrdinal(t, store, "ambiguous", 4)
+	if _, err := store.BeginAttempt(ambiguous.ID); err != nil {
+		t.Fatalf("BeginAttempt(ambiguous) error = %v", err)
+	}
+	if _, err := store.MarkAmbiguous(ambiguous.ID, Outcome{Error: "timeout"}); err != nil {
+		t.Fatalf("MarkAmbiguous() error = %v", err)
+	}
 
 	recovered, err := store.Recover()
 	if err != nil {
 		t.Fatalf("Recover() error = %v", err)
 	}
-	if len(recovered) != 1 || recovered[0].ID != pending.ID {
-		t.Fatalf("Recover() = %#v, want only pending %q", recovered, pending.ID)
+	if len(recovered) != 2 {
+		t.Fatalf("Recover() = %#v, want pending and definitely failed", recovered)
+	}
+	recoveredByID := map[string]Intent{recovered[0].ID: recovered[0], recovered[1].ID: recovered[1]}
+	if recoveredByID[pending.ID].Status != StatusPending ||
+		recoveredByID[definitelyFailed.ID].RetryAfter != retryAt ||
+		recoveredByID[definitelyFailed.ID].LastError != "rate limited" {
+		t.Fatalf("recovered safe intents = %#v", recovered)
 	}
 
 	interrupted, err := store.Get(attempting.ID)
@@ -113,8 +137,16 @@ func TestRecoverRetriesOnlyPendingAndMarksInterruptedAttemptAmbiguous(t *testing
 	if err != nil {
 		t.Fatalf("Recover() second error = %v", err)
 	}
-	if len(recoveredAgain) != 1 || recoveredAgain[0].ID != pending.ID {
-		t.Fatalf("Recover() second = %#v, want only pending %q", recoveredAgain, pending.ID)
+	if len(recoveredAgain) != 2 {
+		t.Fatalf("Recover() second = %#v, want pending and definitely failed", recoveredAgain)
+	}
+	recoveredAgainByID := map[string]Intent{
+		recoveredAgain[0].ID: recoveredAgain[0],
+		recoveredAgain[1].ID: recoveredAgain[1],
+	}
+	if recoveredAgainByID[pending.ID].Status != StatusPending ||
+		recoveredAgainByID[definitelyFailed.ID].Status != StatusDefinitelyFailed {
+		t.Fatalf("Recover() second = %#v, want pending and definitely failed", recoveredAgain)
 	}
 }
 

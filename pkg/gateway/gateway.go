@@ -73,6 +73,7 @@ type services struct {
 	HeartbeatService *heartbeat.HeartbeatService
 	MediaStore       media.MediaStore
 	ChannelManager   *channels.Manager
+	OutboundRecovery *gatewayOutboundReconciler
 	DeviceService    *devices.Service
 	NodeAdmission    *nodeAdmissionRuntime
 	browserMu        sync.RWMutex
@@ -842,6 +843,11 @@ func setupAndStartServices(
 		agentLoop.SetOutboundOutbox(nil)
 		_ = outboundOutbox.Close()
 	}()
+	recoveredOutbound, err := outboundOutbox.Recover()
+	if err != nil {
+		mediaStore.Stop()
+		return nil, fmt.Errorf("error recovering outbound outbox: %w", err)
+	}
 
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
@@ -914,6 +920,24 @@ func setupAndStartServices(
 		}
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
+	runningServices.OutboundRecovery, err = startGatewayOutboundReconciler(
+		ctx,
+		outboundOutbox,
+		msgBus,
+		recoveredOutbound,
+	)
+	if err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serviceShutdownTimeout)
+		defer cancel()
+		_ = runningServices.ChannelManager.StopAll(shutdownCtx)
+		if rollbackBrowserRuntime(runningServices) != nil {
+			return nil, errors.Join(
+				fmt.Errorf("error reconciling outbound outbox: %w", err),
+				errors.New("browser runtime rollback failed"),
+			)
+		}
+		return nil, fmt.Errorf("error reconciling outbound outbox: %w", err)
+	}
 	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
 
 	logChannelVoiceCapabilities(runningServices.ChannelManager, transcriber != nil, ttsAvailable)
@@ -949,6 +973,9 @@ func setupAndStartServices(
 }
 
 func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Duration, isReload bool) error {
+	if !isReload && runningServices.OutboundRecovery != nil {
+		runningServices.OutboundRecovery.stop()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 	if err := closeBrowserRuntime(shutdownCtx, runningServices); err != nil {
