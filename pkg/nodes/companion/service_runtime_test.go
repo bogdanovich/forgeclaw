@@ -94,7 +94,9 @@ func TestRuntimeExecutesTargetBoundServiceCommands(t *testing.T) {
 		"service.logs.v1",
 		json.RawMessage(`{"service":"vpn","entries":4,"since_seconds":60}`),
 	)
-	if _, prepareErr := runtime.handlers["service.logs.v1"].(*serviceCommandHandler).prepare(logsPlan); prepareErr != nil {
+	if _, prepareErr := runtime.handlers["service.logs.v1"].(*serviceCommandHandler).prepare(
+		logsPlan,
+	); prepareErr != nil {
 		t.Fatalf("prepare logs request: %v", prepareErr)
 	}
 	logs, err := runtime.Invoke(t.Context(), logsPlan)
