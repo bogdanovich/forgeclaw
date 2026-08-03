@@ -255,6 +255,10 @@ func hasEnabledServicePolicy(policies ServicePolicies) bool {
 	return false
 }
 
+func HasEnabledServicePolicy(policies ServicePolicies) bool {
+	return hasEnabledServicePolicy(policies)
+}
+
 // serviceCapabilityDescriptors returns only commands backed by an enforcement
 // source. Configured authority alone never becomes an advertised capability.
 func serviceCapabilityDescriptors(

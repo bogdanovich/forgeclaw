@@ -34,6 +34,11 @@
       "maxLength": 128,
       "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)*\\.v[1-9][0-9]*$"
     },
+	"service_profile": {
+	  "type": "string",
+	  "maxLength": 64,
+	  "pattern": "^[a-z][a-z0-9_-]*$"
+	},
     "input": {"type": "object"},
     "agent_id": {"$ref": "#/$defs/identifier"},
     "session_id": {"$ref": "#/$defs/identifier"},

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestCommandDescriptorBindsSchemasToServiceAuthority(t *testing.T) {
@@ -41,19 +40,12 @@ func TestServiceActionSchemaDeduplicatesAuthorityAcrossProfiles(t *testing.T) {
 	if err := descriptor.Validate(); err != nil {
 		t.Fatalf("two-profile descriptor: %v", err)
 	}
-	_, err := PrepareExecutionPlan(InvocationRequest{
-		InvocationID:     "inv_duplicate_pair",
-		IdempotencyKey:   "idem_duplicate_pair",
-		NodeID:           ID("node_test"),
-		CatalogHash:      strings.Repeat("a", 64),
-		Command:          descriptor.Name,
-		Input:            json.RawMessage(`{"service":"vpn","action":"restart"}`),
-		AgentID:          "main",
-		SessionID:        "session",
-		ActorID:          "actor",
-		TimeoutSeconds:   30,
-		OutputLimitBytes: 4096,
-	}, descriptor, "local", "policy-v1", time.Unix(1, 0), time.Minute)
+	_, input, err := canonicalInvocationInputValue(
+		json.RawMessage(`{"service":"vpn","action":"restart"}`),
+	)
+	if err == nil {
+		err = validateInvocationInput(descriptor.InputSchema, input)
+	}
 	if err != nil {
 		t.Fatalf("authorized duplicate pair was unusable: %v", err)
 	}

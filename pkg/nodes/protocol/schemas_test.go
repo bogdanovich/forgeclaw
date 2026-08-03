@@ -67,6 +67,57 @@ func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
 	if validationErr := resolveSchema(t, "execution-plan.v1").Validate(instance); validationErr != nil {
 		t.Fatalf("schema rejected execution plan %s: %v", data, validationErr)
 	}
+	serviceProfile := nodes.ServiceProfileDescriptor{
+		Alias: "server-services", Revision: "server-services-v1", Manager: "systemd",
+		Services: []nodes.ServiceDescriptor{{Alias: "vpn", Status: true}},
+		LogLimits: nodes.ServiceLogLimits{
+			EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+		},
+		ActionApproval: "required",
+	}
+	serviceDescriptor := nodes.CommandDescriptor{
+		Name: "service.status.v1",
+		InputSchema: nodes.ServiceCommandInputSchema(
+			"service.status.v1",
+			[]nodes.ServiceProfileDescriptor{serviceProfile},
+		),
+		OutputSchema: nodes.ServiceCommandOutputSchema("service.status.v1"),
+		Risk:         nodes.RiskRead,
+		ModelContract: &nodes.CommandModelContract{
+			Availability: nodes.ModelUnavailable, TimeoutSecondsMax: 30,
+			OutputBytesMax: 4096, ResultKind: "json",
+			AuthorityDigest: strings.Repeat("b", 64), Guidance: []string{},
+			Examples: []json.RawMessage{},
+		},
+		ServiceProfiles: []nodes.ServiceProfileDescriptor{serviceProfile},
+	}
+	serviceDescriptor, ok := nodes.ProjectServiceDescriptorForProfile(
+		serviceDescriptor,
+		"server-services",
+	)
+	if !ok {
+		t.Fatal("project service schema fixture")
+	}
+	servicePlan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
+		InvocationID: "inv_service", IdempotencyKey: "idem_service", NodeID: nodes.ID("node_test"),
+		CatalogHash: strings.Repeat("a", 64), Command: serviceDescriptor.Name,
+		ServiceProfile: "server-services", Input: json.RawMessage(`{"service":"vpn"}`),
+		AgentID: "main", SessionID: "telegram:chat-1", ActorID: "user-1",
+		TimeoutSeconds: 30, OutputLimitBytes: 4096,
+	}, serviceDescriptor, "local", "policy-1", time.Unix(1, 0), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(servicePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unmarshalErr := json.Unmarshal(data, &instance); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if validationErr := resolveSchema(t, "execution-plan.v1").Validate(instance); validationErr != nil {
+		t.Fatalf("schema rejected service execution plan %s: %v", data, validationErr)
+	}
 
 	plan.Command = "system." + strings.Repeat("x", 120) + ".v1"
 	data, err = json.Marshal(plan)

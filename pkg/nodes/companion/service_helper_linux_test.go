@@ -35,6 +35,18 @@ type testServiceHelperManager struct {
 	descriptors []nodes.CommandDescriptor
 }
 
+func TestServiceHelperFailureCodePreservesConfirmedCancellation(t *testing.T) {
+	if got := serviceHelperFailureCode(fmt.Errorf(
+		"%w: canceled",
+		errCommandCancellationConfirmed,
+	)); got != "REQUEST_CANCELED" {
+		t.Fatalf("confirmed cancellation code = %q", got)
+	}
+	if got := serviceHelperFailureCode(errors.New("manager failed")); got != "REQUEST_FAILED" {
+		t.Fatalf("manager failure code = %q", got)
+	}
+}
+
 func (manager *testServiceHelperManager) Descriptors() []nodes.CommandDescriptor {
 	return cloneCatalog(nodes.CapabilityCatalog{Commands: manager.descriptors}).Commands
 }

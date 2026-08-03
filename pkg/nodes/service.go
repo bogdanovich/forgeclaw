@@ -169,6 +169,51 @@ func IsServiceCommand(name string) bool {
 	}
 }
 
+// ProjectServiceDescriptorForProfile narrows a companion-authenticated
+// service descriptor to the one operator-configured target profile. The
+// projected descriptor is the exact authority that discovery, approval, the
+// execution plan, and companion authorization must bind.
+func ProjectServiceDescriptorForProfile(
+	descriptor CommandDescriptor,
+	profileAlias string,
+) (CommandDescriptor, bool) {
+	if len(descriptor.ServiceProfiles) == 0 {
+		return descriptor, true
+	}
+	if profileAlias == "" || descriptor.ModelContract == nil {
+		return CommandDescriptor{}, false
+	}
+	for _, profile := range descriptor.ServiceProfiles {
+		if profile.Alias != profileAlias {
+			continue
+		}
+		descriptor.ServiceProfiles = []ServiceProfileDescriptor{profile}
+		descriptor.InputSchema = ServiceCommandInputSchema(
+			descriptor.Name,
+			descriptor.ServiceProfiles,
+		)
+		contract := *descriptor.ModelContract
+		contract.Availability = ModelAvailable
+		contract.Constraints.ProfileAliases = nil
+		if descriptor.Name == "service.logs.v1" {
+			contract.OutputBytesMax = profile.LogLimits.BytesMax
+		}
+		if descriptor.Name == "service.action.v1" {
+			if profile.ActionApproval == "required" {
+				contract.ApprovalMode = "each_command"
+			} else {
+				contract.ApprovalMode = ""
+			}
+		}
+		descriptor.ModelContract = &contract
+		if err := descriptor.Validate(); err != nil {
+			return CommandDescriptor{}, false
+		}
+		return descriptor, true
+	}
+	return CommandDescriptor{}, false
+}
+
 // ServiceCommandInputSchema derives the exact command schema from an already
 // narrowed profile projection. Action authority is encoded as alias/action
 // pairs rather than independent enums that could imply a forbidden pair.

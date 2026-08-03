@@ -101,6 +101,7 @@ type runtimeOptions struct {
 	shellExec       *shellExecRuntime
 	terminalBroker  terminalBrokerOpener
 	fileDescriptors []nodes.CommandDescriptor
+	serviceManager  ServiceManager
 }
 
 type RuntimeOption func(*runtimeOptions) error
@@ -140,6 +141,19 @@ func WithFileCapabilities(runtime FileTransferCapability) RuntimeOption {
 			return errors.New("node file transfer runtime has no capabilities")
 		}
 		options.fileDescriptors = descriptors
+		return nil
+	}
+}
+
+func WithServiceManager(manager ServiceManager) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		if manager == nil {
+			return errors.New("node service manager is required")
+		}
+		if len(manager.Descriptors()) == 0 {
+			return errors.New("node service manager has no capabilities")
+		}
+		options.serviceManager = manager
 		return nil
 	}
 }
@@ -195,6 +209,13 @@ func NewRuntime(
 	if settings.shellExec != nil {
 		handlers = append(handlers, settings.shellExec.handler)
 	}
+	if settings.serviceManager != nil {
+		serviceHandlers, err := newServiceCommandHandlers(settings.serviceManager, policy)
+		if err != nil {
+			return nil, fmt.Errorf("configure node service runtime: %w", err)
+		}
+		handlers = append(handlers, serviceHandlers...)
+	}
 	if err := nodeID.Validate(); err != nil {
 		return nil, err
 	}
@@ -218,7 +239,7 @@ func NewRuntime(
 			}
 			descriptor.ModelContract = modelContract
 			shellExec.contract = cloneModelContract(modelContract)
-		} else {
+		} else if !nodes.IsServiceCommand(descriptor.Name) {
 			descriptor.ModelContract = effectiveModelContract(descriptor, policy)
 		}
 		catalog.Commands = append(catalog.Commands, descriptor)

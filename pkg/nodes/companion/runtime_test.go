@@ -925,12 +925,25 @@ func testRuntimePlanAt(
 			break
 		}
 	}
+	serviceProfile := ""
+	if len(descriptor.ServiceProfiles) > 0 {
+		serviceProfile = descriptor.ServiceProfiles[0].Alias
+		var projected bool
+		descriptor, projected = nodes.ProjectServiceDescriptorForProfile(
+			descriptor,
+			serviceProfile,
+		)
+		if !projected {
+			t.Fatal("project service runtime test descriptor")
+		}
+	}
 	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
 		InvocationID:     "inv_" + strings.ReplaceAll(command, ".", "_"),
 		IdempotencyKey:   "idem_" + strings.ReplaceAll(command, ".", "_"),
 		NodeID:           runtime.nodeID,
 		CatalogHash:      catalogHash,
 		Command:          command,
+		ServiceProfile:   serviceProfile,
 		Input:            input,
 		AgentID:          "agent_test",
 		SessionID:        "session_test",

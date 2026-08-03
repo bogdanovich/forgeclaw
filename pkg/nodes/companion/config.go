@@ -47,18 +47,24 @@ type FileHelperClientConfig struct {
 	SocketPath string `json:"socket_path,omitempty"`
 }
 
+type ServiceHelperClientConfig struct {
+	Enabled    bool   `json:"enabled"`
+	SocketPath string `json:"socket_path,omitempty"`
+}
+
 type Config struct {
-	GatewayURL             string                   `json:"gateway_url"`
-	StateDir               string                   `json:"state_dir,omitempty"`
-	AllowLoopbackPlaintext bool                     `json:"allow_loopback_plaintext,omitempty"`
-	TLS                    TLSConfig                `json:"tls,omitempty"`
-	Reconnect              ReconnectConfig          `json:"reconnect,omitempty"`
-	Policy                 nodes.LocalCommandPolicy `json:"policy,omitempty"`
-	SystemExec             *SystemExecPolicy        `json:"system_exec,omitempty"`
-	OwnerShell             *OwnerShellConfig        `json:"owner_shell,omitempty"`
-	FilePolicies           FilePolicies             `json:"node_file_policies,omitempty"`
-	FileHelper             *FileHelperClientConfig  `json:"file_helper,omitempty"`
-	ServicePolicies        ServicePolicies          `json:"node_service_policies,omitempty"`
+	GatewayURL             string                     `json:"gateway_url"`
+	StateDir               string                     `json:"state_dir,omitempty"`
+	AllowLoopbackPlaintext bool                       `json:"allow_loopback_plaintext,omitempty"`
+	TLS                    TLSConfig                  `json:"tls,omitempty"`
+	Reconnect              ReconnectConfig            `json:"reconnect,omitempty"`
+	Policy                 nodes.LocalCommandPolicy   `json:"policy,omitempty"`
+	SystemExec             *SystemExecPolicy          `json:"system_exec,omitempty"`
+	OwnerShell             *OwnerShellConfig          `json:"owner_shell,omitempty"`
+	FilePolicies           FilePolicies               `json:"node_file_policies,omitempty"`
+	FileHelper             *FileHelperClientConfig    `json:"file_helper,omitempty"`
+	ServicePolicies        ServicePolicies            `json:"node_service_policies,omitempty"`
+	ServiceHelper          *ServiceHelperClientConfig `json:"service_helper,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -201,6 +207,15 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 	cfg.ServicePolicies, err = normalizeServicePolicies(cfg.ServicePolicies)
 	if err != nil {
 		return Config{}, fmt.Errorf("validate node service policies: %w", err)
+	}
+	cfg.ServiceHelper, err = normalizeServiceHelperClientConfig(cfg.ServiceHelper, baseDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("validate service helper: %w", err)
+	}
+	if cfg.ServiceHelper != nil && hasEnabledServicePolicy(cfg.ServicePolicies) {
+		return Config{}, errors.New(
+			"service_helper and node_service_policies cannot both provide service authority",
+		)
 	}
 	return cfg, nil
 }

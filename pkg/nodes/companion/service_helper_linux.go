@@ -286,6 +286,9 @@ func (client *ServiceHelperClient) invoke(
 		)
 	}
 	if response.Kind == "error" {
+		if response.Code == "REQUEST_CANCELED" {
+			return serviceHelperResponse{}, &ServiceManagerError{Code: "request_canceled"}
+		}
 		return serviceHelperResponse{}, &ServiceManagerError{Code: "helper_denied"}
 	}
 	if response.Kind != request.Kind {
