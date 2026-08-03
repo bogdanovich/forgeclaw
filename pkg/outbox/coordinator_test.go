@@ -3,6 +3,7 @@ package outbox
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -110,6 +111,160 @@ func TestCoordinatorCommitSuppressesSameProcessReplay(t *testing.T) {
 	replay, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "replay"})
 	if err != nil || replay.Dispatch || replay.InFlight {
 		t.Fatalf("committed replay = %+v, %v", replay, err)
+	}
+}
+
+func TestCoordinatorPersistsChannelDeliveryLifecycle(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	identity := testIdentity()
+	admission, err := coordinator.AdmitMessage(
+		"/agents/main",
+		identity,
+		bus.OutboundMessage{Content: "deliver me"},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
+	}
+	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
+		t.Fatalf("CommitAdmission() error = %v", commitErr)
+	}
+	if beginErr := coordinator.BeginAttempt(admission.Intent.ID); beginErr != nil {
+		t.Fatalf("BeginAttempt() error = %v", beginErr)
+	}
+	attempting, err := coordinator.store.Get(admission.Intent.ID)
+	if err != nil || attempting.Status != StatusAttempting || attempting.Attempts != 1 {
+		t.Fatalf("attempting intent = %+v, %v", attempting, err)
+	}
+	if outcomeErr := coordinator.MarkDelivered(admission.Intent.ID, Outcome{
+		PlatformMessageIDs: []string{"platform-1"},
+	}); outcomeErr != nil {
+		t.Fatalf("MarkDelivered() error = %v", outcomeErr)
+	}
+	delivered, err := coordinator.store.Get(admission.Intent.ID)
+	if err != nil || delivered.Status != StatusDelivered ||
+		!slices.Equal(delivered.PlatformMessageIDs, []string{"platform-1"}) {
+		t.Fatalf("delivered intent = %+v, %v", delivered, err)
+	}
+}
+
+func TestCoordinatorDefinitelyFailedOutcomeCanBeReadmitted(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	identity := testIdentity()
+	first, err := coordinator.AdmitMessage(
+		"/agents/main",
+		identity,
+		bus.OutboundMessage{Content: "retry me"},
+	)
+	if err != nil || !first.Dispatch {
+		t.Fatalf("first admission = %+v, %v", first, err)
+	}
+	if commitErr := coordinator.CommitAdmission(first.Lease); commitErr != nil {
+		t.Fatalf("CommitAdmission() error = %v", commitErr)
+	}
+	if beginErr := coordinator.BeginAttempt(first.Intent.ID); beginErr != nil {
+		t.Fatalf("BeginAttempt() error = %v", beginErr)
+	}
+	if outcomeErr := coordinator.MarkDefinitelyFailed(
+		first.Intent.ID,
+		Outcome{Error: "rejected"},
+	); outcomeErr != nil {
+		t.Fatalf("MarkDefinitelyFailed() error = %v", outcomeErr)
+	}
+	retry, err := coordinator.AdmitMessage(
+		"/agents/main",
+		identity,
+		bus.OutboundMessage{Content: "retry me"},
+	)
+	if err != nil || !retry.Dispatch || retry.Intent.Status != StatusDefinitelyFailed {
+		t.Fatalf("retry admission = %+v, %v", retry, err)
+	}
+}
+
+func TestCoordinatorDispatchRejectionDoesNotCountTransportAttempt(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	admission, err := coordinator.AdmitMessage(
+		"/agents/main",
+		testIdentity(),
+		bus.OutboundMessage{Content: "reject before transport"},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
+	}
+	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
+		t.Fatalf("CommitAdmission() error = %v", commitErr)
+	}
+	if rejectErr := coordinator.MarkDispatchRejected(
+		admission.Intent.ID,
+		Outcome{Error: "channel unavailable"},
+	); rejectErr != nil {
+		t.Fatalf("MarkDispatchRejected() error = %v", rejectErr)
+	}
+	intent, err := coordinator.Get(admission.Intent.ID)
+	if err != nil || intent.Status != StatusDefinitelyFailed || intent.Attempts != 0 {
+		t.Fatalf("rejected intent = %+v, %v", intent, err)
+	}
+
+	retry, err := coordinator.AdmitMessage(
+		"/agents/main",
+		testIdentity(),
+		bus.OutboundMessage{Content: "reject before transport"},
+	)
+	if err != nil || !retry.Dispatch {
+		t.Fatalf("retry admission = %+v, %v", retry, err)
+	}
+	if commitErr := coordinator.CommitAdmission(retry.Lease); commitErr != nil {
+		t.Fatalf("CommitAdmission(retry) error = %v", commitErr)
+	}
+	if rejectErr := coordinator.MarkDispatchRejected(
+		retry.Intent.ID,
+		Outcome{Error: "channel still unavailable"},
+	); rejectErr != nil {
+		t.Fatalf("MarkDispatchRejected(retry) error = %v", rejectErr)
+	}
+	intent, err = coordinator.Get(retry.Intent.ID)
+	if err != nil || intent.Attempts != 0 || intent.LastError != "channel still unavailable" {
+		t.Fatalf("rejected retry intent = %+v, %v", intent, err)
+	}
+}
+
+func TestCoordinatorRejectsConcurrentChannelAttempt(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	admission, err := coordinator.AdmitMessage(
+		"/agents/main",
+		testIdentity(),
+		bus.OutboundMessage{Content: "deliver once"},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
+	}
+	if commitErr := coordinator.CommitAdmission(admission.Lease); commitErr != nil {
+		t.Fatalf("CommitAdmission() error = %v", commitErr)
+	}
+	if beginErr := coordinator.BeginAttempt(admission.Intent.ID); beginErr != nil {
+		t.Fatalf("first BeginAttempt() error = %v", beginErr)
+	}
+	if beginErr := coordinator.BeginAttempt(admission.Intent.ID); beginErr == nil {
+		t.Fatal("second BeginAttempt() unexpectedly acquired channel ownership")
+	}
+	intent, err := coordinator.Get(admission.Intent.ID)
+	if err != nil || intent.Status != StatusAttempting || intent.Attempts != 1 {
+		t.Fatalf("intent after duplicate attempt = %+v, %v", intent, err)
 	}
 }
 

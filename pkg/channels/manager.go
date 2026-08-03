@@ -29,6 +29,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/health"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
@@ -99,6 +100,7 @@ type Manager struct {
 	deliveryRegistry
 	deliveryInteractionState
 	streamDeliveryState
+	outboundOutbox         *outbox.Coordinator
 	channelHashes          map[string]string // channel name → config hash
 	channelRestartRequired map[string]string // channel name → desired config hash that needs process restart
 }
@@ -114,6 +116,13 @@ type ManagerOption func(*Manager)
 func WithRuntimeEvents(eventBus runtimeevents.Bus) ManagerOption {
 	return func(m *Manager) {
 		m.runtimeEvents = eventBus
+	}
+}
+
+// WithOutboundOutbox enables durable channel outcomes for messages carrying a delivery ID.
+func WithOutboundOutbox(coordinator *outbox.Coordinator) ManagerOption {
+	return func(m *Manager) {
+		m.outboundOutbox = coordinator
 	}
 }
 
@@ -2111,57 +2120,7 @@ func (m *Manager) runWorkerOwned(
 			if !ok {
 				return
 			}
-			msg = m.decorateOutboundResponseFooter(msg)
-			maxLen := 0
-			if mlp, ok := w.ch.(MessageLengthProvider); ok {
-				maxLen = mlp.MaxMessageLength()
-			}
-
-			// Collect all message chunks to send
-			var chunks []string
-
-			// Step 1: Try marker-based splitting if enabled.
-			// Tool feedback must stay a single message, so it skips marker splitting.
-			// Stream-final duplicate responses must also stay intact so preSend can
-			// consume the whole final message before any marker chunk leaks.
-			if m.finalizedStreamActiveForMessage(name, msg) {
-				chunks = []string{msg.Content}
-			} else if m.config != nil && m.config.Agents.Defaults.SplitOnMarker && !outboundMessageIsToolFeedback(msg) {
-				if markerChunks := SplitByMarker(msg.Content); len(markerChunks) > 1 {
-					for _, chunk := range markerChunks {
-						chunkMsg := msg
-						chunkMsg.Content = chunk
-						chunks = append(chunks, splitOutboundMessageContent(chunkMsg, maxLen)...)
-					}
-				}
-			}
-
-			// Step 2: Fallback to length-based splitting if no chunks from marker
-			if len(chunks) == 0 {
-				chunks = splitOutboundMessageContent(msg, maxLen)
-			}
-
-			// Step 3: Send all chunks and publish one outcome for the logical message.
-			terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
-			var messageIDs []string
-			delivered := true
-			for _, chunk := range chunks {
-				chunkMsg := msg
-				chunkMsg.Content = chunk
-				result := m.sendWithRetryPolicy(
-					ctx, name, w, chunkMsg, true, publishNoOutcome,
-				)
-				if !result.Delivered() {
-					m.publishOutboundFailed(name, msg, result.Err, false)
-					delivered = false
-					break
-				}
-				messageIDs = append(messageIDs, result.MessageIDs...)
-			}
-			m.completeToolFeedbackTerminals(ctx, terminals, delivered)
-			if delivered {
-				m.publishOutboundSent(name, msg, messageIDs)
-			}
+			m.deliverQueuedMessage(ctx, name, w, msg)
 		case <-ctx.Done():
 			if closeAdmission != nil {
 				closeAdmission()
@@ -2170,6 +2129,73 @@ func (m *Manager) runWorkerOwned(
 			return
 		}
 	}
+}
+
+func (m *Manager) deliverQueuedMessage(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMessage,
+) {
+	msg = m.decorateOutboundResponseFooter(msg)
+	maxLen := 0
+	if mlp, ok := w.ch.(MessageLengthProvider); ok {
+		maxLen = mlp.MaxMessageLength()
+	}
+	var chunks []string
+	if m.finalizedStreamActiveForMessage(name, msg) {
+		chunks = []string{msg.Content}
+	} else if m.config != nil && m.config.Agents.Defaults.SplitOnMarker && !outboundMessageIsToolFeedback(msg) {
+		if markerChunks := SplitByMarker(msg.Content); len(markerChunks) > 1 {
+			for _, chunk := range markerChunks {
+				chunkMsg := msg
+				chunkMsg.Content = chunk
+				chunks = append(chunks, splitOutboundMessageContent(chunkMsg, maxLen)...)
+			}
+		}
+	}
+	if len(chunks) == 0 {
+		chunks = splitOutboundMessageContent(msg, maxLen)
+	}
+
+	durable, err := m.beginDurableOutbound(msg.DeliveryID)
+	if err != nil {
+		m.publishOutboundFailed(name, msg, err, false)
+		return
+	}
+	terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
+	var messageIDs []string
+	delivered := true
+	for _, chunk := range chunks {
+		chunkMsg := msg
+		chunkMsg.Content = chunk
+		result := m.sendWithRetryPolicy(
+			ctx, name, w, chunkMsg, !durable, publishNoOutcome,
+		)
+		if !result.Delivered() {
+			delivered = false
+			outcome := durableOutcome(result, messageIDs)
+			if persistErr := m.persistDurableOutbound(msg.DeliveryID, outcome); persistErr != nil {
+				result.Err = errors.Join(result.Err, persistErr)
+			}
+			m.publishOutboundFailed(name, msg, result.Err, false)
+			break
+		}
+		messageIDs = append(messageIDs, result.MessageIDs...)
+	}
+	m.completeToolFeedbackTerminals(ctx, terminals, delivered)
+	if !delivered {
+		return
+	}
+	outcome := OutboundDeliveryOutcome{
+		Status:             OutboundDeliveryDelivered,
+		PlatformMessageIDs: messageIDs,
+	}
+	if err := m.persistDurableOutbound(msg.DeliveryID, outcome); err != nil {
+		m.publishOutboundFailed(name, msg, err, false)
+		return
+	}
+	m.publishOutboundSent(name, msg, messageIDs)
 }
 
 func (m *Manager) failPendingOutbound(
@@ -2450,12 +2476,14 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 				return true
 			}
 			if err != nil {
+				err = m.persistDurableRejection(msg.DeliveryID, err)
 				m.publishOutboundFailed(outboundMessageChannel(msg), msg, err, false)
 				return errors.Is(err, errDeliveryClosed)
 			}
 			return false
 		},
 		func(msg bus.OutboundMessage, err error) {
+			err = m.persistDurableRejection(msg.DeliveryID, err)
 			m.publishOutboundFailed(outboundMessageChannel(msg), msg, err, false)
 		},
 		"Outbound dispatcher started",
@@ -2478,12 +2506,14 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 				return true
 			}
 			if err != nil {
+				err = m.persistDurableRejection(msg.DeliveryID, err)
 				m.publishOutboundMediaFailed(outboundMediaChannel(msg), msg, err)
 				return errors.Is(err, errDeliveryClosed)
 			}
 			return false
 		},
 		func(msg bus.OutboundMediaMessage, err error) {
+			err = m.persistDurableRejection(msg.DeliveryID, err)
 			m.publishOutboundMediaFailed(outboundMediaChannel(msg), msg, err)
 		},
 		"Outbound media dispatcher started",
@@ -2507,7 +2537,7 @@ func (m *Manager) runMediaWorkerOwned(
 			if !ok {
 				return
 			}
-			_ = m.sendMediaWithRetry(ctx, name, w, msg)
+			m.deliverQueuedMedia(ctx, name, w, msg)
 		case <-ctx.Done():
 			if closeAdmission != nil {
 				closeAdmission()
@@ -2516,6 +2546,31 @@ func (m *Manager) runMediaWorkerOwned(
 			return
 		}
 	}
+}
+
+func (m *Manager) deliverQueuedMedia(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMediaMessage,
+) {
+	durable, err := m.beginDurableOutbound(msg.DeliveryID)
+	if err != nil {
+		m.publishOutboundMediaFailed(name, msg, err)
+		return
+	}
+	result := m.sendMediaWithRetryPolicy(
+		ctx, name, w, msg, publishNoOutcome, !durable,
+	)
+	outcome := durableOutcome(result, nil)
+	if persistErr := m.persistDurableOutbound(msg.DeliveryID, outcome); persistErr != nil {
+		result.Err = errors.Join(result.Err, persistErr)
+	}
+	if result.Delivered() && result.Err == nil {
+		m.publishOutboundMediaSent(name, msg, result.MessageIDs)
+		return
+	}
+	m.publishOutboundMediaFailed(name, msg, result.Err)
 }
 
 func (m *Manager) failPendingOutboundMedia(
@@ -2546,7 +2601,7 @@ func (m *Manager) sendMediaWithRetry(
 	msg bus.OutboundMediaMessage,
 ) DeliveryResult[bus.OutboundMediaMessage] {
 	return m.sendMediaWithRetryPolicy(
-		ctx, name, w, msg, publishDefinitiveOutcome,
+		ctx, name, w, msg, publishDefinitiveOutcome, true,
 	)
 }
 
@@ -2556,6 +2611,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 	w *channelWorker,
 	msg bus.OutboundMediaMessage,
 	outcome outcomePublication,
+	retryAmbiguous bool,
 ) DeliveryResult[bus.OutboundMediaMessage] {
 	ms, ok := w.ch.(MediaSender)
 	if !ok {
@@ -2616,7 +2672,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 		[]bus.OutboundMediaMessage{msg},
 		DeliveryRetryPolicy{
 			MaxRetries:     maxRetries,
-			RetryAmbiguous: true,
+			RetryAmbiguous: retryAmbiguous,
 			RateLimitDelay: rateLimitDelay,
 			BaseBackoff:    baseBackoff,
 			MaxBackoff:     maxBackoff,
@@ -3108,7 +3164,7 @@ func (m *Manager) sendMedia(
 		)
 	}
 
-	result := m.sendMediaWithRetryPolicy(ctx, channelName, w, msg, outcome)
+	result := m.sendMediaWithRetryPolicy(ctx, channelName, w, msg, outcome, true)
 	if !result.Delivered() {
 		return newDeliveryError(result.Err, result.MayHaveDelivered())
 	}

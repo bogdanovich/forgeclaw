@@ -15,13 +15,14 @@ import (
 // Coordinator owns admission to one instance-wide outbox. Agent workspaces are
 // record metadata, never independent stores or delivery-ID lookup scopes.
 type Coordinator struct {
-	mu        sync.Mutex
-	store     *Store
-	root      string
-	leases    map[string]uint64
-	published map[string]bool
-	now       func() time.Time
-	closed    bool
+	mu         sync.Mutex
+	store      *Store
+	root       string
+	leases     map[string]uint64
+	published  map[string]bool
+	attempting map[string]bool
+	now        func() time.Time
+	closed     bool
 }
 
 var coordinatorRoots = struct {
@@ -75,10 +76,11 @@ func OpenCoordinator(instanceRoot string) (*Coordinator, error) {
 
 func newCoordinator(store *Store) *Coordinator {
 	return &Coordinator{
-		store:     store,
-		leases:    make(map[string]uint64),
-		published: make(map[string]bool),
-		now:       time.Now,
+		store:      store,
+		leases:     make(map[string]uint64),
+		published:  make(map[string]bool),
+		attempting: make(map[string]bool),
+		now:        time.Now,
 	}
 }
 
@@ -101,6 +103,110 @@ func (c *Coordinator) CommitAdmission(lease DispatchLease) error {
 	}
 	delete(c.leases, lease.deliveryID)
 	c.published[lease.deliveryID] = true
+	return nil
+}
+
+// BeginAttempt persists the transport-call crash boundary for a published intent.
+func (c *Coordinator) BeginAttempt(deliveryID string) error {
+	if c == nil || c.store == nil {
+		return errors.New("outbox coordinator is unavailable")
+	}
+	if err := validateID(deliveryID); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return err
+	}
+	if !c.published[deliveryID] {
+		return fmt.Errorf("outbox intent %q is not published", deliveryID)
+	}
+	if c.attempting[deliveryID] {
+		return fmt.Errorf("outbox intent %q already has an active delivery attempt", deliveryID)
+	}
+	if _, err := c.store.BeginAttempt(deliveryID); err != nil {
+		return err
+	}
+	c.attempting[deliveryID] = true
+	return nil
+}
+
+// MarkDispatchRejected records a published intent that could not reach an adapter.
+func (c *Coordinator) MarkDispatchRejected(deliveryID string, outcome Outcome) error {
+	return c.transitionPublished(deliveryID, false, func() error {
+		_, err := c.store.MarkDispatchRejected(deliveryID, outcome)
+		return err
+	})
+}
+
+// MarkDelivered records confirmed remote acceptance and releases in-process ownership.
+func (c *Coordinator) MarkDelivered(deliveryID string, outcome Outcome) error {
+	return c.transitionPublished(deliveryID, true, func() error {
+		_, err := c.store.MarkDelivered(deliveryID, outcome)
+		return err
+	})
+}
+
+// MarkDefinitelyFailed records a failure known to precede remote acceptance.
+func (c *Coordinator) MarkDefinitelyFailed(deliveryID string, outcome Outcome) error {
+	return c.transitionPublished(deliveryID, true, func() error {
+		_, err := c.store.MarkDefinitelyFailed(deliveryID, outcome)
+		return err
+	})
+}
+
+// MarkAmbiguous records a transport outcome that must not be blindly retried.
+func (c *Coordinator) MarkAmbiguous(deliveryID string, outcome Outcome) error {
+	return c.transitionPublished(deliveryID, true, func() error {
+		_, err := c.store.MarkAmbiguous(deliveryID, outcome)
+		return err
+	})
+}
+
+// Get returns the canonical durable intent for a delivery ID.
+func (c *Coordinator) Get(deliveryID string) (Intent, error) {
+	if c == nil || c.store == nil {
+		return Intent{}, errors.New("outbox coordinator is unavailable")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return Intent{}, err
+	}
+	return c.store.Get(deliveryID)
+}
+
+func (c *Coordinator) transitionPublished(
+	deliveryID string,
+	requireAttempt bool,
+	transition func() error,
+) error {
+	if c == nil || c.store == nil {
+		return errors.New("outbox coordinator is unavailable")
+	}
+	if err := validateID(deliveryID); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return err
+	}
+	if !c.published[deliveryID] {
+		return fmt.Errorf("outbox intent %q is not published", deliveryID)
+	}
+	if requireAttempt && !c.attempting[deliveryID] {
+		return fmt.Errorf("outbox intent %q has no active delivery attempt", deliveryID)
+	}
+	if !requireAttempt && c.attempting[deliveryID] {
+		return fmt.Errorf("outbox intent %q already has an active delivery attempt", deliveryID)
+	}
+	if err := transition(); err != nil {
+		return err
+	}
+	delete(c.attempting, deliveryID)
+	delete(c.published, deliveryID)
 	return nil
 }
 

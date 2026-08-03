@@ -51,6 +51,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/netbind"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/pid"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/state"
@@ -827,12 +828,27 @@ func setupAndStartServices(
 	}
 	mediaStore.Start()
 	runningServices.MediaStore = mediaStore
+	outboundOutbox, err := outbox.OpenCoordinator(cfg.WorkspacePath())
+	if err != nil {
+		mediaStore.Stop()
+		return nil, fmt.Errorf("error opening outbound outbox: %w", err)
+	}
+	agentLoop.SetOutboundOutbox(outboundOutbox)
+	retainOutboundOutbox := false
+	defer func() {
+		if retainOutboundOutbox {
+			return
+		}
+		agentLoop.SetOutboundOutbox(nil)
+		_ = outboundOutbox.Close()
+	}()
 
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
 		msgBus,
 		runningServices.MediaStore,
 		channels.WithRuntimeEvents(agentLoop.RuntimeEventBus()),
+		channels.WithOutboundOutbox(outboundOutbox),
 	)
 	if err != nil {
 		mediaStore.Stop()
@@ -928,6 +944,7 @@ func setupAndStartServices(
 		fmt.Println("✓ Device event service started")
 	}
 
+	retainOutboundOutbox = true
 	return runningServices, nil
 }
 
@@ -1067,6 +1084,10 @@ func handleConfigReload(
 	shutdownTimeout time.Duration,
 ) error {
 	logger.Info("🔄 Config file changed, reloading...")
+	currentCfg := al.GetConfig()
+	if currentCfg != nil && filepath.Clean(currentCfg.WorkspacePath()) != filepath.Clean(newCfg.WorkspacePath()) {
+		return fmt.Errorf("workspace changes require a gateway restart")
+	}
 
 	newModel := newCfg.Agents.Defaults.ModelName
 
