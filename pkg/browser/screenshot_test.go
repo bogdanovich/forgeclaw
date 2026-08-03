@@ -23,8 +23,8 @@ func TestBrokerScreenshotRequiresExactFreshObservationAndReturnsCopy(t *testing.
 	}
 	wrongOwner := request
 	wrongOwner.Owner.ActorID = "actor_2"
-	if _, err = broker.CaptureScreenshot(context.Background(), wrongOwner); !errors.Is(err, ErrDenied) {
-		t.Fatalf("wrong-owner CaptureScreenshot() error = %v, want ErrDenied", err)
+	if _, err = broker.CaptureScreenshot(context.Background(), wrongOwner); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong-owner CaptureScreenshot() error = %v, want ErrNotFound", err)
 	}
 	capture, err := broker.CaptureScreenshot(context.Background(), request)
 	if err != nil || capture.SessionID != session.ID || capture.TabID != session.TabID ||
