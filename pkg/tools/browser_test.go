@@ -13,17 +13,18 @@ import (
 )
 
 type fakeBrowserToolSource struct {
-	available  bool
-	open       browser.Session
-	status     browser.Session
-	observe    browser.Observation
-	screenshot browser.ScreenshotArtifact
-	lookup     browser.ScreenshotArtifact
-	lookupHit  bool
-	prepare    browser.Preparation
-	execute    browser.Invocation
-	err        error
-	executeErr error
+	available             bool
+	open                  browser.Session
+	status                browser.Session
+	observe               browser.Observation
+	screenshot            browser.ScreenshotArtifact
+	lookup                browser.ScreenshotArtifact
+	lookupHit             bool
+	screenshotUnavailable bool
+	prepare               browser.Preparation
+	execute               browser.Invocation
+	err                   error
+	executeErr            error
 
 	openRequest       browser.OpenRequest
 	statusOwner       browser.Owner
@@ -41,6 +42,10 @@ type fakeBrowserToolSource struct {
 }
 
 func (source *fakeBrowserToolSource) Available() bool { return source.available }
+
+func (source *fakeBrowserToolSource) ScreenshotAvailable() bool {
+	return source != nil && !source.screenshotUnavailable
+}
 
 func (source *fakeBrowserToolSource) ProfileAvailability(
 	_ context.Context,
@@ -214,6 +219,28 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	denied := tool.Execute(other, nil)
 	if denied == nil || !denied.IsError || !strings.Contains(denied.ContentForLLM(), `"code":"not_granted"`) {
 		t.Fatalf("ungranted result = %#v", denied)
+	}
+}
+
+func TestBrowserScreenshotIsNotAdvertisedOrCapturedWhenDeliveryIsUnsupported(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, screenshotUnavailable: true}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t,
+		NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil),
+		&targets,
+	)
+	if len(targets.Targets) != 1 || targets.Targets[0].Features.Screenshot {
+		t.Fatalf("browser targets = %#v", targets)
+	}
+	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	if result == nil || !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), `"code":"unsupported_platform"`) ||
+		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
+		t.Fatalf("unsupported screenshot result = %#v; source = %#v", result, source)
 	}
 }
 

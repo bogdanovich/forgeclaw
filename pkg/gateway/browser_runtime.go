@@ -187,6 +187,7 @@ type gatewayBrowserToolSource struct {
 	policyRevision      string
 	workspace           string
 	screenshotRetention time.Duration
+	screenshotCopy      browserScreenshotCopyFunc
 }
 
 func (source *gatewayBrowserToolSource) Available() bool {

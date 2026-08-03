@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -20,6 +21,14 @@ const (
 	browserScreenshotFilename   = "browser-screenshot.png"
 	browserScreenshotSourceKind = "browser_screenshot"
 )
+
+type browserScreenshotCopyFunc func(
+	context.Context,
+	*os.File,
+	nodes.TransferArtifactRecord,
+	string,
+	string,
+) (string, bool, error)
 
 func (source *gatewayBrowserToolSource) LookupScreenshot(
 	ctx context.Context,
@@ -53,7 +62,7 @@ func (source *gatewayBrowserToolSource) LookupScreenshot(
 	if record.DeliveryAt != 0 {
 		return browserScreenshotArtifact(record, record.MediaRef), true, nil
 	}
-	mediaRef, err := registerBrowserScreenshot(
+	mediaRef, err := source.registerBrowserScreenshot(
 		ctx, spool, transferOwner, record, source.services.MediaStore,
 		mediaOwner, source.workspace,
 	)
@@ -200,7 +209,7 @@ func (source *gatewayBrowserToolSource) retainScreenshot(
 			return browser.ScreenshotArtifact{}, err
 		}
 	}
-	mediaRef, err := registerBrowserScreenshot(
+	mediaRef, err := source.registerBrowserScreenshot(
 		ctx, spool, owner, record, source.services.MediaStore, mediaOwner, source.workspace,
 	)
 	if err != nil {
@@ -224,7 +233,7 @@ func sameBrowserScreenshotSpec(existing, requested nodes.TransferArtifactSpec) b
 		existing.SHA256 == requested.SHA256
 }
 
-func registerBrowserScreenshot(
+func (source *gatewayBrowserToolSource) registerBrowserScreenshot(
 	ctx context.Context,
 	spool *nodes.GatewayTransferSpool,
 	owner nodes.TransferArtifactOwner,
@@ -243,10 +252,17 @@ func registerBrowserScreenshot(
 	}
 	defer file.Close()
 	deliveryKey := nodeFileDeliveryKey(owner, retained)
-	localPath, created, err := copyNodeTransferDeliveryTracked(
+	copyDelivery := copyNodeTransferDeliveryTracked
+	if source != nil && source.screenshotCopy != nil {
+		copyDelivery = source.screenshotCopy
+	}
+	localPath, created, err := copyDelivery(
 		ctx, file, retained, workspace, deliveryKey+".data",
 	)
 	if err != nil {
+		if created {
+			err = errors.Join(err, removeNodeTransferDelivery(workspace, deliveryKey+".data"))
+		}
 		return "", err
 	}
 	mediaRef, err := idempotentStore.StoreIdempotentOwned(

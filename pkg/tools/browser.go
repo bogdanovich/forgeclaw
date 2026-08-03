@@ -24,6 +24,7 @@ import (
 // call so configuration reload cannot hand a tool a stale broker pointer.
 type BrowserToolSource interface {
 	Available() bool
+	ScreenshotAvailable() bool
 	ProfileAvailability(context.Context, string, string) (browser.ProfileAvailability, error)
 	Open(context.Context, browser.OpenRequest) (browser.Session, error)
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
@@ -206,7 +207,7 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
 				browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
 			},
-			Features: browserFeatureView{Screenshot: true},
+			Features: browserFeatureView{Screenshot: tool.runtime.source.ScreenshotAvailable()},
 			Limits: browserLimitsView{
 				Sessions: limits.Sessions, Tabs: limits.Tabs, SnapshotBytes: limits.SnapshotBytes,
 				ScreenshotBytes: limits.ScreenshotBytes,
@@ -404,6 +405,13 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 	wantScreenshot, _ := args["screenshot"].(bool)
 	requestID := ""
 	if wantScreenshot {
+		if !tool.runtime.source.ScreenshotAvailable() {
+			return browserErrorResult(
+				"unsupported_platform",
+				"Browser screenshot delivery is unavailable on this gateway platform.",
+				"omit_screenshot",
+			)
+		}
 		requestID, err = browserRequestID(ctx)
 		if err != nil {
 			return browserToolError(err)

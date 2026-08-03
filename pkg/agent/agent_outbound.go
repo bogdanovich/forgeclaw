@@ -631,6 +631,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		outboundMedia.TraceSettlement = traceSettlement
 		if !hasOutboundTransaction(ctx) && al.channelManager != nil && channel != "" &&
 			!constants.IsInternalChannel(channel) {
+			if err := commitToolResultOutbound(ctx, result); err != nil {
+				return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool media: %w", err)
+			}
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
 				logger.WarnCF("agent", "Failed to deliver explicit tool media",
 					map[string]any{
@@ -642,17 +645,16 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 					})
 				return nil, toolResultDeliveryNone, err
 			}
-			if err := commitToolResultOutbound(ctx, result); err != nil {
-				return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool media delivery: %w", err)
-			}
 			return buildProviderAttachmentsFromMediaParts(out.Media), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
-			if _, err := al.publishTransactionMedia(ctx, ts.workspace, outboundMedia); err != nil {
+			if _, err := al.publishTransactionMediaAtBoundary(
+				ctx, ts.workspace, outboundMedia,
+				func(commitCtx context.Context) error {
+					return commitToolResultOutbound(commitCtx, result)
+				},
+			); err != nil {
 				return nil, toolResultDeliveryNone, err
-			}
-			if err := commitToolResultOutbound(ctx, result); err != nil {
-				return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool media delivery: %w", err)
 			}
 			return nil, toolResultDeliveryQueued, nil
 		}
@@ -678,20 +680,22 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	outboundMessage.TraceSettlement = traceSettlement
 	if !hasOutboundTransaction(ctx) && al.channelManager != nil && channel != "" &&
 		!constants.IsInternalChannel(channel) {
+		if err := commitToolResultOutbound(ctx, result); err != nil {
+			return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool message: %w", err)
+		}
 		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
-		}
-		if err := commitToolResultOutbound(ctx, result); err != nil {
-			return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool message delivery: %w", err)
 		}
 		return nil, toolResultDeliveryDirect, nil
 	}
 	if al.bus != nil {
-		if _, err := al.publishTransactionMessage(ctx, ts.workspace, outboundMessage); err != nil {
+		if _, err := al.publishTransactionMessageAtBoundary(
+			ctx, ts.workspace, outboundMessage,
+			func(commitCtx context.Context) error {
+				return commitToolResultOutbound(commitCtx, result)
+			},
+		); err != nil {
 			return nil, toolResultDeliveryNone, err
-		}
-		if err := commitToolResultOutbound(ctx, result); err != nil {
-			return nil, toolResultDeliveryNone, fmt.Errorf("commit explicit tool message delivery: %w", err)
 		}
 		return nil, toolResultDeliveryQueued, nil
 	}

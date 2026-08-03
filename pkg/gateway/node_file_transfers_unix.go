@@ -21,6 +21,8 @@ import (
 
 const nodeTransferDeliveryTempAttempts = 16
 
+func (*gatewayBrowserToolSource) ScreenshotAvailable() bool { return true }
+
 func openNodeTransferMedia(path string) (*os.File, os.FileInfo, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {

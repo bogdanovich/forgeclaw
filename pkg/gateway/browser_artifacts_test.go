@@ -12,7 +12,9 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/browser"
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
@@ -142,6 +144,63 @@ func TestGatewayBrowserScreenshotRemovesUnregisteredDeliveryCopy(t *testing.T) {
 	entries, readErr := os.ReadDir(filepath.Join(workspace, "state", "media", "node-transfers"))
 	if readErr != nil || len(entries) != 0 {
 		t.Fatalf("unregistered delivery files = %+v, %v", entries, readErr)
+	}
+}
+
+func TestGatewayBrowserScreenshotRemovesCopyAfterPostRenameSyncWarning(t *testing.T) {
+	workspace := t.TempDir()
+	runtime := &nodeAdmissionRuntime{}
+	t.Cleanup(func() {
+		if runtime.transferSpool != nil {
+			_ = runtime.transferSpool.Close()
+		}
+	})
+	store, err := media.NewFileMediaStoreWithPersistentIndex(
+		filepath.Join(workspace, "state", "media", "index.json"),
+		media.MediaCleanerConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncErr := errors.New("delivery directory sync failed after rename")
+	source := &gatewayBrowserToolSource{
+		services:  &services{NodeAdmission: runtime, MediaStore: store},
+		workspace: workspace, screenshotRetention: time.Hour,
+		screenshotCopy: func(
+			_ context.Context,
+			_ *os.File,
+			_ nodes.TransferArtifactRecord,
+			copyWorkspace string,
+			name string,
+		) (string, bool, error) {
+			directory := filepath.Join(copyWorkspace, "state", "media", "node-transfers")
+			if mkdirErr := os.MkdirAll(directory, 0o700); mkdirErr != nil {
+				return "", false, mkdirErr
+			}
+			path := filepath.Join(directory, name)
+			if writeErr := os.WriteFile(path, []byte("renamed screenshot"), 0o600); writeErr != nil {
+				return "", false, writeErr
+			}
+			return path, true, &fileutil.CommittedWriteError{Err: syncErr}
+		},
+	}
+	data := append(append([]byte(nil), []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}...),
+		[]byte("post-rename cleanup fixture")...)
+	_, err = source.retainScreenshot(
+		gatewayBrowserArtifactContext(workspace),
+		browser.ScreenshotRequest{RequestID: "request_post_rename_cleanup"},
+		browser.ScreenshotCapture{
+			SessionID: "session_cleanup", Target: "gateway", Profile: "managed",
+			PolicyRevision: "policy_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+			SnapshotGeneration: 1, Data: data, ContentType: "image/png",
+		},
+	)
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("retainScreenshot() error = %v", err)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(workspace, "state", "media", "node-transfers"))
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("post-rename warning files = %+v, %v", entries, readErr)
 	}
 }
 
