@@ -3175,15 +3175,23 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 		})
 
 		t.Run("explicit media/"+scopeCase.name, func(t *testing.T) {
+			commitCalls := 0
 			result := (&tools.ToolResult{}).
 				WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
 					Type: "image", Ref: "media://test-image",
 				}}}).
+				WithOutboundCommit(func(context.Context) error {
+					commitCalls++
+					return nil
+				}).
 				WithImmediateDelivery()
 			if _, outcome, err := al.deliverToolResultToUserWithScopes(
 				t.Context(), ts, result, "image_generation", scopeCase.scopes,
 			); err != nil || outcome != toolResultDeliveryQueued {
 				t.Fatalf("delivery = (%v, %v)", outcome, err)
+			}
+			if commitCalls != 1 {
+				t.Fatalf("outbound commit calls = %d, want 1", commitCalls)
 			}
 			select {
 			case outbound := <-msgBus.OutboundMediaChan():

@@ -629,6 +629,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		}
 		outboundMedia.TraceSettlement = traceSettlement
 		if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
+			if err := commitToolResultOutbound(ctx, result); err != nil {
+				return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool media: %w", err)
+			}
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
 				logger.WarnCF("agent", "Failed to deliver explicit tool media",
 					map[string]any{
@@ -643,6 +646,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			return buildProviderAttachmentsFromMediaParts(out.Media), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
+			if err := commitToolResultOutbound(ctx, result); err != nil {
+				return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool media: %w", err)
+			}
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
@@ -669,12 +675,18 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	}
 	outboundMessage.TraceSettlement = traceSettlement
 	if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
+		if err := commitToolResultOutbound(ctx, result); err != nil {
+			return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool message: %w", err)
+		}
 		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}
 		return nil, toolResultDeliveryDirect, nil
 	}
 	if al.bus != nil {
+		if err := commitToolResultOutbound(ctx, result); err != nil {
+			return nil, toolResultDeliveryNone, fmt.Errorf("schedule explicit tool message: %w", err)
+		}
 		if err := al.bus.PublishOutbound(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}

@@ -831,3 +831,19 @@ func TestTransferArtifactSpecHardLimits(t *testing.T) {
 		t.Fatal("oversized transfer artifact was accepted")
 	}
 }
+
+func TestTransferArtifactSpecRequiresCompleteBoundedSourceProvenance(t *testing.T) {
+	t.Parallel()
+	spec := testTransferSpec([]byte("payload"), time.Unix(1_800_000_000, 0))
+	spec.SourceKind = "browser_screenshot"
+	spec.SourceScope = "tab_primary"
+	spec.SourceID = "snapshot_1"
+	spec.SourceRevision = 3
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("complete source provenance error = %v", err)
+	}
+	spec.SourceID = ""
+	if err := spec.Validate(); err == nil {
+		t.Fatal("partial source provenance was accepted")
+	}
+}

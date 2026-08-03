@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/browser"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
@@ -28,7 +29,9 @@ type BrowserToolSource interface {
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
 	Close(context.Context, browser.Owner, string) (browser.Session, error)
 	Observe(context.Context, browser.Owner, string, string) (browser.Observation, error)
+	LookupScreenshot(context.Context, browser.Owner, string, string) (browser.ScreenshotArtifact, bool, error)
 	CaptureScreenshot(context.Context, browser.ScreenshotRequest) (browser.ScreenshotArtifact, error)
+	ClaimScreenshotDelivery(context.Context, browser.ScreenshotDeliveryRequest) error
 	PrepareAction(context.Context, browser.PrepareActionRequest) (browser.Preparation, error)
 	ExecuteAction(context.Context, browser.Owner, string, *browser.ApprovalBinding) (browser.Invocation, error)
 }
@@ -354,6 +357,7 @@ type browserObservationView struct {
 	Truncated          bool                        `json:"truncated"`
 	Limits             browserObservationLimits    `json:"limits"`
 	Artifact           *browser.ScreenshotArtifact `json:"artifact,omitempty"`
+	Replayed           bool                        `json:"replayed,omitempty"`
 }
 
 type browserObservationLimits struct {
@@ -397,6 +401,32 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 	if !ok {
 		return browserErrorResult("invalid_request", "browser_session_id is required.", "correct_arguments")
 	}
+	wantScreenshot, _ := args["screenshot"].(bool)
+	requestID := ""
+	if wantScreenshot {
+		requestID, err = browserRequestID(ctx)
+		if err != nil {
+			return browserToolError(err)
+		}
+		artifact, found, lookupErr := tool.runtime.source.LookupScreenshot(
+			ctx, owner, requestID, sessionID,
+		)
+		if lookupErr != nil {
+			return browserToolError(lookupErr)
+		}
+		if found {
+			limits := tool.runtime.config.Limits.Effective()
+			return tool.screenshotResult(browserObservationView{
+				BrowserSessionID: artifact.SessionID, TabID: artifact.TabID,
+				SnapshotID: artifact.SnapshotID, SnapshotGeneration: artifact.SnapshotGeneration,
+				Truncated: false, Replayed: true, Artifact: &artifact,
+				Limits: browserObservationLimits{
+					SnapshotBytes: limits.SnapshotBytes, SnapshotRefs: limits.SnapshotRefs,
+					ScreenshotBytes: limits.ScreenshotBytes,
+				},
+			}, owner, requestID, artifact)
+		}
+	}
 	tabID, _ := args["tab_id"].(string)
 	if tabID == "" {
 		session, statusErr := tool.runtime.source.Status(ctx, owner, sessionID)
@@ -410,13 +440,8 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 		return browserToolError(err)
 	}
 	view := tool.runtime.observationResult(observation)
-	wantScreenshot, _ := args["screenshot"].(bool)
 	if !wantScreenshot {
 		return tool.runtime.result(view)
-	}
-	requestID, err := browserRequestID(ctx)
-	if err != nil {
-		return browserToolError(err)
 	}
 	artifact, err := tool.runtime.source.CaptureScreenshot(ctx, browser.ScreenshotRequest{
 		Owner: owner, RequestID: requestID, SessionID: observation.SessionID,
@@ -427,11 +452,30 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 		return browserToolError(err)
 	}
 	view.Artifact = &artifact
+	return tool.screenshotResult(view, owner, requestID, artifact)
+}
+
+func (tool *BrowserObserveTool) screenshotResult(
+	view browserObservationView,
+	owner browser.Owner,
+	requestID string,
+	artifact browser.ScreenshotArtifact,
+) *ToolResult {
 	result := tool.runtime.result(view)
-	if artifact.DeliveryState == "claimed" && artifact.MediaRef != "" {
-		return MediaResult(result.ForLLM, []string{artifact.MediaRef})
+	if result.IsError || artifact.DeliveryState != browser.ScreenshotDeliveryPending ||
+		artifact.MediaRef == "" {
+		return result
 	}
-	return result
+	delivery := browser.ScreenshotDeliveryRequest{
+		Owner: owner, RequestID: requestID, SessionID: artifact.SessionID,
+		Ref: artifact.Ref, MediaRef: artifact.MediaRef,
+	}
+	return result.WithOutboundDelivery(OutboundDelivery{Media: []bus.MediaPart{{
+		Type: "image", Ref: artifact.MediaRef, Filename: artifact.Filename,
+		ContentType: artifact.ContentType,
+	}}}).WithOutboundCommit(func(commitCtx context.Context) error {
+		return tool.runtime.source.ClaimScreenshotDelivery(commitCtx, delivery)
+	}).WithImmediateDelivery()
 }
 
 func (*BrowserActTool) Name() string { return "browser_act" }

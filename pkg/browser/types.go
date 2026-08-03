@@ -61,6 +61,19 @@ type ScreenshotRequest struct {
 	SnapshotGeneration uint64
 }
 
+type ScreenshotDeliveryRequest struct {
+	Owner     Owner
+	RequestID string
+	SessionID string
+	Ref       string
+	MediaRef  string
+}
+
+const (
+	ScreenshotDeliveryPending        = "pending"
+	ScreenshotDeliveryAlreadyClaimed = "already_claimed"
+)
+
 type ScreenshotArtifact struct {
 	Ref                string `json:"ref"`
 	Kind               string `json:"kind"`
@@ -74,7 +87,7 @@ type ScreenshotArtifact struct {
 	SnapshotID         string `json:"snapshot_id"`
 	SnapshotGeneration uint64 `json:"snapshot_generation"`
 	Truncated          bool   `json:"truncated"`
-	DeliveryState      string `json:"delivery_state"`
+	DeliveryState      string `json:"-"`
 	MediaRef           string `json:"-"`
 }
 

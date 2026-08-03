@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,7 +46,7 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	ctx := gatewayBrowserArtifactContext(workspace)
 	artifact, err := source.retainScreenshot(ctx, request, capture)
 	if err != nil || artifact.Ref == "" || artifact.MediaRef == "" ||
-		artifact.DeliveryState != "claimed" || artifact.Size != int64(len(data)) ||
+		artifact.DeliveryState != browser.ScreenshotDeliveryPending || artifact.Size != int64(len(data)) ||
 		artifact.SnapshotID != "snapshot_1" || artifact.Truncated {
 		t.Fatalf("retainScreenshot() = %+v, %v", artifact, err)
 	}
@@ -65,14 +66,82 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 		t.Fatalf("transfer spool path = %q", runtime.transferSpoolPath)
 	}
 
-	duplicate, err := source.retainScreenshot(ctx, request, capture)
-	if err != nil || duplicate.Ref != artifact.Ref || duplicate.MediaRef != artifact.MediaRef ||
-		duplicate.DeliveryState != "already_claimed" {
-		t.Fatalf("duplicate retainScreenshot() = %+v, %v", duplicate, err)
+	owner := browser.Owner{ActorID: "actor", AgentID: "agent", SessionKey: "route", ExecutionID: "execution"}
+	replay, found, err := source.LookupScreenshot(ctx, owner, request.RequestID, capture.SessionID)
+	if err != nil || !found || replay.Ref != artifact.Ref || replay.MediaRef != artifact.MediaRef ||
+		replay.DeliveryState != browser.ScreenshotDeliveryPending || replay.SnapshotID != artifact.SnapshotID {
+		t.Fatalf("pending LookupScreenshot() = %+v, %t, %v", replay, found, err)
+	}
+	delivery := browser.ScreenshotDeliveryRequest{
+		Owner: owner, RequestID: request.RequestID, SessionID: capture.SessionID,
+		Ref: artifact.Ref, MediaRef: artifact.MediaRef,
+	}
+	if err = source.ClaimScreenshotDelivery(ctx, delivery); err != nil {
+		t.Fatalf("ClaimScreenshotDelivery() error = %v", err)
+	}
+	replay, found, err = source.LookupScreenshot(ctx, owner, request.RequestID, capture.SessionID)
+	if err != nil || !found || replay.Ref != artifact.Ref || replay.MediaRef != artifact.MediaRef ||
+		replay.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed ||
+		replay.SnapshotID != artifact.SnapshotID || replay.SnapshotGeneration != artifact.SnapshotGeneration {
+		t.Fatalf("claimed LookupScreenshot() = %+v, %t, %v", replay, found, err)
+	}
+	if err = source.ClaimScreenshotDelivery(ctx, delivery); !errors.Is(err, browser.ErrConflict) {
+		t.Fatalf("duplicate ClaimScreenshotDelivery() error = %v", err)
 	}
 	capture.Data = append(capture.Data, 0)
 	if _, err = source.retainScreenshot(ctx, request, capture); err == nil {
 		t.Fatal("conflicting replay unexpectedly succeeded")
+	}
+}
+
+type failingBrowserScreenshotMediaStore struct {
+	media.MediaStore
+	err error
+}
+
+func (store failingBrowserScreenshotMediaStore) StoreIdempotentOwned(
+	string,
+	media.MediaMeta,
+	string,
+	string,
+	media.MediaOwner,
+) (string, error) {
+	return "", store.err
+}
+
+func TestGatewayBrowserScreenshotRemovesUnregisteredDeliveryCopy(t *testing.T) {
+	workspace := t.TempDir()
+	runtime := &nodeAdmissionRuntime{}
+	t.Cleanup(func() {
+		if runtime.transferSpool != nil {
+			_ = runtime.transferSpool.Close()
+		}
+	})
+	storeErr := errors.New("definitive media registration failure")
+	source := &gatewayBrowserToolSource{
+		services: &services{
+			NodeAdmission: runtime,
+			MediaStore:    failingBrowserScreenshotMediaStore{err: storeErr},
+		},
+		workspace: workspace, screenshotRetention: time.Hour,
+	}
+	data := append(append([]byte(nil), []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}...),
+		[]byte("cleanup fixture")...)
+	_, err := source.retainScreenshot(
+		gatewayBrowserArtifactContext(workspace),
+		browser.ScreenshotRequest{RequestID: "request_cleanup"},
+		browser.ScreenshotCapture{
+			SessionID: "session_cleanup", Target: "gateway", Profile: "managed",
+			PolicyRevision: "policy_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+			SnapshotGeneration: 1, Data: data, ContentType: "image/png",
+		},
+	)
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("retainScreenshot() error = %v", err)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(workspace, "state", "media", "node-transfers"))
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("unregistered delivery files = %+v, %v", entries, readErr)
 	}
 }
 

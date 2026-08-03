@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
@@ -952,6 +953,13 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 	}
 	if len(result.ArtifactTags) > 0 {
 		cloned.ArtifactTags = append([]string(nil), result.ArtifactTags...)
+	}
+	if result.Outbound != nil {
+		cloned.Outbound = &tools.OutboundDelivery{
+			Channel: result.Outbound.Channel, ChatID: result.Outbound.ChatID,
+			ReplyToMessageID: result.Outbound.ReplyToMessageID, Text: result.Outbound.Text,
+			Media: append([]bus.MediaPart(nil), result.Outbound.Media...),
+		}
 	}
 	if result.Completion != nil {
 		cloned.Completion = &tools.CompletionResult{

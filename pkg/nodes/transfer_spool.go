@@ -93,6 +93,10 @@ type TransferArtifactSpec struct {
 	Direction       TransferDirection `json:"direction"`
 	Target          string            `json:"target"`
 	ProfileRevision string            `json:"profile_revision"`
+	SourceKind      string            `json:"source_kind,omitempty"`
+	SourceScope     string            `json:"source_scope,omitempty"`
+	SourceID        string            `json:"source_id,omitempty"`
+	SourceRevision  uint64            `json:"source_revision,omitempty"`
 	Filename        string            `json:"filename"`
 	ContentType     string            `json:"content_type,omitempty"`
 	DeclaredSize    int64             `json:"declared_size"`
@@ -101,6 +105,11 @@ type TransferArtifactSpec struct {
 }
 
 func (spec TransferArtifactSpec) Validate() error {
+	sourceEmpty := spec.SourceKind == "" && spec.SourceScope == "" &&
+		spec.SourceID == "" && spec.SourceRevision == 0
+	sourceValid := validInvocationIdentifier(spec.SourceKind) &&
+		validInvocationIdentifier(spec.SourceScope) &&
+		validInvocationIdentifier(spec.SourceID) && spec.SourceRevision > 0
 	if !validInvocationIdentifier(spec.TransferID) ||
 		!validInvocationIdentifier(spec.Target) ||
 		!validInvocationIdentifier(spec.ProfileRevision) ||
@@ -109,7 +118,7 @@ func (spec TransferArtifactSpec) Validate() error {
 		spec.DeclaredSize < 0 ||
 		spec.DeclaredSize > MaxTransferArtifactBytes ||
 		!validSHA256Digest(spec.SHA256) ||
-		spec.ExpiresAt <= 0 {
+		spec.ExpiresAt <= 0 || (!sourceEmpty && !sourceValid) {
 		return fmt.Errorf("%w: malformed transfer artifact specification", ErrInvalidInvocation)
 	}
 	switch spec.Direction {

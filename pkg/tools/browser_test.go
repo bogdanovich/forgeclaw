@@ -18,6 +18,8 @@ type fakeBrowserToolSource struct {
 	status     browser.Session
 	observe    browser.Observation
 	screenshot browser.ScreenshotArtifact
+	lookup     browser.ScreenshotArtifact
+	lookupHit  bool
 	prepare    browser.Preparation
 	execute    browser.Invocation
 	err        error
@@ -28,6 +30,8 @@ type fakeBrowserToolSource struct {
 	statusSessionID   string
 	prepareRequest    browser.PrepareActionRequest
 	screenshotRequest browser.ScreenshotRequest
+	deliveryRequest   browser.ScreenshotDeliveryRequest
+	observeCalls      int
 	executeOwner      browser.Owner
 	executePrepared   string
 	executeApproval   *browser.ApprovalBinding
@@ -88,9 +92,19 @@ func (source *fakeBrowserToolSource) Observe(
 	sessionID string,
 	tabID string,
 ) (browser.Observation, error) {
+	source.observeCalls++
 	source.statusOwner = owner
 	source.statusSessionID = sessionID + ":" + tabID
 	return source.observe, source.err
+}
+
+func (source *fakeBrowserToolSource) LookupScreenshot(
+	_ context.Context,
+	_ browser.Owner,
+	_ string,
+	_ string,
+) (browser.ScreenshotArtifact, bool, error) {
+	return source.lookup, source.lookupHit, source.err
 }
 
 func (source *fakeBrowserToolSource) CaptureScreenshot(
@@ -101,6 +115,14 @@ func (source *fakeBrowserToolSource) CaptureScreenshot(
 	source.statusOwner = request.Owner
 	source.statusSessionID = request.SessionID + ":" + request.TabID + ":screenshot"
 	return source.screenshot, source.err
+}
+
+func (source *fakeBrowserToolSource) ClaimScreenshotDelivery(
+	_ context.Context,
+	request browser.ScreenshotDeliveryRequest,
+) error {
+	source.deliveryRequest = request
+	return source.err
 }
 
 func (source *fakeBrowserToolSource) PrepareAction(
@@ -323,7 +345,7 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 			Filename: "browser-screenshot.png", Size: 1024, SHA256: strings.Repeat("a", 64),
 			ExpiresAt: 200, SessionID: "browser_session_1", TabID: "tab_primary",
 			SnapshotID: "snapshot_1", SnapshotGeneration: 3,
-			DeliveryState: "claimed", MediaRef: "media://opaque",
+			DeliveryState: browser.ScreenshotDeliveryPending, MediaRef: "media://opaque",
 		},
 	}
 	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
@@ -339,8 +361,11 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 	}
 	if observation.Artifact == nil || observation.Artifact.Ref != "transfer-artifact://opaque" ||
 		observation.Artifact.SnapshotID != "snapshot_1" ||
-		observation.Artifact.MediaRef != "" || len(result.Media) != 1 || result.Media[0] != "media://opaque" ||
+		observation.Artifact.MediaRef != "" || len(result.Media) != 0 || result.Outbound == nil ||
+		len(result.Outbound.Media) != 1 || result.Outbound.Media[0].Ref != "media://opaque" ||
+		!result.ImmediateDelivery || result.CommitOutbound == nil ||
 		source.screenshotRequest.SnapshotID != "snapshot_1" || source.screenshotRequest.RequestID == "" ||
+		strings.Contains(result.ForLLM, "delivery_state") ||
 		strings.Contains(result.ForLLM, "media://opaque") ||
 		strings.Contains(result.ForLLM, "iVBOR") {
 		t.Fatalf(
@@ -350,13 +375,24 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 			source.screenshotRequest,
 		)
 	}
+	if err := result.CommitOutbound(browserToolTestContext()); err != nil ||
+		source.deliveryRequest.Ref != "transfer-artifact://opaque" ||
+		source.deliveryRequest.RequestID != source.screenshotRequest.RequestID {
+		t.Fatalf("commit outbound = %#v, %v", source.deliveryRequest, err)
+	}
 
-	source.screenshot.DeliveryState = "already_claimed"
+	source.lookup = source.screenshot
+	source.lookup.DeliveryState = browser.ScreenshotDeliveryAlreadyClaimed
+	source.lookupHit = true
 	duplicate := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
 		browserToolTestContext(),
 		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
 	)
-	if duplicate.IsError || len(duplicate.Media) != 0 {
+	var replay browserObservationView
+	if duplicate.IsError || duplicate.Outbound != nil || duplicate.CommitOutbound != nil ||
+		source.observeCalls != 1 || json.Unmarshal([]byte(duplicate.ForLLM), &replay) != nil ||
+		!replay.Replayed || replay.Artifact == nil || replay.Artifact.Ref != observation.Artifact.Ref ||
+		replay.Artifact.SnapshotID != observation.Artifact.SnapshotID {
 		t.Fatalf("duplicate screenshot result = %#v", duplicate)
 	}
 }

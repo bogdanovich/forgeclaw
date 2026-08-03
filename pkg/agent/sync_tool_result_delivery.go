@@ -71,6 +71,15 @@ func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 	return nil, result
 }
 
+func commitToolResultOutbound(ctx context.Context, result *tools.ToolResult) error {
+	if result == nil || result.CommitOutbound == nil {
+		return nil
+	}
+	commit := result.CommitOutbound
+	result.CommitOutbound = nil
+	return commit(ctx)
+}
+
 func wrapToolDeliveryError(
 	original *tools.ToolResult,
 	message string,

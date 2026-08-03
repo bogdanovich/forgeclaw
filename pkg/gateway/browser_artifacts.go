@@ -10,12 +10,104 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/browser"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
-const browserScreenshotFilename = "browser-screenshot.png"
+const (
+	browserScreenshotFilename   = "browser-screenshot.png"
+	browserScreenshotSourceKind = "browser_screenshot"
+)
+
+func (source *gatewayBrowserToolSource) LookupScreenshot(
+	ctx context.Context,
+	owner browser.Owner,
+	requestID string,
+	sessionID string,
+) (browser.ScreenshotArtifact, bool, error) {
+	if source == nil || source.services == nil || source.services.NodeAdmission == nil ||
+		source.services.MediaStore == nil || source.workspace == "" || owner.Validate() != nil {
+		return browser.ScreenshotArtifact{}, false, browser.ErrWorkerUnavailable
+	}
+	transferOwner, mediaOwner, err := browserScreenshotOwners(
+		ctx, source.workspace, sessionID, requestID,
+	)
+	if err != nil {
+		return browser.ScreenshotArtifact{}, false, browser.ErrDenied
+	}
+	spool, err := source.services.NodeAdmission.gatewayTransferSpool(
+		nodes.GatewayTransferSpoolPath(source.workspace),
+	)
+	if err != nil {
+		return browser.ScreenshotArtifact{}, false, browser.ErrWorkerUnavailable
+	}
+	record, found, err := spool.LookupTransfer(transferOwner, requestID)
+	if err != nil || !found {
+		return browser.ScreenshotArtifact{}, found, err
+	}
+	if !validBrowserScreenshotRecord(record) {
+		return browser.ScreenshotArtifact{}, false, nodes.ErrTransferArtifactConflict
+	}
+	if record.DeliveryAt != 0 {
+		return browserScreenshotArtifact(record, record.MediaRef), true, nil
+	}
+	mediaRef, err := registerBrowserScreenshot(
+		ctx, spool, transferOwner, record, source.services.MediaStore,
+		mediaOwner, source.workspace,
+	)
+	if err != nil {
+		return browser.ScreenshotArtifact{}, false, err
+	}
+	return browserScreenshotArtifact(record, mediaRef), true, nil
+}
+
+func (source *gatewayBrowserToolSource) ClaimScreenshotDelivery(
+	ctx context.Context,
+	request browser.ScreenshotDeliveryRequest,
+) error {
+	if source == nil || source.services == nil || source.services.NodeAdmission == nil ||
+		source.workspace == "" || request.Owner.Validate() != nil {
+		return browser.ErrWorkerUnavailable
+	}
+	owner, _, err := browserScreenshotOwners(
+		ctx, source.workspace, request.SessionID, request.RequestID,
+	)
+	if err != nil {
+		return browser.ErrDenied
+	}
+	spool, err := source.services.NodeAdmission.gatewayTransferSpool(
+		nodes.GatewayTransferSpoolPath(source.workspace),
+	)
+	if err != nil {
+		return browser.ErrWorkerUnavailable
+	}
+	retained, found, err := spool.LookupTransfer(owner, request.RequestID)
+	if err != nil || !found || retained.Ref != request.Ref || !validBrowserScreenshotRecord(retained) {
+		if err != nil {
+			return err
+		}
+		return nodes.ErrTransferArtifactNotFound
+	}
+	record, claimed, claimErr := spool.ClaimDelivery(
+		owner, request.Ref, request.MediaRef, nodeFileDeliveryKey(owner, retained),
+	)
+	if claimErr != nil && !(claimed && record.DeliveryAt != 0 && fileutil.IsCommittedWriteError(claimErr)) {
+		return claimErr
+	}
+	if !claimed {
+		return browser.ErrConflict
+	}
+	return nil
+}
+
+func validBrowserScreenshotRecord(record nodes.TransferArtifactRecord) bool {
+	return record.State == nodes.TransferArtifactCommitted &&
+		record.Spec.SourceKind == browserScreenshotSourceKind &&
+		record.Spec.Filename == browserScreenshotFilename &&
+		record.Spec.ContentType == "image/png"
+}
 
 func (source *gatewayBrowserToolSource) CaptureScreenshot(
 	ctx context.Context,
@@ -43,19 +135,10 @@ func (source *gatewayBrowserToolSource) retainScreenshot(
 		source.services.MediaStore == nil || source.workspace == "" || len(capture.Data) == 0 {
 		return browser.ScreenshotArtifact{}, browser.ErrWorkerUnavailable
 	}
-	mediaOwner, err := browserScreenshotMediaOwner(ctx, source.workspace)
+	owner, mediaOwner, err := browserScreenshotOwners(
+		ctx, source.workspace, capture.SessionID, request.RequestID,
+	)
 	if err != nil {
-		return browser.ScreenshotArtifact{}, browser.ErrDenied
-	}
-	owner := nodes.TransferArtifactOwner{
-		WorkspaceID: mediaOwner.WorkspaceID,
-		AgentID:     mediaOwner.AgentID,
-		ActorID:     mediaOwner.ActorID,
-		RouteID:     mediaOwner.RouteID,
-		SessionID:   capture.SessionID,
-		ToolCallID:  request.RequestID,
-	}
-	if err = owner.Validate(); err != nil {
 		return browser.ScreenshotArtifact{}, browser.ErrDenied
 	}
 	digest := sha256.Sum256(capture.Data)
@@ -63,6 +146,8 @@ func (source *gatewayBrowserToolSource) retainScreenshot(
 	spec := nodes.TransferArtifactSpec{
 		TransferID: request.RequestID, Direction: nodes.TransferDirectionDownload,
 		Target: capture.Target, ProfileRevision: capture.PolicyRevision,
+		SourceKind: browserScreenshotSourceKind, SourceScope: capture.TabID,
+		SourceID: capture.SnapshotID, SourceRevision: capture.SnapshotGeneration,
 		Filename: browserScreenshotFilename, ContentType: capture.ContentType,
 		DeclaredSize: int64(len(capture.Data)), SHA256: hex.EncodeToString(digest[:]),
 		ExpiresAt: expiresAt,
@@ -86,11 +171,11 @@ func (source *gatewayBrowserToolSource) retainScreenshot(
 		}
 	} else {
 		writer, record, created, err = spool.Begin(owner, spec)
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err != nil && !(created && writer != nil && fileutil.IsCommittedWriteError(err)) {
+			if writer != nil {
+				_ = writer.Abort()
+			}
 			return browser.ScreenshotArtifact{}, fmt.Errorf("retain browser screenshot: %w", err)
-		}
-		if err != nil {
-			return browser.ScreenshotArtifact{}, err
 		}
 	}
 	if created {
@@ -109,29 +194,19 @@ func (source *gatewayBrowserToolSource) retainScreenshot(
 			offset = end
 		}
 		record, err = writer.Commit()
-		if err != nil {
+		if err != nil && !(record.State == nodes.TransferArtifactCommitted &&
+			fileutil.IsCommittedWriteError(err)) {
+			_ = writer.Abort()
 			return browser.ScreenshotArtifact{}, err
 		}
 	}
-	mediaRef, claimed, err := handoffBrowserScreenshot(
+	mediaRef, err := registerBrowserScreenshot(
 		ctx, spool, owner, record, source.services.MediaStore, mediaOwner, source.workspace,
 	)
 	if err != nil {
 		return browser.ScreenshotArtifact{}, err
 	}
-	deliveryState := "already_claimed"
-	if claimed {
-		deliveryState = "claimed"
-	}
-	return browser.ScreenshotArtifact{
-		Ref: record.Ref, Kind: "screenshot", ContentType: record.Spec.ContentType,
-		Filename: record.Spec.Filename, Size: record.Spec.DeclaredSize,
-		SHA256: record.Spec.SHA256, ExpiresAt: record.Spec.ExpiresAt,
-		SessionID: capture.SessionID, TabID: capture.TabID,
-		SnapshotID:         capture.SnapshotID,
-		SnapshotGeneration: capture.SnapshotGeneration,
-		DeliveryState:      deliveryState, MediaRef: mediaRef,
-	}, nil
+	return browserScreenshotArtifact(record, mediaRef), nil
 }
 
 func sameBrowserScreenshotSpec(existing, requested nodes.TransferArtifactSpec) bool {
@@ -139,13 +214,17 @@ func sameBrowserScreenshotSpec(existing, requested nodes.TransferArtifactSpec) b
 		existing.Direction == requested.Direction &&
 		existing.Target == requested.Target &&
 		existing.ProfileRevision == requested.ProfileRevision &&
+		existing.SourceKind == requested.SourceKind &&
+		existing.SourceScope == requested.SourceScope &&
+		existing.SourceID == requested.SourceID &&
+		existing.SourceRevision == requested.SourceRevision &&
 		existing.Filename == requested.Filename &&
 		existing.ContentType == requested.ContentType &&
 		existing.DeclaredSize == requested.DeclaredSize &&
 		existing.SHA256 == requested.SHA256
 }
 
-func handoffBrowserScreenshot(
+func registerBrowserScreenshot(
 	ctx context.Context,
 	spool *nodes.GatewayTransferSpool,
 	owner nodes.TransferArtifactOwner,
@@ -153,22 +232,22 @@ func handoffBrowserScreenshot(
 	store media.MediaStore,
 	mediaOwner media.MediaOwner,
 	workspace string,
-) (string, bool, error) {
+) (string, error) {
 	idempotentStore, ok := store.(idempotentNodeTransferMediaStore)
 	if !ok {
-		return "", false, errors.New("persistent idempotent media store is required")
+		return "", errors.New("persistent idempotent media store is required")
 	}
 	file, retained, err := spool.ResolveOwned(owner, artifact.Ref)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	defer file.Close()
 	deliveryKey := nodeFileDeliveryKey(owner, retained)
-	localPath, err := copyNodeTransferDelivery(
+	localPath, created, err := copyNodeTransferDeliveryTracked(
 		ctx, file, retained, workspace, deliveryKey+".data",
 	)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	mediaRef, err := idempotentStore.StoreIdempotentOwned(
 		localPath,
@@ -181,13 +260,56 @@ func handoffBrowserScreenshot(
 		mediaOwner,
 	)
 	if err != nil {
-		return "", false, err
+		if created && !fileutil.IsCommittedWriteError(err) {
+			err = errors.Join(err, removeNodeTransferDelivery(workspace, deliveryKey+".data"))
+		}
+		return "", err
 	}
-	claimedRecord, claimed, err := spool.ClaimDelivery(owner, artifact.Ref, mediaRef, deliveryKey)
+	return mediaRef, nil
+}
+
+func browserScreenshotArtifact(
+	record nodes.TransferArtifactRecord,
+	mediaRef string,
+) browser.ScreenshotArtifact {
+	deliveryState := browser.ScreenshotDeliveryPending
+	if record.DeliveryAt != 0 {
+		deliveryState = browser.ScreenshotDeliveryAlreadyClaimed
+	}
+	return browser.ScreenshotArtifact{
+		Ref: record.Ref, Kind: "screenshot", ContentType: record.Spec.ContentType,
+		Filename: record.Spec.Filename, Size: record.Spec.DeclaredSize,
+		SHA256: record.Spec.SHA256, ExpiresAt: record.Spec.ExpiresAt,
+		SessionID: record.Owner.SessionID, TabID: record.Spec.SourceScope,
+		SnapshotID:         record.Spec.SourceID,
+		SnapshotGeneration: record.Spec.SourceRevision,
+		DeliveryState:      deliveryState,
+		MediaRef:           mediaRef,
+	}
+}
+
+func browserScreenshotOwners(
+	ctx context.Context,
+	workspace string,
+	sessionID string,
+	requestID string,
+) (nodes.TransferArtifactOwner, media.MediaOwner, error) {
+	mediaOwner, err := browserScreenshotMediaOwner(ctx, workspace)
 	if err != nil {
-		return "", false, err
+		return nodes.TransferArtifactOwner{}, media.MediaOwner{}, err
 	}
-	return claimedRecord.MediaRef, claimed, nil
+	owner := nodes.TransferArtifactOwner{
+		WorkspaceID: mediaOwner.WorkspaceID,
+		AgentID:     mediaOwner.AgentID,
+		ActorID:     mediaOwner.ActorID,
+		RouteID:     mediaOwner.RouteID,
+		SessionID:   sessionID,
+		ToolCallID:  requestID,
+	}
+	if err = owner.Validate(); err != nil {
+		return nodes.TransferArtifactOwner{}, media.MediaOwner{}, err
+	}
+	return owner, mediaOwner, nil
 }
 
 func browserScreenshotMediaOwner(ctx context.Context, workspace string) (media.MediaOwner, error) {
