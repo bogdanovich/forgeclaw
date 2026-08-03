@@ -304,7 +304,11 @@ func TestPlaywrightServerConfiguresAnyHTTPThroughManagedProxyOnly(t *testing.T) 
 	args := strings.Join(configured.Args, " ")
 	if strings.Contains(args, "--allowed-origins") ||
 		configured.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] != "" {
-		t.Fatalf("any_http retained driver allowlist: args=%q env=%q", args, configured.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"])
+		t.Fatalf(
+			"any_http retained driver allowlist: args=%q env=%q",
+			args,
+			configured.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"],
+		)
 	}
 	if configured.Env["PLAYWRIGHT_MCP_PROXY_SERVER"] != "http://127.0.0.1:43210" ||
 		!strings.Contains(args, "--proxy-server http://127.0.0.1:43210") ||

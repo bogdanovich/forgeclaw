@@ -269,7 +269,13 @@ func TestBrowserNetworkPolicyAnyHTTPStillRejectsMalformedDestinations(t *testing
 		if destination, destinationErr := policy.destination(
 			context.Background(), test.scheme, test.authority,
 		); !errors.Is(destinationErr, ErrDenied) {
-			t.Errorf("destination(%q, %q) = %v, %v, want ErrDenied", test.scheme, test.authority, destination, destinationErr)
+			t.Errorf(
+				"destination(%q, %q) = %v, %v, want ErrDenied",
+				test.scheme,
+				test.authority,
+				destination,
+				destinationErr,
+			)
 		}
 	}
 }
