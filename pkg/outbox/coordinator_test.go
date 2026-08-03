@@ -84,9 +84,32 @@ func TestCoordinatorKeepsFirstOwnerRouteAndPayload(t *testing.T) {
 	if replayed.Dispatch {
 		t.Fatal("duplicate admission owned a second dispatch")
 	}
+	if !replayed.InFlight {
+		t.Fatal("duplicate admission did not report the active dispatch lease")
+	}
 	if replayed.Intent.OwnerWorkspace != "/agents/main" || replayed.Intent.Identity != identity ||
 		replayed.Intent.Message.Content != "first" {
 		t.Fatalf("replayed intent = %#v, want first canonical intent", replayed.Intent)
+	}
+}
+
+func TestCoordinatorCommitSuppressesSameProcessReplay(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	identity := testIdentity()
+	first, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "first"})
+	if err != nil || !first.Dispatch {
+		t.Fatalf("first admission = %+v, %v", first, err)
+	}
+	if commitErr := coordinator.CommitAdmission(first.Lease); commitErr != nil {
+		t.Fatalf("CommitAdmission() error = %v", commitErr)
+	}
+	replay, err := coordinator.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "replay"})
+	if err != nil || replay.Dispatch || replay.InFlight {
+		t.Fatalf("committed replay = %+v, %v", replay, err)
 	}
 }
 

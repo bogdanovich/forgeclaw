@@ -165,13 +165,17 @@ func (al *AgentLoop) settleInboundAdmission(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	admission finalResponseAdmission,
-) {
+) error {
 	admission = transactionAdmission(ctx, admission)
 	if admission.permitsInboundAck() {
-		al.ackInboundMessage(ctx, msg)
-		return
+		if err := al.ackInboundMessage(ctx, msg); err != nil {
+			al.releaseInboundMessage(context.Background(), msg, err)
+			return err
+		}
+		return nil
 	}
 	al.releaseInboundMessage(context.Background(), msg, admission.err)
+	return admission.err
 }
 
 func (c *inboundTurnCoordinator) runWorker(

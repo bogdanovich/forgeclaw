@@ -11,6 +11,8 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
 )
 
+var errOutboundPublicationInFlight = errors.New("durable outbound publication is still in flight")
+
 type outboundTransaction struct {
 	sourceID string
 	ordinal  atomic.Int64
@@ -172,6 +174,10 @@ func (al *AgentLoop) admitDurableMessage(
 		transaction.fail(err)
 		return result, err
 	}
+	if admission.InFlight {
+		transaction.fail(errOutboundPublicationInFlight)
+		return result, errOutboundPublicationInFlight
+	}
 	result.message = *admission.Intent.Message
 	result.coordinator = coordinator
 	result.lease = admission.Lease
@@ -209,6 +215,10 @@ func (al *AgentLoop) admitDurableMedia(
 		err = errors.New("durable outbound intent has no media payload")
 		transaction.fail(err)
 		return result, err
+	}
+	if admission.InFlight {
+		transaction.fail(errOutboundPublicationInFlight)
+		return result, errOutboundPublicationInFlight
 	}
 	result.message = *admission.Intent.Media
 	result.coordinator = coordinator
@@ -260,6 +270,14 @@ func (al *AgentLoop) publishTransactionMessage(
 		}
 		return false, err
 	}
+	if admission.durable {
+		if err = admission.coordinator.CommitAdmission(admission.lease); err != nil {
+			if transaction := outboundTransactionFromContext(ctx); transaction != nil {
+				transaction.fail(err)
+			}
+			return true, err
+		}
+	}
 	return true, nil
 }
 
@@ -287,6 +305,14 @@ func (al *AgentLoop) publishTransactionMedia(
 			err = releaseDurableAdmission(ctx, admission.coordinator, admission.lease, err)
 		}
 		return false, err
+	}
+	if admission.durable {
+		if err = admission.coordinator.CommitAdmission(admission.lease); err != nil {
+			if transaction := outboundTransactionFromContext(ctx); transaction != nil {
+				transaction.fail(err)
+			}
+			return true, err
+		}
 	}
 	return true, nil
 }

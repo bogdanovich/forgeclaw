@@ -39,14 +39,15 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
-		return al.maybePublishErrorWithPolicy(
+		return al.publishResponseWithContextIfNeeded(
 			ctx,
 			workspace,
 			agentID,
 			channel,
 			chatID,
 			sessionKey,
-			err,
+			formatUserFacingAgentError(err),
+			inboundCtx,
 			finalResponseAlwaysPublish,
 		)
 	}
