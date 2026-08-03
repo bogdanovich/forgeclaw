@@ -124,12 +124,18 @@ type commandEnvironmentValue struct {
 	value string
 }
 
+// IsValidEnvironmentName reports whether name can be represented without
+// changing its identity in an os/exec environment entry.
+func IsValidEnvironmentName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "=\x00")
+}
+
 func mergeCommandEnvironment(
 	parent []string,
 	fileValues map[string]string,
 	explicitValues map[string]string,
 	caseInsensitive bool,
-) []string {
+) ([]string, error) {
 	merged := make(map[string]commandEnvironmentValue)
 	normalize := func(name string) string {
 		if caseInsensitive {
@@ -145,18 +151,26 @@ func mergeCommandEnvironment(
 			set(entry[:index], entry[index+1:])
 		}
 	}
-	setMap := func(values map[string]string) {
+	setMap := func(values map[string]string) error {
 		names := make([]string, 0, len(values))
 		for name := range values {
+			if !IsValidEnvironmentName(name) {
+				return fmt.Errorf("invalid environment variable name %q", name)
+			}
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		for _, name := range names {
 			set(name, values[name])
 		}
+		return nil
 	}
-	setMap(fileValues)
-	setMap(explicitValues)
+	if err := setMap(fileValues); err != nil {
+		return nil, err
+	}
+	if err := setMap(explicitValues); err != nil {
+		return nil, err
+	}
 
 	keys := make([]string, 0, len(merged))
 	for key := range merged {
@@ -168,7 +182,7 @@ func mergeCommandEnvironment(
 		value := merged[key]
 		environment = append(environment, value.name+"="+value.value)
 	}
-	return environment
+	return environment, nil
 }
 
 // ServerConnection represents a connection to an MCP server
@@ -570,7 +584,13 @@ func connectServer(
 				})
 		}
 
-		cmd.Env = mergeCommandEnvironment(cmd.Environ(), envVars, cfg.Env, runtime.GOOS == "windows")
+		environment, environmentErr := mergeCommandEnvironment(
+			cmd.Environ(), envVars, cfg.Env, runtime.GOOS == "windows",
+		)
+		if environmentErr != nil {
+			return nil, fmt.Errorf("invalid MCP server environment: %w", environmentErr)
+		}
+		cmd.Env = environment
 		commandTransport = &isolatedCommandTransport{ServerName: name, Command: cmd}
 		transport = commandTransport
 	default:

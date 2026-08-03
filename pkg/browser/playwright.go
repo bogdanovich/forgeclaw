@@ -219,6 +219,9 @@ func validatePlaywrightManagedPolicy(server config.MCPServerConfig) error {
 		}
 	}
 	for variable := range server.Env {
+		if !localmcp.IsValidEnvironmentName(variable) {
+			return fmt.Errorf("browser driver environment name %q is invalid", variable)
+		}
 		if playwrightManagedEnvironmentName(variable) {
 			return fmt.Errorf(
 				"browser driver policy and capabilities must be managed, not %s",

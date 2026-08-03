@@ -239,7 +239,10 @@ func TestMergeCommandEnvironmentUsesWindowsIdentityAndExplicitPrecedence(t *test
 		"PLAYWRIGHT_MCP_CDP_ENDPOINT=",
 	}
 	for range 20 {
-		got := mergeCommandEnvironment(parent, fileValues, explicitValues, true)
+		got, err := mergeCommandEnvironment(parent, fileValues, explicitValues, true)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("mergeCommandEnvironment() = %q, want %q", got, want)
 		}
@@ -247,15 +250,30 @@ func TestMergeCommandEnvironmentUsesWindowsIdentityAndExplicitPrecedence(t *test
 }
 
 func TestMergeCommandEnvironmentKeepsUnixCaseDistinct(t *testing.T) {
-	got := mergeCommandEnvironment(
+	got, err := mergeCommandEnvironment(
 		[]string{"Name=parent", "NAME=parent-upper"},
 		map[string]string{"Name": "file"},
 		map[string]string{"NAME": "explicit"},
 		false,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"NAME=explicit", "Name=file"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("mergeCommandEnvironment() = %q, want %q", got, want)
+	}
+}
+
+func TestMergeCommandEnvironmentRejectsInvalidNames(t *testing.T) {
+	for _, name := range []string{"", "BAD=NAME", "BAD\x00NAME"} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			if environment, err := mergeCommandEnvironment(
+				nil, nil, map[string]string{name: "value"}, false,
+			); err == nil {
+				t.Fatalf("mergeCommandEnvironment() = %q, want error", environment)
+			}
+		})
 	}
 }
 

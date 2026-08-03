@@ -295,6 +295,7 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 		name string
 		args []string
 		env  map[string]string
+		want string
 	}{
 		{name: "allowed argument", args: []string{"--allowed-origins", "https://other.example"}},
 		{name: "allowed equals argument", args: []string{"--allowed-origins=https://other.example"}},
@@ -330,6 +331,11 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 			env:  map[string]string{"Playwright_Mcp_Cdp_Endpoint": "http://127.0.0.1:9222"},
 		},
 		{name: "case-variant extension environment", env: map[string]string{"playwright_mcp_extension": "true"}},
+		{
+			name: "malformed protected environment",
+			env:  map[string]string{"PLAYWRIGHT_MCP_CONFIG=/tmp/evil": ""},
+			want: "environment name",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -338,8 +344,11 @@ func TestPlaywrightWorkerFactoryRejectsOperatorOriginControls(t *testing.T) {
 			server.Args = test.args
 			server.Env = test.env
 			root.Tools.MCP.Servers["playwright"] = server
-			if _, err := NewPlaywrightWorkerFactory(root); err == nil ||
-				!strings.Contains(err.Error(), "policy and capabilities must be managed") {
+			want := test.want
+			if want == "" {
+				want = "policy and capabilities must be managed"
+			}
+			if _, err := NewPlaywrightWorkerFactory(root); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
 			}
 		})
