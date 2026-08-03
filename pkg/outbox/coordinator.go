@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
@@ -14,19 +15,20 @@ import (
 // Coordinator owns admission to one instance-wide outbox. Agent workspaces are
 // record metadata, never independent stores or delivery-ID lookup scopes.
 type Coordinator struct {
-	mu        sync.Mutex
-	store     *Store
-	root      string
-	leases    map[string]uint64
-	nextLease uint64
-	now       func() time.Time
-	closed    bool
+	mu     sync.Mutex
+	store  *Store
+	root   string
+	leases map[string]uint64
+	now    func() time.Time
+	closed bool
 }
 
 var coordinatorRoots = struct {
 	sync.Mutex
 	active map[string]bool
 }{active: make(map[string]bool)}
+
+var dispatchLeaseSequence atomic.Uint64
 
 // DispatchLease identifies one in-process owner of publication. Its fields are
 // private so callers can only return the exact lease issued with an admission.
@@ -174,9 +176,9 @@ func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 	dispatch := dispatchable && !leased
 	var lease DispatchLease
 	if dispatch {
-		c.nextLease++
-		c.leases[intent.ID] = c.nextLease
-		lease = DispatchLease{deliveryID: intent.ID, generation: c.nextLease}
+		generation := dispatchLeaseSequence.Add(1)
+		c.leases[intent.ID] = generation
+		lease = DispatchLease{deliveryID: intent.ID, generation: generation}
 	}
 	return Admission{Intent: intent, Dispatch: dispatch, Lease: lease}, nil
 }

@@ -198,6 +198,45 @@ func TestCoordinatorStaleReleaseCannotClearNewLease(t *testing.T) {
 	}
 }
 
+func TestCoordinatorStaleLeaseCannotCrossReopen(t *testing.T) {
+	instanceRoot := t.TempDir()
+	first, err := OpenCoordinator(instanceRoot)
+	if err != nil {
+		t.Fatalf("OpenCoordinator(first) error = %v", err)
+	}
+	identity := testIdentity()
+	oldAdmission, err := first.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "first"})
+	if err != nil {
+		t.Fatalf("AdmitMessage(first) error = %v", err)
+	}
+	if closeErr := first.Close(); closeErr != nil {
+		t.Fatalf("Close(first) error = %v", closeErr)
+	}
+
+	second, err := OpenCoordinator(instanceRoot)
+	if err != nil {
+		t.Fatalf("OpenCoordinator(second) error = %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	current, err := second.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "second"})
+	if err != nil {
+		t.Fatalf("AdmitMessage(second) error = %v", err)
+	}
+	if !current.Dispatch {
+		t.Fatal("reopened coordinator did not acquire pending dispatch")
+	}
+	if releaseErr := second.ReleaseAdmission(oldAdmission.Lease); releaseErr == nil {
+		t.Fatal("lease from closed coordinator released current owner")
+	}
+	third, err := second.AdmitMessage("/agents/main", identity, bus.OutboundMessage{Content: "third"})
+	if err != nil {
+		t.Fatalf("AdmitMessage(third) error = %v", err)
+	}
+	if third.Dispatch {
+		t.Fatal("third admission acquired dispatch while reopened lease remained active")
+	}
+}
+
 func TestCoordinatorConcurrentReroutesHaveOneOwner(t *testing.T) {
 	coordinator, err := OpenCoordinator(t.TempDir())
 	if err != nil {
