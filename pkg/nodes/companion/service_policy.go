@@ -162,7 +162,38 @@ func normalizeServicePolicyProfile(alias string, profile ServicePolicyProfile) (
 	}
 	profile.Services = services
 	profile.normalizedAlias = alias
+	if err := validateServiceLogOutputBudget(profile); err != nil {
+		return ServicePolicyProfile{}, err
+	}
 	return profile, nil
+}
+
+func validateServiceLogOutputBudget(profile ServicePolicyProfile) error {
+	for alias, service := range profile.Services {
+		if !service.Logs {
+			continue
+		}
+		minimumBytes := 0
+		for _, truncated := range []bool{false, true} {
+			minimum := ServiceLogs{
+				Service:   alias,
+				Records:   []ServiceLogRecord{},
+				Truncated: truncated,
+			}
+			data, err := json.Marshal(minimum)
+			if err != nil {
+				return errors.New("encode minimum service log result")
+			}
+			minimumBytes = max(minimumBytes, len(data))
+		}
+		if minimumBytes > profile.LogLimits.BytesMax {
+			return fmt.Errorf(
+				"log bytes_max cannot encode the mandatory result for service %q",
+				alias,
+			)
+		}
+	}
+	return nil
 }
 
 func normalizeServicePolicyEntry(service ServicePolicyEntry) (ServicePolicyEntry, error) {
