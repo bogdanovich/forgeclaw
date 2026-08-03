@@ -33,6 +33,17 @@ func TestDeliveryIDIsStableForLogicalMessage(t *testing.T) {
 	if different == first {
 		t.Fatal("DeliveryID() did not distinguish message ordinal")
 	}
+
+	identity.Ordinal--
+	identity.SessionKey = "agent:main:telegram:rotated-session"
+	identity.ChatID = "rotated-chat"
+	rotated, err := DeliveryID(identity)
+	if err != nil {
+		t.Fatalf("DeliveryID() rotated route error = %v", err)
+	}
+	if rotated != first {
+		t.Fatalf("DeliveryID() rotated route = %q, want stable %q", rotated, first)
+	}
 }
 
 func TestStorePersistsDeliveryLifecycle(t *testing.T) {
@@ -149,12 +160,17 @@ func TestCreateReturnsCanonicalPayloadForStableIdentity(t *testing.T) {
 	replayed := intent
 	replayed.Message = cloneMessage(intent.Message)
 	replayed.Message.Content = "different regenerated response"
+	replayed.Identity.SessionKey = "agent:main:telegram:rotated-session"
+	replayed.Message.SessionKey = replayed.Identity.SessionKey
 	canonical, err := store.Create(replayed)
 	if err != nil {
 		t.Fatalf("Create() replay error = %v", err)
 	}
 	if canonical.Message == nil || canonical.Message.Content != intent.Message.Content {
 		t.Fatalf("Create() canonical payload = %#v, want original response", canonical.Message)
+	}
+	if canonical.Identity.SessionKey != intent.Identity.SessionKey {
+		t.Fatalf("Create() canonical route = %#v, want original %#v", canonical.Identity, intent.Identity)
 	}
 }
 

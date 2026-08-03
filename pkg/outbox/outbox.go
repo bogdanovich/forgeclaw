@@ -116,7 +116,17 @@ func DeliveryID(identity Identity) (string, error) {
 	if err := validateIdentity(identity); err != nil {
 		return "", err
 	}
-	encoded, err := json.Marshal(identity)
+	encoded, err := json.Marshal(struct {
+		Version  int    `json:"version"`
+		SourceID string `json:"source_id"`
+		Ordinal  int    `json:"ordinal"`
+		Kind     Kind   `json:"kind"`
+	}{
+		Version:  recordVersion,
+		SourceID: identity.SourceID,
+		Ordinal:  identity.Ordinal,
+		Kind:     identity.Kind,
+	})
 	if err != nil {
 		return "", fmt.Errorf("encode outbox identity: %w", err)
 	}
@@ -200,7 +210,7 @@ func (s *Store) Create(intent Intent) (Intent, error) {
 	}
 	existing, err := s.read(intent.ID)
 	if err == nil {
-		if existing.ID != intent.ID || existing.Identity != intent.Identity {
+		if existing.ID != intent.ID || !sameLogicalIdentity(existing.Identity, intent.Identity) {
 			return Intent{}, fmt.Errorf("outbox intent %q conflicts with existing record", intent.ID)
 		}
 		if existing.Status != StatusPending {
@@ -388,6 +398,12 @@ func normalizeIdentity(identity Identity) Identity {
 	identity.ChatID = strings.TrimSpace(identity.ChatID)
 	identity.SessionKey = strings.TrimSpace(identity.SessionKey)
 	return identity
+}
+
+func sameLogicalIdentity(left, right Identity) bool {
+	left = normalizeIdentity(left)
+	right = normalizeIdentity(right)
+	return left.SourceID == right.SourceID && left.Ordinal == right.Ordinal && left.Kind == right.Kind
 }
 
 func validateIdentity(identity Identity) error {

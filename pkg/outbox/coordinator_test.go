@@ -229,14 +229,14 @@ func TestCoordinatorReadmitsCanonicalPayloadAfterBusRejection(t *testing.T) {
 	coordinator := NewCoordinator()
 	workspace := t.TempDir()
 	identity := testIdentity()
-	message := func(content string) bus.OutboundMessage {
+	message := func(route Identity, content string) bus.OutboundMessage {
 		return bus.OutboundMessage{
-			Context:    bus.InboundContext{Channel: identity.Channel, ChatID: identity.ChatID},
-			SessionKey: identity.SessionKey,
+			Context:    bus.InboundContext{Channel: route.Channel, ChatID: route.ChatID},
+			SessionKey: route.SessionKey,
 			Content:    content,
 		}
 	}
-	first, err := coordinator.AdmitMessage(workspace, identity, message("original response"))
+	first, err := coordinator.AdmitMessage(workspace, identity, message(identity, "original response"))
 	if err != nil || !first.Dispatch {
 		t.Fatalf("AdmitMessage(first) = %+v, %v", first, err)
 	}
@@ -244,14 +244,16 @@ func TestCoordinatorReadmitsCanonicalPayloadAfterBusRejection(t *testing.T) {
 		t.Fatalf("ReleaseAdmission(first) error = %v", releaseErr)
 	}
 
-	replayed, err := coordinator.AdmitMessage(workspace, identity, message("regenerated response"))
+	rotated := identity
+	rotated.SessionKey = "agent:main:telegram:rotated-session"
+	replayed, err := coordinator.AdmitMessage(workspace, rotated, message(rotated, "regenerated response"))
 	if err != nil || !replayed.Dispatch {
 		t.Fatalf("AdmitMessage(replay) = %+v, %v", replayed, err)
 	}
 	if replayed.Intent.Message == nil || replayed.Intent.Message.Content != "original response" {
 		t.Fatalf("replayed canonical intent = %#v", replayed.Intent.Message)
 	}
-	duplicate, err := coordinator.AdmitMessage(workspace, identity, message("third response"))
+	duplicate, err := coordinator.AdmitMessage(workspace, rotated, message(rotated, "third response"))
 	if err != nil || duplicate.Dispatch {
 		t.Fatalf("AdmitMessage(duplicate) = %+v, %v, want no second dispatch", duplicate, err)
 	}

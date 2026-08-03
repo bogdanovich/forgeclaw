@@ -6478,6 +6478,45 @@ func TestRunWorkerPersistsDurableDeliveryOutcome(t *testing.T) {
 	}
 }
 
+func TestRunWorkerPersistsNoIDPartialChunkAsAmbiguous(t *testing.T) {
+	m := newTestManager()
+	lifecycle := &recordingDurableDelivery{complete: make(chan struct{}, 1)}
+	m.durableDelivery = lifecycle
+	calls := 0
+	ch := &mockChannelWithLength{
+		mockChannel: mockChannel{sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			calls++
+			if calls == 2 {
+				return fmt.Errorf("second chunk rejected: %w", ErrSendFailed)
+			}
+			return nil
+		}},
+		maxLen: 5,
+	}
+	w := newChannelWorker("test", ch, "test")
+	ctx, cancel := context.WithCancel(t.Context())
+	go m.runWorkerOwned(ctx, "test", w, nil)
+
+	w.queue <- testOutboundMessage(bus.OutboundMessage{
+		DeliveryID: "out_0123456789abcdef0123456789abcdef",
+		Channel:    "test",
+		ChatID:     "123",
+		Content:    "hello world",
+	})
+	select {
+	case <-lifecycle.complete:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not persist durable outcome")
+	}
+	cancel()
+	<-w.done
+
+	_, _, outcomes := lifecycle.snapshot()
+	if len(outcomes) != 1 || !outcomes[0].MayHaveDelivered || len(outcomes[0].MessageIDs) != 0 {
+		t.Fatalf("durable outcomes = %#v, want one ambiguous result without platform IDs", outcomes)
+	}
+}
+
 func TestSendMessagePreservesAmbiguityBeforeDefiniteRejection(t *testing.T) {
 	m := newTestManager()
 	callCount := 0

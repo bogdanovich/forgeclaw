@@ -2154,6 +2154,7 @@ func (m *Manager) runWorkerOwned(
 			}
 			terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
 			var messageIDs []string
+			successfulChunks := 0
 			delivered := true
 			var deliveryResult DeliveryResult[bus.OutboundMessage]
 			for _, chunk := range chunks {
@@ -2167,11 +2168,12 @@ func (m *Manager) runWorkerOwned(
 					delivered = false
 					break
 				}
+				successfulChunks++
 				messageIDs = append(messageIDs, deliveryResult.MessageIDs...)
 			}
 			if delivered {
 				deliveryResult = SuccessfulDelivery[bus.OutboundMessage](messageIDs)
-			} else if len(messageIDs) > 0 {
+			} else if successfulChunks > 0 {
 				deliveryResult.MessageIDs = append(messageIDs, deliveryResult.MessageIDs...)
 				deliveryResult.Status = DeliveryPartial
 				deliveryResult.Acceptance = DeliveryAcceptanceUnknown
