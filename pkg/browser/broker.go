@@ -43,6 +43,11 @@ type ActionWorker interface {
 	CatalogRevision() string
 }
 
+type ScreenshotWorker interface {
+	ActionWorker
+	CaptureScreenshot(context.Context, int) (DriverScreenshot, error)
+}
+
 // WorkerOpenResult transfers exactly one lifecycle owner to the broker. Owner
 // is admitted as a worker only when Open succeeds; after a failed startup it is
 // retained solely so cleanup can be retried.

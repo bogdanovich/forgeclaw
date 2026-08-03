@@ -17,21 +17,23 @@ type fakeBrowserToolSource struct {
 	open       browser.Session
 	status     browser.Session
 	observe    browser.Observation
+	screenshot browser.ScreenshotArtifact
 	prepare    browser.Preparation
 	execute    browser.Invocation
 	err        error
 	executeErr error
 
-	openRequest     browser.OpenRequest
-	statusOwner     browser.Owner
-	statusSessionID string
-	prepareRequest  browser.PrepareActionRequest
-	executeOwner    browser.Owner
-	executePrepared string
-	executeApproval *browser.ApprovalBinding
-	prepareCalls    int
-	executeCalls    int
-	profileStatus   browser.ProfileAvailability
+	openRequest       browser.OpenRequest
+	statusOwner       browser.Owner
+	statusSessionID   string
+	prepareRequest    browser.PrepareActionRequest
+	screenshotRequest browser.ScreenshotRequest
+	executeOwner      browser.Owner
+	executePrepared   string
+	executeApproval   *browser.ApprovalBinding
+	prepareCalls      int
+	executeCalls      int
+	profileStatus     browser.ProfileAvailability
 }
 
 func (source *fakeBrowserToolSource) Available() bool { return source.available }
@@ -89,6 +91,16 @@ func (source *fakeBrowserToolSource) Observe(
 	source.statusOwner = owner
 	source.statusSessionID = sessionID + ":" + tabID
 	return source.observe, source.err
+}
+
+func (source *fakeBrowserToolSource) CaptureScreenshot(
+	_ context.Context,
+	request browser.ScreenshotRequest,
+) (browser.ScreenshotArtifact, error) {
+	source.screenshotRequest = request
+	source.statusOwner = request.Owner
+	source.statusSessionID = request.SessionID + ":" + request.TabID + ":screenshot"
+	return source.screenshot, source.err
 }
 
 func (source *fakeBrowserToolSource) PrepareAction(
@@ -170,7 +182,9 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	if len(result.Targets) != 1 || result.Targets[0].Target != "gateway" ||
 		result.Targets[0].Status != "ready" || len(result.Targets[0].Profiles) != 1 ||
 		result.Targets[0].Profiles[0].NetworkMode != config.BrowserNetworkExactOrigins ||
-		!result.Targets[0].Profiles[0].DryRun || source.openRequest.Target != "" {
+		!result.Targets[0].Profiles[0].DryRun || !result.Targets[0].Features.Screenshot ||
+		result.Targets[0].Limits.ScreenshotBytes != config.BrowserMaxScreenshotBytes ||
+		source.openRequest.Target != "" {
 		t.Fatalf("browser targets = %#v", result)
 	}
 
@@ -292,6 +306,58 @@ func TestBrowserObserveDeliversEscapedTruncatedSnapshotWithinToolLimit(t *testin
 	if !observation.Truncated || observation.Snapshot != snapshot ||
 		len(result.ContentForLLM()) > cfg.Tools.Browser.Limits.ToolResultBytes {
 		t.Fatalf("escaped observation = %#v; encoded bytes = %d", observation, len(result.ContentForLLM()))
+	}
+}
+
+func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T) {
+	source := &fakeBrowserToolSource{
+		available: true,
+		status:    browser.Session{ID: "browser_session_1", State: browser.SessionReady, TabID: "tab_primary"},
+		observe: browser.Observation{
+			SessionID: "browser_session_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+			SnapshotGeneration: 3, URL: "https://example.com/listing", Origin: "https://example.com",
+			Title: "Listing", Snapshot: "- heading Listing",
+		},
+		screenshot: browser.ScreenshotArtifact{
+			Ref: "transfer-artifact://opaque", Kind: "screenshot", ContentType: "image/png",
+			Filename: "browser-screenshot.png", Size: 1024, SHA256: strings.Repeat("a", 64),
+			ExpiresAt: 200, SessionID: "browser_session_1", TabID: "tab_primary",
+			SnapshotID: "snapshot_1", SnapshotGeneration: 3,
+			DeliveryState: "claimed", MediaRef: "media://opaque",
+		},
+	}
+	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	var observation browserObservationView
+	if result == nil || result.IsError {
+		t.Fatalf("screenshot result = %#v", result)
+	}
+	if err := json.Unmarshal([]byte(result.ForLLM), &observation); err != nil {
+		t.Fatalf("decode screenshot result: %v; content = %q", err, result.ForLLM)
+	}
+	if observation.Artifact == nil || observation.Artifact.Ref != "transfer-artifact://opaque" ||
+		observation.Artifact.SnapshotID != "snapshot_1" ||
+		observation.Artifact.MediaRef != "" || len(result.Media) != 1 || result.Media[0] != "media://opaque" ||
+		source.screenshotRequest.SnapshotID != "snapshot_1" || source.screenshotRequest.RequestID == "" ||
+		strings.Contains(result.ForLLM, "media://opaque") ||
+		strings.Contains(result.ForLLM, "iVBOR") {
+		t.Fatalf(
+			"screenshot observation = %#v; result = %#v; request = %#v",
+			observation,
+			result,
+			source.screenshotRequest,
+		)
+	}
+
+	source.screenshot.DeliveryState = "already_claimed"
+	duplicate := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
+		browserToolTestContext(),
+		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
+	)
+	if duplicate.IsError || len(duplicate.Media) != 0 {
+		t.Fatalf("duplicate screenshot result = %#v", duplicate)
 	}
 }
 

@@ -27,6 +27,7 @@ const (
 	BrowserMaxIdleSeconds       = 10 * 60
 	BrowserMaxActionSeconds     = 60
 	BrowserMaxSnapshotBytes     = 256 * 1024
+	BrowserMaxScreenshotBytes   = 8 * 1024 * 1024
 	BrowserMaxSnapshotRefs      = 500
 	BrowserMaxTextInputBytes    = 16 * 1024
 	BrowserMaxToolResultBytes   = 320 * 1024
@@ -117,6 +118,7 @@ type BrowserLimitsConfig struct {
 	PreparedSeconds int `json:"prepared_seconds,omitempty"  yaml:"-"`
 	ActionSeconds   int `json:"action_seconds,omitempty"    yaml:"-"`
 	SnapshotBytes   int `json:"snapshot_bytes,omitempty"    yaml:"-"`
+	ScreenshotBytes int `json:"screenshot_bytes,omitempty"  yaml:"-"`
 	SnapshotRefs    int `json:"snapshot_refs,omitempty"     yaml:"-"`
 	TextInputBytes  int `json:"text_input_bytes,omitempty"  yaml:"-"`
 	ToolResultBytes int `json:"tool_result_bytes,omitempty" yaml:"-"`
@@ -132,6 +134,7 @@ func (limits BrowserLimitsConfig) Effective() BrowserLimitsConfig {
 		PreparedSeconds: effectiveBrowserLimit(limits.PreparedSeconds, BrowserMaxPreparedSeconds),
 		ActionSeconds:   effectiveBrowserLimit(limits.ActionSeconds, BrowserMaxActionSeconds),
 		SnapshotBytes:   effectiveBrowserLimit(limits.SnapshotBytes, BrowserMaxSnapshotBytes),
+		ScreenshotBytes: effectiveBrowserLimit(limits.ScreenshotBytes, BrowserMaxScreenshotBytes),
 		SnapshotRefs:    effectiveBrowserLimit(limits.SnapshotRefs, BrowserMaxSnapshotRefs),
 		TextInputBytes:  effectiveBrowserLimit(limits.TextInputBytes, BrowserMaxTextInputBytes),
 		ToolResultBytes: effectiveBrowserLimit(limits.ToolResultBytes, BrowserMaxToolResultBytes),
@@ -521,6 +524,7 @@ func validateBrowserLimits(limits BrowserLimitsConfig) error {
 		{"prepared_seconds", limits.PreparedSeconds, BrowserMaxPreparedSeconds},
 		{"action_seconds", limits.ActionSeconds, BrowserMaxActionSeconds},
 		{"snapshot_bytes", limits.SnapshotBytes, BrowserMaxSnapshotBytes},
+		{"screenshot_bytes", limits.ScreenshotBytes, BrowserMaxScreenshotBytes},
 		{"snapshot_refs", limits.SnapshotRefs, BrowserMaxSnapshotRefs},
 		{"text_input_bytes", limits.TextInputBytes, BrowserMaxTextInputBytes},
 		{"tool_result_bytes", limits.ToolResultBytes, BrowserMaxToolResultBytes},

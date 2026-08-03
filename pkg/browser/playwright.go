@@ -428,6 +428,53 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 	return observation, nil
 }
 
+func (worker *playwrightWorker) CaptureScreenshot(
+	ctx context.Context,
+	maximumBytes int,
+) (DriverScreenshot, error) {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if worker.closing || worker.closed || worker.lost || maximumBytes <= 0 {
+		return DriverScreenshot{}, ErrWorkerUnavailable
+	}
+	result, err := worker.client.CallTool(ctx, "browser_take_screenshot", map[string]any{
+		"type": "png", "fullPage": false, "scale": "css",
+	})
+	if err != nil || result == nil {
+		worker.lost = true
+		return DriverScreenshot{}, ErrWorkerUnavailable
+	}
+	if result.IsError {
+		return DriverScreenshot{}, ErrDriverRejected
+	}
+	if len(result.Content) > 4 {
+		return DriverScreenshot{}, ErrDriverIncompatible
+	}
+	var image []byte
+	textBytes := 0
+	for _, content := range result.Content {
+		switch value := content.(type) {
+		case *sdkmcp.TextContent:
+			textBytes += len(value.Text)
+			if textBytes > playwrightDriverResponseBytes {
+				return DriverScreenshot{}, ErrDriverIncompatible
+			}
+		case *sdkmcp.ImageContent:
+			if image != nil || value.MIMEType != "image/png" || len(value.Data) == 0 ||
+				len(value.Data) > maximumBytes {
+				return DriverScreenshot{}, ErrDriverIncompatible
+			}
+			image = append([]byte(nil), value.Data...)
+		default:
+			return DriverScreenshot{}, ErrDriverIncompatible
+		}
+	}
+	if len(image) == 0 {
+		return DriverScreenshot{}, ErrDriverIncompatible
+	}
+	return DriverScreenshot{Data: image, ContentType: "image/png"}, nil
+}
+
 func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (DriverElement, string, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
@@ -1014,6 +1061,20 @@ var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
 			"filename":{"description":"Save snapshot to markdown file instead of returning it in the response.","type":"string"},
 			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"}
 		},
+		"type":"object"
+	}`),
+	"browser_take_screenshot": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"element":{"description":"Human-readable element description used to obtain permission to interact with the element","type":"string"},
+			"filename":{"description":"File name to save the screenshot to. Defaults to ` + "`page-{timestamp}.{png|jpeg}`" + ` if not specified. Prefer relative file names to stay within the output directory.","type":"string"},
+			"fullPage":{"description":"When true, takes a screenshot of the full scrollable page, instead of the currently visible viewport. Cannot be used with element screenshots.","type":"boolean"},
+			"scale":{"default":"css","description":"Image resolution scale. \"css\" produces a screenshot sized in CSS pixels (smaller, consistent across devices). \"device\" produces a high-resolution screenshot using device pixels (larger, accounts for the device pixel ratio). Default is css.","enum":["css","device"],"type":"string"},
+			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"},
+			"type":{"default":"png","description":"Image format for the screenshot. Default is png.","enum":["png","jpeg"],"type":"string"}
+		},
+		"required":["type","scale"],
 		"type":"object"
 	}`),
 	"browser_click": json.RawMessage(`{

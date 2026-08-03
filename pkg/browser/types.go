@@ -47,6 +47,49 @@ var (
 	elementRoleRegexp       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 )
 
+type DriverScreenshot struct {
+	Data        []byte
+	ContentType string
+}
+
+type ScreenshotRequest struct {
+	Owner              Owner
+	RequestID          string
+	SessionID          string
+	TabID              string
+	SnapshotID         string
+	SnapshotGeneration uint64
+}
+
+type ScreenshotArtifact struct {
+	Ref                string `json:"ref"`
+	Kind               string `json:"kind"`
+	ContentType        string `json:"content_type"`
+	Filename           string `json:"filename"`
+	Size               int64  `json:"size"`
+	SHA256             string `json:"sha256"`
+	ExpiresAt          int64  `json:"expires_at"`
+	SessionID          string `json:"browser_session_id"`
+	TabID              string `json:"tab_id"`
+	SnapshotID         string `json:"snapshot_id"`
+	SnapshotGeneration uint64 `json:"snapshot_generation"`
+	Truncated          bool   `json:"truncated"`
+	DeliveryState      string `json:"delivery_state"`
+	MediaRef           string `json:"-"`
+}
+
+type ScreenshotCapture struct {
+	SessionID          string
+	Target             string
+	Profile            string
+	PolicyRevision     string
+	TabID              string
+	SnapshotID         string
+	SnapshotGeneration uint64
+	Data               []byte
+	ContentType        string
+}
+
 type SessionState string
 
 const (

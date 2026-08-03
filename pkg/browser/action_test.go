@@ -26,6 +26,8 @@ type actionTestWorker struct {
 	resolveCalls   int
 	actions        []DriverAction
 	onExecute      func(DriverAction)
+	screenshot     DriverScreenshot
+	screenshotErr  error
 	closed         int
 }
 
@@ -60,6 +62,10 @@ func (worker *actionTestWorker) Execute(_ context.Context, action DriverAction) 
 
 func (worker *actionTestWorker) CatalogRevision() string {
 	return strings.Repeat("c", 64)
+}
+
+func (worker *actionTestWorker) CaptureScreenshot(context.Context, int) (DriverScreenshot, error) {
+	return worker.screenshot, worker.screenshotErr
 }
 
 type actionTestFactory struct {
@@ -1207,6 +1213,9 @@ func openActionTestBrokerWithConfig(
 	worker := &actionTestWorker{observation: driverObservationFixture(
 		DriverElement{Target: "e1", Role: "textbox", Name: "Name"},
 	)}
+	worker.screenshot = DriverScreenshot{
+		Data: append(append([]byte(nil), pngSignature...), []byte("fixture")...), ContentType: "image/png",
+	}
 	worker.resolveElement = worker.observation.Elements[0]
 	worker.resolveOrigin = worker.observation.Origin
 	broker := newTestBroker(t, root, store, &actionTestFactory{worker: worker})

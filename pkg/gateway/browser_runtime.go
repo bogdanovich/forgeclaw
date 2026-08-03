@@ -12,6 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/browser"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
@@ -182,8 +183,10 @@ func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningService
 }
 
 type gatewayBrowserToolSource struct {
-	services       *services
-	policyRevision string
+	services            *services
+	policyRevision      string
+	workspace           string
+	screenshotRetention time.Duration
 }
 
 func (source *gatewayBrowserToolSource) Available() bool {
@@ -329,6 +332,10 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 		}
 		return &gatewayBrowserToolSource{
 			services: runningServices, policyRevision: policyRevision,
+			workspace: reloadCfg.WorkspacePath(),
+			screenshotRetention: browserScreenshotRetention(
+				reloadCfg.Tools.Browser.Limits.Effective().RetentionSecs,
+			),
 		}, nil
 	}
 	factories := map[string]agent.RuntimeToolFactory{
@@ -367,4 +374,12 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 		}
 	}
 	return nil
+}
+
+func browserScreenshotRetention(seconds int) time.Duration {
+	retention := time.Duration(seconds) * time.Second
+	if retention <= 0 || retention > nodes.MaxGatewayTransferLifetime {
+		return nodes.MaxGatewayTransferLifetime
+	}
+	return retention
 }

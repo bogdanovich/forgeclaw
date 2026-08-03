@@ -28,6 +28,7 @@ type BrowserToolSource interface {
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
 	Close(context.Context, browser.Owner, string) (browser.Session, error)
 	Observe(context.Context, browser.Owner, string, string) (browser.Observation, error)
+	CaptureScreenshot(context.Context, browser.ScreenshotRequest) (browser.ScreenshotArtifact, error)
 	PrepareAction(context.Context, browser.PrepareActionRequest) (browser.Preparation, error)
 	ExecuteAction(context.Context, browser.Owner, string, *browser.ApprovalBinding) (browser.Invocation, error)
 }
@@ -122,7 +123,12 @@ type browserTargetView struct {
 	Reason   string               `json:"reason,omitempty"`
 	Profiles []browserProfileView `json:"profiles"`
 	Actions  []browser.ActionKind `json:"actions"`
+	Features browserFeatureView   `json:"features"`
 	Limits   browserLimitsView    `json:"limits"`
+}
+
+type browserFeatureView struct {
+	Screenshot bool `json:"screenshot"`
 }
 
 type browserProfileView struct {
@@ -134,9 +140,10 @@ type browserProfileView struct {
 }
 
 type browserLimitsView struct {
-	Sessions      int `json:"sessions"`
-	Tabs          int `json:"tabs"`
-	SnapshotBytes int `json:"snapshot_bytes"`
+	Sessions        int `json:"sessions"`
+	Tabs            int `json:"tabs"`
+	SnapshotBytes   int `json:"snapshot_bytes"`
+	ScreenshotBytes int `json:"screenshot_bytes"`
 }
 
 func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *ToolResult {
@@ -196,8 +203,10 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
 				browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
 			},
+			Features: browserFeatureView{Screenshot: true},
 			Limits: browserLimitsView{
 				Sessions: limits.Sessions, Tabs: limits.Tabs, SnapshotBytes: limits.SnapshotBytes,
+				ScreenshotBytes: limits.ScreenshotBytes,
 			},
 		})
 	}
@@ -310,7 +319,7 @@ func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any
 
 func (*BrowserObserveTool) Name() string { return "browser_observe" }
 func (*BrowserObserveTool) Description() string {
-	return "Observe the current page as a bounded accessibility snapshot with scoped element references."
+	return "Observe the current page as a bounded accessibility snapshot with scoped element references and optionally retain a PNG screenshot."
 }
 
 func (*BrowserObserveTool) Parameters() map[string]any {
@@ -319,6 +328,7 @@ func (*BrowserObserveTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"browser_session_id": map[string]any{"type": "string"},
 			"tab_id":             map[string]any{"type": "string"},
+			"screenshot":         map[string]any{"type": "boolean"},
 		},
 		"required": []string{"browser_session_id"}, "additionalProperties": false,
 	}
@@ -331,23 +341,25 @@ func (*BrowserObserveTool) ToolLoopSemantics() loopguard.Semantics {
 }
 
 type browserObservationView struct {
-	BrowserSessionID   string                     `json:"browser_session_id"`
-	TabID              string                     `json:"tab_id"`
-	SnapshotID         string                     `json:"snapshot_id"`
-	SnapshotGeneration uint64                     `json:"snapshot_generation"`
-	URL                string                     `json:"url"`
-	Origin             string                     `json:"origin"`
-	Title              string                     `json:"title,omitempty"`
-	Snapshot           string                     `json:"snapshot"`
-	Tabs               []browserTabView           `json:"tabs"`
-	PendingDialog      *browser.DialogObservation `json:"pending_dialog,omitempty"`
-	Truncated          bool                       `json:"truncated"`
-	Limits             browserObservationLimits   `json:"limits"`
+	BrowserSessionID   string                      `json:"browser_session_id"`
+	TabID              string                      `json:"tab_id"`
+	SnapshotID         string                      `json:"snapshot_id"`
+	SnapshotGeneration uint64                      `json:"snapshot_generation"`
+	URL                string                      `json:"url"`
+	Origin             string                      `json:"origin"`
+	Title              string                      `json:"title,omitempty"`
+	Snapshot           string                      `json:"snapshot"`
+	Tabs               []browserTabView            `json:"tabs"`
+	PendingDialog      *browser.DialogObservation  `json:"pending_dialog,omitempty"`
+	Truncated          bool                        `json:"truncated"`
+	Limits             browserObservationLimits    `json:"limits"`
+	Artifact           *browser.ScreenshotArtifact `json:"artifact,omitempty"`
 }
 
 type browserObservationLimits struct {
-	SnapshotBytes int `json:"snapshot_bytes"`
-	SnapshotRefs  int `json:"snapshot_refs"`
+	SnapshotBytes   int `json:"snapshot_bytes"`
+	SnapshotRefs    int `json:"snapshot_refs"`
+	ScreenshotBytes int `json:"screenshot_bytes"`
 }
 
 func (runtime *browserToolRuntime) observationResult(observation browser.Observation) browserObservationView {
@@ -364,6 +376,7 @@ func (runtime *browserToolRuntime) observationResult(observation browser.Observa
 		Truncated: observation.Truncated,
 		Limits: browserObservationLimits{
 			SnapshotBytes: limits.SnapshotBytes, SnapshotRefs: limits.SnapshotRefs,
+			ScreenshotBytes: limits.ScreenshotBytes,
 		},
 	}
 }
@@ -396,7 +409,29 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 	if err != nil {
 		return browserToolError(err)
 	}
-	return tool.runtime.result(tool.runtime.observationResult(observation))
+	view := tool.runtime.observationResult(observation)
+	wantScreenshot, _ := args["screenshot"].(bool)
+	if !wantScreenshot {
+		return tool.runtime.result(view)
+	}
+	requestID, err := browserRequestID(ctx)
+	if err != nil {
+		return browserToolError(err)
+	}
+	artifact, err := tool.runtime.source.CaptureScreenshot(ctx, browser.ScreenshotRequest{
+		Owner: owner, RequestID: requestID, SessionID: observation.SessionID,
+		TabID: observation.TabID, SnapshotID: observation.SnapshotID,
+		SnapshotGeneration: observation.SnapshotGeneration,
+	})
+	if err != nil {
+		return browserToolError(err)
+	}
+	view.Artifact = &artifact
+	result := tool.runtime.result(view)
+	if artifact.DeliveryState == "claimed" && artifact.MediaRef != "" {
+		return MediaResult(result.ForLLM, []string{artifact.MediaRef})
+	}
+	return result
 }
 
 func (*BrowserActTool) Name() string { return "browser_act" }
