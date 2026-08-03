@@ -70,7 +70,7 @@ func run(args []string) error {
 		return err
 	}
 	defer ledger.Close()
-	runtimeOptions := make([]companion.RuntimeOption, 0, 3)
+	runtimeOptions := make([]companion.RuntimeOption, 0, 4)
 	fileCapabilities := make([]companion.FileTransferCapability, 0, 2)
 	if companion.HasEnabledFilePolicy(cfg.FilePolicies) {
 		transferLedger, transferLedgerErr := companion.NewFileTransferLedger(
@@ -128,6 +128,25 @@ func run(args []string) error {
 			return fmt.Errorf("load authority broker snapshot: %w", snapshotErr)
 		}
 		runtimeOptions = append(runtimeOptions, companion.WithShellBroker(snapshot, broker))
+	}
+	if cfg.ServiceHelper != nil {
+		snapshotContext, cancelSnapshot := context.WithTimeout(context.Background(), 5*time.Second)
+		serviceHelper, helperErr := companion.NewServiceHelperClient(
+			snapshotContext,
+			cfg.ServiceHelper.SocketPath,
+		)
+		cancelSnapshot()
+		if helperErr != nil {
+			return fmt.Errorf("load service helper snapshot: %w", helperErr)
+		}
+		defer serviceHelper.Close()
+		runtimeOptions = append(runtimeOptions, companion.WithServiceManager(serviceHelper))
+	} else if companion.HasEnabledServicePolicy(cfg.ServicePolicies) {
+		serviceManager, managerErr := companion.NewSystemdServiceManager(cfg.ServicePolicies)
+		if managerErr != nil {
+			return fmt.Errorf("configure systemd service manager: %w", managerErr)
+		}
+		runtimeOptions = append(runtimeOptions, companion.WithServiceManager(serviceManager))
 	}
 	commandRuntime, err := companion.NewRuntime(
 		identity.ID,

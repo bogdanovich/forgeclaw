@@ -181,35 +181,6 @@ func (manager *systemdServiceManager) Descriptors() []nodes.CommandDescriptor {
 	return cloneCatalog(nodes.CapabilityCatalog{Commands: manager.descriptors}).Commands
 }
 
-func serviceReadRequirements(policies ServicePolicies) (bool, bool) {
-	needStatus := false
-	needLogs := false
-	for _, profile := range policies {
-		if !profile.Enabled {
-			continue
-		}
-		for _, service := range profile.Services {
-			needStatus = needStatus || service.Status
-			needLogs = needLogs || service.Logs
-		}
-	}
-	return needStatus, needLogs
-}
-
-func serviceActionRequired(policies ServicePolicies) bool {
-	for _, profile := range policies {
-		if !profile.Enabled {
-			continue
-		}
-		for _, service := range profile.Services {
-			if len(service.Actions) > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (manager *systemdServiceManager) Status(
 	ctx context.Context,
 	request ServiceStatusRequest,

@@ -83,6 +83,28 @@ func TestIdentityProofRejectsIncompleteExecutionProfile(t *testing.T) {
 	}
 }
 
+func TestIdentityProofRejectsGatewayOnlyServiceApprovalState(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := serviceActionDescriptorFixture()
+	descriptor.ServiceProfiles[0].ActionApproval = "operator_bypass_configured"
+	if _, err := NewIdentityProof(
+		privateKey,
+		"challenge",
+		ProtocolV1,
+		ProtocolV1,
+		"v0.1.0",
+		"linux",
+		"amd64",
+		CapabilityCatalog{Commands: []CommandDescriptor{descriptor}},
+		ExecutionProfile{},
+	); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("gateway-only companion approval state error = %v", err)
+	}
+}
+
 func TestDeriveIDIsStableAndKeyBound(t *testing.T) {
 	firstPublic, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

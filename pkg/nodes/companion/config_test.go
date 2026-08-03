@@ -276,6 +276,9 @@ func TestConfigKeepsFileAuthorityAbsentByDefault(t *testing.T) {
 	if cfg.ServicePolicies != nil {
 		t.Fatalf("default service policies = %#v, want absent", cfg.ServicePolicies)
 	}
+	if cfg.ServiceHelper != nil {
+		t.Fatalf("default service helper = %#v, want absent", cfg.ServiceHelper)
+	}
 }
 
 func TestConfigNormalizesExplicitDisabledServicePolicyWithoutGrantingAuthority(t *testing.T) {

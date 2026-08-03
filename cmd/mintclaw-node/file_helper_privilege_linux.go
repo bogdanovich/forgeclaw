@@ -20,7 +20,7 @@ const maxProcessStatusBytes = 64 * 1024
 var requiredCapabilityFields = [...]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}
 
 func validateFileHelperProcessIdentity(cfg companion.Config) error {
-	if cfg.FileHelper == nil {
+	if cfg.FileHelper == nil && cfg.ServiceHelper == nil {
 		return nil
 	}
 	statusFile, err := os.Open("/proc/self/status")
@@ -43,11 +43,11 @@ func validateFileHelperProcessIdentityStatus(
 	effectiveUID int,
 	status []byte,
 ) error {
-	if cfg.FileHelper == nil {
+	if cfg.FileHelper == nil && cfg.ServiceHelper == nil {
 		return nil
 	}
 	if effectiveUID == 0 {
-		return errors.New("node companion with file helper authority must remain unprivileged")
+		return errors.New("node companion with privileged helper authority must remain unprivileged")
 	}
 	capabilities := make(map[string]uint64, len(requiredCapabilityFields))
 	scanner := bufio.NewScanner(bytes.NewReader(status))
@@ -79,7 +79,10 @@ func validateFileHelperProcessIdentityStatus(
 			return fmt.Errorf("node companion process status is missing %s", name)
 		}
 		if value != 0 {
-			return fmt.Errorf("node companion with file helper authority must not retain %s capabilities", name)
+			return fmt.Errorf(
+				"node companion with privileged helper authority must not retain %s capabilities",
+				name,
+			)
 		}
 	}
 	return nil

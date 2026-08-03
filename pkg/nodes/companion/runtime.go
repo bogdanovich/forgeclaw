@@ -101,6 +101,7 @@ type runtimeOptions struct {
 	shellExec       *shellExecRuntime
 	terminalBroker  terminalBrokerOpener
 	fileDescriptors []nodes.CommandDescriptor
+	serviceManager  ServiceManager
 }
 
 type RuntimeOption func(*runtimeOptions) error
@@ -140,6 +141,19 @@ func WithFileCapabilities(runtime FileTransferCapability) RuntimeOption {
 			return errors.New("node file transfer runtime has no capabilities")
 		}
 		options.fileDescriptors = descriptors
+		return nil
+	}
+}
+
+func WithServiceManager(manager ServiceManager) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		if manager == nil {
+			return errors.New("node service manager is required")
+		}
+		if len(manager.Descriptors()) == 0 {
+			return errors.New("node service manager has no capabilities")
+		}
+		options.serviceManager = manager
 		return nil
 	}
 }
@@ -195,6 +209,13 @@ func NewRuntime(
 	if settings.shellExec != nil {
 		handlers = append(handlers, settings.shellExec.handler)
 	}
+	if settings.serviceManager != nil {
+		serviceHandlers, err := newServiceCommandHandlers(settings.serviceManager, policy)
+		if err != nil {
+			return nil, fmt.Errorf("configure node service runtime: %w", err)
+		}
+		handlers = append(handlers, serviceHandlers...)
+	}
 	if err := nodeID.Validate(); err != nil {
 		return nil, err
 	}
@@ -218,7 +239,7 @@ func NewRuntime(
 			}
 			descriptor.ModelContract = modelContract
 			shellExec.contract = cloneModelContract(modelContract)
-		} else {
+		} else if !nodes.IsServiceCommand(descriptor.Name) {
 			descriptor.ModelContract = effectiveModelContract(descriptor, policy)
 		}
 		catalog.Commands = append(catalog.Commands, descriptor)
@@ -440,22 +461,40 @@ func (runtime *Runtime) executeAccepted(
 	raw, err := json.Marshal(result)
 	if err != nil {
 		encodeErr := fmt.Errorf("encode command output: %w", err)
-		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
-			Code:    "INVALID_OUTPUT",
-			Message: "node command returned invalid output",
-		}, encodeErr)
+		return nil, runtime.completeInvalidOutput(plan, encodeErr)
 	}
 	raw, err = nodes.ValidateInvocationOutput(handler.descriptor(), raw, plan.OutputLimitBytes)
 	if err != nil {
-		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
-			Code:    "INVALID_OUTPUT",
-			Message: "node command returned invalid output",
-		}, err)
+		return nil, runtime.completeInvalidOutput(plan, err)
 	}
 	if _, err := runtime.ledger.CompleteSuccess(plan.InvocationID, raw); err != nil {
 		return nil, fmt.Errorf("%w: persist successful result: %v", ErrInvocationOutcomeUnknown, err)
 	}
 	return raw, nil
+}
+
+func (runtime *Runtime) completeInvalidOutput(
+	plan nodes.ExecutionPlan,
+	err error,
+) error {
+	if plan.Command == "service.action.v1" {
+		if _, markErr := runtime.ledger.MarkUnknown(plan.InvocationID); markErr != nil {
+			return fmt.Errorf(
+				"%w: persist uncertain service action output: %v",
+				ErrInvocationOutcomeUnknown,
+				markErr,
+			)
+		}
+		return fmt.Errorf(
+			"%w: service action completed with invalid output: %v",
+			ErrInvocationOutcomeUnknown,
+			err,
+		)
+	}
+	return runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+		Code:    "INVALID_OUTPUT",
+		Message: "node command returned invalid output",
+	}, err)
 }
 
 func (runtime *Runtime) Cancel(

@@ -70,6 +70,71 @@ func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestValidateInvocationApprovalProjectsServiceProfile(t *testing.T) {
+	_, _, nodeID, _ := testInvocationAdmission(t, "")
+	profiles := []nodes.ServiceProfileDescriptor{
+		{
+			Alias: "database-services", Revision: "database-services-v1", Manager: "systemd",
+			Services: []nodes.ServiceDescriptor{{Alias: "database", Status: true}},
+			LogLimits: nodes.ServiceLogLimits{
+				EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+			},
+			ActionApproval: "required",
+		},
+		{
+			Alias: "server-services", Revision: "server-services-v1", Manager: "systemd",
+			Services: []nodes.ServiceDescriptor{{Alias: "vpn", Status: true}},
+			LogLimits: nodes.ServiceLogLimits{
+				EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+			},
+			ActionApproval: "required",
+		},
+	}
+	descriptor := nodes.CommandDescriptor{
+		Name:         "service.status.v1",
+		InputSchema:  nodes.ServiceCommandInputSchema("service.status.v1", profiles),
+		OutputSchema: nodes.ServiceCommandOutputSchema("service.status.v1"),
+		Risk:         nodes.RiskRead,
+		ModelContract: &nodes.CommandModelContract{
+			Availability: nodes.ModelUnavailable, TimeoutSecondsMax: 30,
+			OutputBytesMax: 4096, ResultKind: "json",
+			AuthorityDigest: strings.Repeat("a", 64),
+			Guidance:        []string{}, Examples: []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
+	}
+	projected, ok := nodes.ProjectServiceDescriptorForProfile(descriptor, "server-services")
+	if !ok {
+		t.Fatal("project service descriptor")
+	}
+	catalogHash := strings.Repeat("b", 64)
+	plan, err := nodes.PrepareExecutionPlan(
+		nodes.InvocationRequest{
+			InvocationID: "inv_service", IdempotencyKey: "idem_service", NodeID: nodeID,
+			CatalogHash: catalogHash, Command: descriptor.Name,
+			ServiceProfile: "server-services", Input: json.RawMessage(`{"service":"vpn"}`),
+			AgentID: "main", SessionID: "session_service", ActorID: "user_service",
+			TimeoutSeconds: 30, OutputLimitBytes: 4096,
+		},
+		projected,
+		"local",
+		"policy-service",
+		time.Unix(10, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := nodes.CommandApproval{Descriptor: descriptor, CatalogHash: catalogHash}
+	if err := validateInvocationApproval(approval, nodeID, plan); err != nil {
+		t.Fatalf("profile-projected service approval rejected: %v", err)
+	}
+	plan.ServiceProfile = "database-services"
+	if err := validateInvocationApproval(approval, nodeID, plan); !errors.Is(err, nodes.ErrCommandDenied) {
+		t.Fatalf("changed service profile error = %v", err)
+	}
+}
+
 func TestAdmissionRevocationWaitsForDispatchWrite(t *testing.T) {
 	registry, handler, nodeID, plan := testInvocationAdmission(t, "")
 	connection := newStubPeerConnection()

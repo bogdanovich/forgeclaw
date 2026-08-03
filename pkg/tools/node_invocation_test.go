@@ -668,7 +668,7 @@ func TestNodeInvokeToolRejectsLocallyUnavailableCommandBeforePreparation(t *test
 	}
 }
 
-func TestNodeInvokeToolKeepsServiceDispatchClosedUntilProfileIsEndToEndBound(t *testing.T) {
+func TestNodeInvokeToolDispatchesOnlyTargetBoundServiceProfile(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	snapshot := source.byRef["builder-node"]
 	descriptor := serviceStatusTestDescriptor()
@@ -695,19 +695,141 @@ func TestNodeInvokeToolKeepsServiceDispatchClosedUntilProfileIsEndToEndBound(t *
 		"input":              map[string]any{"service": "vpn"},
 		"discovery_revision": discovered["discovery_revision"],
 	})
-	assertNodeDenialResult(
-		t,
-		result,
-		nodeDenialCommandUnavailable,
-		nodeConstraintCommandPolicy,
-		nodeActionRefreshDiscovery,
-	)
-	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+	decoded := decodeNodeResult(t, result)
+	if decoded["state"] != string(nodes.InvocationSucceeded) {
+		t.Fatalf("service invocation result = %#v", decoded)
+	}
+	if source.prepareCalls != 1 || source.dispatchCalls != 1 {
 		t.Fatalf(
-			"unbound service invocation mutated state: prepare=%d dispatch=%d",
+			"target-bound service invocation calls: prepare=%d dispatch=%d",
 			source.prepareCalls,
 			source.dispatchCalls,
 		)
+	}
+}
+
+func TestNodeInvokeToolBindsServiceActionApprovalAndContinuation(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	descriptor := serviceActionInvocationTestDescriptor()
+	snapshot := source.byRef["builder-node"]
+	snapshot.Catalog = nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	snapshot.CatalogHash = mustCatalogHash(t, snapshot.Catalog)
+	source.byRef["builder-node"] = snapshot
+	registration := source.registrations[snapshot.ID]
+	registration.Snapshot = snapshot
+	registration.AllowedCommands = []string{descriptor.Name}
+	registration.ApprovedCatalogHash = snapshot.CatalogHash
+	source.registrations[snapshot.ID] = registration
+	cfg := nodeDiscoveryTestConfig()
+	binding := cfg.Execution.Targets["build"]
+	binding.ServiceProfile = "server-services"
+	cfg.Execution.Targets["build"] = binding
+	ctx := nodeInvocationTestContext("actor-1", "call-service-action")
+	discovered := decodeNodeResult(t, NewNodeDiscoveryTool(cfg, source).Execute(
+		ctx,
+		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
+	))
+	args := map[string]any{
+		"target":             "build",
+		"command":            descriptor.Name,
+		"input":              map[string]any{"service": "vpn", "action": "restart"},
+		"discovery_revision": discovered["discovery_revision"],
+	}
+	tool := NewNodeInvokeTool(cfg, source)
+	approval, err := tool.ApprovalArguments(ctx, args)
+	if err != nil || approval["plan_hash"] == "" {
+		t.Fatalf("service action approval binding = %#v, error %v", approval, err)
+	}
+	result := tool.Execute(ctx, args)
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialApprovalRequired,
+		nodeConstraintApproval,
+		nodeActionAskOperator,
+	)
+	if source.prepareCalls != 1 || source.dispatchCalls != 0 {
+		t.Fatalf("unapproved service action calls = (%d, %d)", source.prepareCalls, source.dispatchCalls)
+	}
+
+	changed := maps.Clone(args)
+	changed["input"] = map[string]any{"service": "vpn", "action": "stop"}
+	changedResult := tool.Execute(WithToolApprovalContinuation(ctx, true), changed)
+	assertNodeDenialResult(
+		t,
+		changedResult,
+		nodeDenialSchemaInvalid,
+		nodeConstraintInputSchema,
+		nodeActionCorrectInput,
+	)
+	if source.dispatchCalls != 0 {
+		t.Fatalf("changed service action dispatched: %d", source.dispatchCalls)
+	}
+
+	result = tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	if result.IsError || source.dispatchCalls != 1 {
+		t.Fatalf("approved service action = %s, dispatches %d", result.ForLLM, source.dispatchCalls)
+	}
+	record := mustFakeGatewayInvocation(
+		t,
+		source,
+		ctx,
+		decodeNodeResult(t, result)["invocation_id"].(string),
+	)
+	if record.Plan.ServiceProfile != "server-services" ||
+		len(record.Descriptor.ServiceProfiles) != 1 ||
+		record.Descriptor.ServiceProfiles[0].Alias != "server-services" {
+		t.Fatalf("retained service action authority = %#v", record)
+	}
+}
+
+func TestServiceInvocationEventsExposeOnlyModelSafeObservation(t *testing.T) {
+	eventBus := &recordingNodeEventBus{}
+	record := nodes.GatewayInvocationRecord{
+		Target:           "vpn-admin",
+		ToolCallID:       "helper.sock",
+		ExpectedPlanHash: "plan_hash",
+		Plan: nodes.ExecutionPlan{InvocationRequest: nodes.InvocationRequest{
+			InvocationID: "inv_service_event",
+			NodeID:       "wg-quick@wg0.service",
+			Command:      "service.action.v1",
+			Input: json.RawMessage(
+				`{"service":"vpn","action":"restart","unit":"wg-quick@wg0.service",` +
+					`"message":"journal secret"}`,
+			),
+		}},
+		State: nodes.GatewayInvocationPrepared,
+	}
+	publishNodeInvocationEvent(
+		eventBus,
+		nodeInvocationTestContext("actor-1", "call-service-event"),
+		NodeInvocationObservationPrepared,
+		"nodes_invoke",
+		record,
+		string(nodes.GatewayInvocationPrepared),
+		"",
+	)
+	events := eventBus.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("service invocation events = %#v", events)
+	}
+	payload, ok := events[0].Payload.(NodeInvocationEventPayload)
+	if !ok || payload.Service != "vpn" || payload.Action != nodes.ServiceActionRestart {
+		t.Fatalf("service invocation payload = %#v", events[0].Payload)
+	}
+	encoded, err := json.Marshal(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"wg-quick@wg0.service",
+		"journal secret",
+		"helper.sock",
+		"plan_hash",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("service event leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 
@@ -1942,6 +2064,34 @@ func shellNodeInvocationTestDescriptor() nodes.CommandDescriptor {
 		Examples: []json.RawMessage{},
 	}
 	return command
+}
+
+func serviceActionInvocationTestDescriptor() nodes.CommandDescriptor {
+	profiles := []nodes.ServiceProfileDescriptor{{
+		Alias: "server-services", Revision: "server-services-v1", Manager: "systemd",
+		Services: []nodes.ServiceDescriptor{{
+			Alias: "vpn", Actions: []nodes.ServiceAction{nodes.ServiceActionRestart},
+		}},
+		LogLimits: nodes.ServiceLogLimits{
+			EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+		},
+		ActionApproval: "required",
+	}}
+	return nodes.CommandDescriptor{
+		Name:             "service.action.v1",
+		InputSchema:      nodes.ServiceCommandInputSchema("service.action.v1", profiles),
+		OutputSchema:     nodes.ServiceCommandOutputSchema("service.action.v1"),
+		Risk:             nodes.RiskPrivileged,
+		SupportsCancel:   true,
+		SupportsProgress: true,
+		ModelContract: &nodes.CommandModelContract{
+			Availability: nodes.ModelUnavailable, TimeoutSecondsMax: 30,
+			OutputBytesMax: 4096, ResultKind: "json",
+			AuthorityDigest: strings.Repeat("c", 64), ApprovalMode: "each_command",
+			Guidance: []string{}, Examples: []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
+	}
 }
 
 func mustFakeGatewayInvocation(
