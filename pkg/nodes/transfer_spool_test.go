@@ -58,6 +58,9 @@ func TestGatewayTransferSpoolCommitResolveAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !filepath.IsAbs(file.Name()) || file.Name() != filepath.Join(store.root, committed.DataName) {
+		t.Fatalf("resolved path = %q", file.Name())
+	}
 	got, err := io.ReadAll(file)
 	if err != nil {
 		_ = file.Close()

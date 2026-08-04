@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -109,65 +110,147 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	}
 }
 
-func TestGatewayBrowserDownloadRoundTripsIntoAuthorizedUpload(t *testing.T) {
+func TestGatewayNodeDownloadResolvesThroughBrowserUploadWorker(t *testing.T) {
 	workspace := t.TempDir()
-	store, err := media.NewFileMediaStoreWithPersistentIndex(
-		filepath.Join(workspace, "state", "media", "index.json"), media.MediaCleanerConfig{},
-	)
+	cfg := gatewayBrowserConfig(workspace)
+	policyRevision, err := cfg.Tools.Browser.PolicyRevision()
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &nodeAdmissionRuntime{}
+	nodeRuntime := &nodeAdmissionRuntime{}
 	t.Cleanup(func() {
-		if runtime.transferSpool != nil {
-			_ = runtime.transferSpool.Close()
+		if nodeRuntime.transferSpool != nil {
+			_ = nodeRuntime.transferSpool.Close()
 		}
 	})
+	servicesOwner := &services{NodeAdmission: nodeRuntime}
 	source := &gatewayBrowserToolSource{
-		services: &services{NodeAdmission: runtime, MediaStore: store}, workspace: workspace,
-		screenshotRetention: time.Hour, limits: config.BrowserLimitsConfig{}.Effective(),
+		services: servicesOwner, policyRevision: policyRevision, workspace: workspace,
+		limits: cfg.Tools.Browser.Limits.Effective(),
 	}
-	path := filepath.Join(t.TempDir(), "fixture.txt")
-	data := []byte("browser transfer fixture")
-	if err = os.WriteFile(path, data, 0o600); err != nil {
+	ctx := gatewayBrowserArtifactContext(workspace)
+	nodeOwner, err := tools.RoutedNodeFileArtifactOwner(ctx, "node_download_call")
+	if err != nil {
 		t.Fatal(err)
 	}
+	spool, err := nodeRuntime.gatewayTransferSpool(nodes.GatewayTransferSpoolPath(workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("node download to browser upload fixture")
 	digest := sha256.Sum256(data)
-	ctx := gatewayBrowserArtifactContext(workspace)
-	prepared := browser.PreparedAction{
-		RequestID: "request_download", SessionID: "session_1", Target: "gateway",
-		PolicyRevision: "policy_1", TabID: "tab_primary", SnapshotGeneration: 3,
-		ID: "prepared_download", Action: browser.Action{Kind: browser.ActionDownload, Deliver: true},
-	}
-	artifact, err := source.retainBrowserDownload(ctx, prepared, browser.DriverDownload{
-		Path: path, Filename: "fixture.txt", ContentType: "text/plain",
-		SHA256: hex.EncodeToString(digest[:]), Size: int64(len(data)),
+	writer, artifact, created, err := spool.Begin(nodeOwner, nodes.TransferArtifactSpec{
+		TransferID: "node_download", Direction: nodes.TransferDirectionDownload,
+		Target: "personal-vpn", ProfileRevision: "files-v1", Filename: "fixture.txt",
+		ContentType: "text/plain", DeclaredSize: int64(len(data)),
+		SHA256: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Hour).Unix(),
 	})
-	if err != nil || artifact.Ref == "" || artifact.MediaRef == "" || artifact.Size != int64(len(data)) ||
-		artifact.SHA256 != hex.EncodeToString(digest[:]) {
-		t.Fatalf("retainBrowserDownload() = %#v, %v", artifact, err)
+	if err != nil || !created || writer == nil {
+		t.Fatalf("Begin() = %#v, %t, %v", artifact, created, err)
 	}
-	binding, err := source.resolveBrowserUpload(ctx, browser.PrepareActionRequest{
-		RequestID: "request_upload", SessionID: "session_1",
+	if err = writer.WriteChunk(1, data); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err = writer.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := &gatewayUploadWorker{want: data}
+	broker, err := browser.NewBroker(cfg, browser.NewMemoryStore(), &gatewayUploadFactory{worker: worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	servicesOwner.Browser = &browserRuntime{broker: broker, policyRevision: policyRevision}
+	owner := browser.Owner{
+		ActorID: "actor_1", AgentID: browser.OpaqueAgentID("browser"),
+		SessionKey: "route_1", ExecutionID: "execution_1",
+	}
+	session, err := broker.Open(context.Background(), browser.OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`\[ref=([^]]+)\]`).FindStringSubmatch(observation.Snapshot)
+	if len(match) != 2 {
+		t.Fatalf("observation snapshot = %q", observation.Snapshot)
+	}
+	preparation, err := source.PrepareAction(ctx, browser.PrepareActionRequest{
+		Owner: owner, RequestID: "request_upload", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
 		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
 	})
-	if err != nil || binding.Ref != artifact.Ref || binding.Size != int64(len(data)) ||
-		binding.SHA256 != artifact.SHA256 || binding.Path == "" {
-		t.Fatalf("resolveBrowserUpload() = %#v, %v", binding, err)
+	if err != nil || preparation.Action.ArtifactSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("PrepareAction() = %#v, %v", preparation, err)
 	}
-	if _, err = source.resolveBrowserUpload(ctx, browser.PrepareActionRequest{
-		RequestID: "request_wrong", SessionID: "session_2",
+	invocation, err := source.ExecuteAction(ctx, owner, preparation.Action.ID, nil)
+	if err != nil || invocation.State != browser.InvocationSucceeded || !filepath.IsAbs(worker.path) ||
+		!bytes.Equal(worker.got, data) {
+		t.Fatalf("ExecuteAction() = %#v, %v; upload path = %q, data = %q", invocation, err, worker.path, worker.got)
+	}
+
+	otherRoute := tools.WithToolRouteSessionKey(ctx, "route-2")
+	if _, err = source.resolveBrowserUpload(otherRoute, browser.PrepareActionRequest{
+		RequestID: "request_wrong_route", SessionID: session.ID,
 		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
 	}); !errors.Is(err, browser.ErrDenied) {
-		t.Fatalf("cross-session upload error = %v", err)
+		t.Fatalf("cross-route upload error = %v", err)
 	}
-	if err = source.ClaimDownloadDelivery(ctx, browser.DownloadDeliveryRequest{
-		Owner:     browser.Owner{ActorID: "actor", AgentID: "agent", SessionKey: "route", ExecutionID: "execution"},
-		RequestID: prepared.RequestID, SessionID: prepared.SessionID,
-		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: artifact.Recovery,
-	}); err != nil {
-		t.Fatalf("ClaimDownloadDelivery() error = %v", err)
+}
+
+type gatewayUploadFactory struct{ worker *gatewayUploadWorker }
+
+func (factory *gatewayUploadFactory) Open(
+	context.Context, browser.WorkerOpenRequest,
+) (browser.WorkerOpenResult, error) {
+	return browser.WorkerOpenResult{Owner: factory.worker}, nil
+}
+
+type gatewayUploadWorker struct {
+	want []byte
+	got  []byte
+	path string
+}
+
+func (*gatewayUploadWorker) Status(context.Context) (browser.WorkerStatus, error) {
+	return browser.WorkerReady, nil
+}
+func (*gatewayUploadWorker) Close(context.Context) error { return nil }
+func (*gatewayUploadWorker) Observe(context.Context) (browser.DriverObservation, error) {
+	return browser.DriverObservation{
+		URL: "https://example.com/upload", Origin: "https://example.com", Title: "Fixture",
+		Snapshot: "- button \"Choose file\" [ref=e1]",
+		Elements: []browser.DriverElement{{Target: "e1", Role: "button", Name: "Choose file"}},
+	}, nil
+}
+func (*gatewayUploadWorker) Resolve(
+	context.Context, string,
+) (browser.DriverElement, string, error) {
+	return browser.DriverElement{Target: "e1", Role: "button", Name: "Choose file"},
+		"https://example.com", nil
+}
+func (*gatewayUploadWorker) Execute(context.Context, browser.DriverAction) error { return nil }
+func (*gatewayUploadWorker) CatalogRevision() string                             { return strings.Repeat("c", 64) }
+func (worker *gatewayUploadWorker) Upload(_ context.Context, action browser.DriverAction) error {
+	if !filepath.IsAbs(action.Value) {
+		return browser.ErrDriverIncompatible
 	}
+	data, err := os.ReadFile(action.Value)
+	if err != nil || !bytes.Equal(data, worker.want) {
+		return browser.ErrDenied
+	}
+	worker.path, worker.got = action.Value, data
+	return nil
+}
+func (*gatewayUploadWorker) Download(
+	context.Context, browser.DriverAction, int64,
+) (browser.DriverDownload, error) {
+	return browser.DriverDownload{}, browser.ErrDriverIncompatible
 }
 
 func TestGatewayBrowserDownloadRecoversAcrossActualBrokerRestart(t *testing.T) {

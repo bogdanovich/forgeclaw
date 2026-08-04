@@ -13,6 +13,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const browserDownloadSourceKind = "browser_download"
@@ -24,7 +25,7 @@ func (source *gatewayBrowserToolSource) resolveBrowserUpload(
 	if source == nil || source.services == nil || source.services.NodeAdmission == nil || source.workspace == "" {
 		return browser.UploadBinding{}, browser.ErrWorkerUnavailable
 	}
-	owner, _, err := browserScreenshotOwners(ctx, source.workspace, request.SessionID, request.RequestID)
+	owner, err := tools.RoutedNodeFileArtifactOwner(ctx, request.RequestID)
 	if err != nil {
 		return browser.UploadBinding{}, browser.ErrDenied
 	}

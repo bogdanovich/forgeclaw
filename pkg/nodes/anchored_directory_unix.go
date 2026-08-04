@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -18,15 +19,19 @@ type anchoredDirectory struct {
 }
 
 func openAnchoredDirectory(path string) (*anchoredDirectory, error) {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	descriptor, err := unix.Open(
-		path,
+		absolutePath,
 		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW,
 		0,
 	)
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(descriptor), path)
+	file := os.NewFile(uintptr(descriptor), absolutePath)
 	if file == nil {
 		_ = unix.Close(descriptor)
 		return nil, errors.New("open anchored directory: invalid descriptor")
@@ -38,7 +43,7 @@ func openAnchoredDirectory(path string) (*anchoredDirectory, error) {
 	}
 	if !info.IsDir() {
 		_ = file.Close()
-		return nil, fmt.Errorf("open anchored directory: non-directory %q", path)
+		return nil, fmt.Errorf("open anchored directory: non-directory %q", absolutePath)
 	}
 	return &anchoredDirectory{file: file}, nil
 }
@@ -59,7 +64,7 @@ func (directory *anchoredDirectory) openRegular(name string) (*os.File, os.FileI
 	if err != nil {
 		return nil, nil, err
 	}
-	file := os.NewFile(uintptr(descriptor), name)
+	file := os.NewFile(uintptr(descriptor), filepath.Join(directory.file.Name(), name))
 	if file == nil {
 		_ = unix.Close(descriptor)
 		return nil, nil, errors.New("open anchored regular file: invalid descriptor")
