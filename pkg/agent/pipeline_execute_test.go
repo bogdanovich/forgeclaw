@@ -124,6 +124,24 @@ type toolResultRespondHook struct {
 	result *tools.ToolResult
 }
 
+type dropToolSuspensionHook struct{}
+
+func (*dropToolSuspensionHook) BeforeTool(
+	_ context.Context,
+	req *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision, error) {
+	return req.Clone(), HookDecision{Action: HookActionContinue}, nil
+}
+
+func (*dropToolSuspensionHook) AfterTool(
+	_ context.Context,
+	resp *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision, error) {
+	next := resp.Clone()
+	next.Result.Suspension = nil
+	return next, HookDecision{Action: HookActionModify}, nil
+}
+
 func (h *toolResultRespondHook) BeforeLLM(
 	_ context.Context,
 	req *LLMHookRequest,
@@ -802,6 +820,43 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 		}
 		if got := <-called; got != interactions.OutcomeCanceled {
 			t.Fatalf("fallback resolution outcome = %q", got)
+		}
+	})
+	t.Run("hook removal cancels exactly once", func(t *testing.T) {
+		called := make(chan interactions.Outcome, 2)
+		tool := newTool(called)
+		registry := tools.NewToolRegistry()
+		registry.Register(tool)
+		agent := &AgentInstance{ID: "browser", Tools: registry, Sessions: session.NewSessionManager("")}
+		ts := &turnState{
+			agent: agent, agentID: agent.ID, turnID: "turn-domain-hook-drop",
+			sessionKey: "session-domain-hook-drop",
+			opts:       processOptions{Dispatch: DispatchRequest{SessionKey: "session-domain-hook-drop"}},
+		}
+		exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+		exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
+		hooks := NewHookManager(nil)
+		if err := hooks.Mount(NamedHook("drop-suspension", &dropToolSuspensionHook{})); err != nil {
+			t.Fatal(err)
+		}
+		pipeline := &Pipeline{Interaction: PipelineInteractionServices{Hooks: hooks}}
+
+		if outcome := pipeline.ExecuteTools(
+			t.Context(),
+			t.Context(),
+			ts,
+			exec,
+			1,
+		); outcome.Control != ToolControlContinue {
+			t.Fatalf("control = %v, want continue", outcome.Control)
+		}
+		if got := <-called; got != interactions.OutcomeCanceled {
+			t.Fatalf("hook removal outcome = %q", got)
+		}
+		select {
+		case got := <-called:
+			t.Fatalf("hook removal resolved suspension twice; second outcome = %q", got)
+		default:
 		}
 	})
 	t.Run("nil resolver preserves trusted suspension", func(t *testing.T) {

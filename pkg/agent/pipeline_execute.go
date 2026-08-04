@@ -885,6 +885,10 @@ toolLoop:
 						if toolResp.Result != toolResult {
 							if !transferToolSuspensionResolution(toolResult, toolResp.Result) {
 								resolveCanceledToolSuspension(execCtx, toolResult)
+								if toolResult != nil && toolResult.Suspension != nil &&
+									toolResp.Result.Suspension == nil {
+									toolResp.Result.SuspensionResolution = nil
+								}
 							}
 						}
 						toolResult = toolResp.Result
