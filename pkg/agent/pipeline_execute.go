@@ -570,10 +570,7 @@ toolLoop:
 		)
 		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
 		execCtx = tools.WithToolCallID(execCtx, tc.ID)
-		executionID := ts.executionID
-		if grant := ts.opts.ApprovalGrant; grant != nil {
-			executionID = strings.TrimSpace(grant.OriginExecutionID)
-		}
+		executionID := effectiveToolExecutionID(ts)
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
 		approvalBypass, trustedExecution := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
 		execCtx = tools.WithToolApprovalContinuation(
@@ -1486,7 +1483,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		Resolution:       result.SuspensionResolution,
 		Origin: interactions.Origin{
 			TurnID:                 r.ts.turnID,
-			ExecutionID:            r.ts.executionID,
+			ExecutionID:            effectiveToolExecutionID(r.ts),
 			ToolCallID:             toolCall.ID,
 			ToolName:               toolName,
 			TaskID:                 r.ts.opts.TaskID,
@@ -1542,6 +1539,21 @@ func resolveCanceledToolSuspension(ctx context.Context, result *tools.ToolResult
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	_ = resolve(resolveCtx, interactions.OutcomeCanceled)
+}
+
+func effectiveToolExecutionID(ts *turnState) string {
+	if ts == nil {
+		return ""
+	}
+	if grant := ts.opts.ApprovalGrant; grant != nil {
+		if executionID := strings.TrimSpace(grant.OriginExecutionID); executionID != "" {
+			return executionID
+		}
+	}
+	if executionID := strings.TrimSpace(ts.opts.InteractionOriginExecution); executionID != "" {
+		return executionID
+	}
+	return ts.executionID
 }
 
 func (r *toolLoopRunner) appendSkippedToolMessage(

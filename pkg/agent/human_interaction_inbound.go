@@ -949,12 +949,13 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		deliveryObservation = &finalDeliveryObservation{}
 	}
 	finalContent, runErr := al.runAgentLoop(ctx, agent, processOptions{
-		ModelBinding:          modelBinding,
-		TaskID:                record.Origin.TaskID,
-		InteractionWorkspace:  interactionWorkspace,
-		InteractionSessionKey: record.Route.SessionKey,
-		InteractionRouteKey:   routeSessionKey,
-		TurnStatus:            &turnStatus,
+		ModelBinding:               modelBinding,
+		TaskID:                     record.Origin.TaskID,
+		InteractionWorkspace:       interactionWorkspace,
+		InteractionSessionKey:      record.Route.SessionKey,
+		InteractionRouteKey:        routeSessionKey,
+		InteractionOriginExecution: record.Origin.ExecutionID,
+		TurnStatus:                 &turnStatus,
 		Dispatch: DispatchRequest{
 			RouteSessionKey: routeSessionKey,
 			BaseSessionKey:  continuationSessionKey,
