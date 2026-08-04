@@ -542,8 +542,30 @@ func (*BrowserActTool) Description() string {
 
 func (tool *BrowserActTool) Parameters() map[string]any {
 	limits := config.BrowserLimitsConfig{}.Effective()
+	actions := []string{
+		"navigate", "click", "fill", "select", "press", "scroll", "dialog", "upload",
+	}
+	downloadAvailable := false
 	if tool != nil && tool.runtime != nil {
 		limits = tool.runtime.config.Limits.Effective()
+		downloadAvailable = tool.runtime.source.DownloadAvailable()
+	}
+	if downloadAvailable {
+		actions = append(actions, "download")
+	}
+	actionProperties := map[string]any{
+		"kind":         map[string]any{"type": "string", "enum": actions},
+		"url":          map[string]any{"type": "string"},
+		"ref":          map[string]any{"type": "string"},
+		"value":        map[string]any{"type": "string", "maxLength": limits.TextInputBytes},
+		"key":          map[string]any{"type": "string"},
+		"direction":    map[string]any{"type": "string", "enum": []string{"up", "down"}},
+		"amount":       map[string]any{"type": "integer"},
+		"decision":     map[string]any{"type": "string", "enum": []string{"accept", "dismiss"}},
+		"artifact_ref": map[string]any{"type": "string"},
+	}
+	if downloadAvailable {
+		actionProperties["deliver"] = map[string]any{"type": "boolean"}
 	}
 	return map[string]any{
 		"type": "object",
@@ -553,20 +575,9 @@ func (tool *BrowserActTool) Parameters() map[string]any {
 			"snapshot_id":         map[string]any{"type": "string"},
 			"snapshot_generation": map[string]any{"type": "integer"},
 			"action": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"kind": map[string]any{"type": "string", "enum": []string{
-						"navigate", "click", "fill", "select", "press", "scroll", "dialog", "upload",
-					}},
-					"url": map[string]any{"type": "string"}, "ref": map[string]any{"type": "string"},
-					"value":        map[string]any{"type": "string", "maxLength": limits.TextInputBytes},
-					"key":          map[string]any{"type": "string"},
-					"direction":    map[string]any{"type": "string", "enum": []string{"up", "down"}},
-					"amount":       map[string]any{"type": "integer"},
-					"decision":     map[string]any{"type": "string", "enum": []string{"accept", "dismiss"}},
-					"artifact_ref": map[string]any{"type": "string"},
-				},
-				"required": []string{"kind"}, "additionalProperties": false,
+				"type":       "object",
+				"properties": actionProperties,
+				"required":   []string{"kind"}, "additionalProperties": false,
 			},
 		},
 		"required": []string{

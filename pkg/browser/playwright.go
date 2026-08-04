@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,7 +16,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -172,6 +170,7 @@ type PlaywrightWorkerFactory struct {
 	profileName   string
 	profileConfig config.BrowserProfileConfig
 	serverConfig  config.MCPServerConfig
+	downloadReady bool
 	clientFactory func() playwrightMCPClient
 	proxyLookupIP browserProxyLookup
 	proxyDial     browserProxyDial
@@ -225,6 +224,7 @@ func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFac
 	return &PlaywrightWorkerFactory{
 		target: config.BrowserDefaultTarget, profileName: config.BrowserDefaultProfile,
 		profileConfig: profile, serverConfig: cloneMCPServerConfig(server),
+		downloadReady: PlaywrightDownloadAvailable(rootConfig),
 		clientFactory: newManagerPlaywrightClient,
 	}, nil
 }
@@ -365,6 +365,15 @@ func (factory *PlaywrightWorkerFactory) Open(
 	}
 	if err != nil {
 		_ = networkProxy.Close()
+		return WorkerOpenResult{}, ErrWorkerUnavailable
+	}
+	// Deny the driver's native disk-download path on every platform. The
+	// downloadReady bit gates only MintClaw's bounded Chromium capture path;
+	// hiding that action must never leave an unbounded click side effect.
+	server, err = configurePlaywrightDownloadBoundary(server, outputDir)
+	if err != nil {
+		_ = networkProxy.Close()
+		_ = os.RemoveAll(outputDir)
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	server.Args = append(server.Args, "--output-dir", outputDir)
@@ -625,160 +634,7 @@ func (worker *playwrightWorker) Download(
 		maximumBytes < 1 || maximumBytes > int64(worker.limits.DownloadBytes) {
 		return DriverDownload{}, ErrWorkerUnavailable
 	}
-	before, err := regularFiles(worker.outputDir)
-	if err != nil {
-		return DriverDownload{}, ErrWorkerUnavailable
-	}
-	clickCtx, cancelClick := context.WithCancel(ctx)
-	defer cancelClick()
-	clickResult := make(chan playwrightRawOutcome, 1)
-	denialsBefore := uint64(0)
-	if worker.networkProxy != nil {
-		denialsBefore = worker.networkProxy.Denials()
-	}
-	go func() {
-		result, clickErr := worker.client.CallTool(clickCtx, "browser_click", map[string]any{
-			"target": action.Target, "element": action.Element, "doubleClick": false, "button": "left",
-		})
-		clickResult <- playwrightRawOutcome{result: result, err: clickErr, denialsBefore: denialsBefore}
-	}()
-	outcome, err := worker.monitorDownloadWrite(clickCtx, cancelClick, clickResult, before, maximumBytes)
-	if err != nil {
-		return DriverDownload{}, err
-	}
-	if _, err = worker.consumeRawOutcome(outcome); err != nil {
-		worker.rejectDownloadCapture(before)
-		return DriverDownload{}, err
-	}
-	var path string
-	for {
-		after, scanErr := regularFiles(worker.outputDir)
-		if scanErr != nil {
-			return DriverDownload{}, ErrWorkerUnavailable
-		}
-		created := make([]string, 0, len(after))
-		for candidate := range after {
-			if _, existed := before[candidate]; !existed {
-				created = append(created, candidate)
-			}
-		}
-		if len(created) > 1 {
-			worker.rejectDownloadCapture(before)
-			return DriverDownload{}, ErrDriverIncompatible
-		}
-		if len(created) == 1 {
-			candidate := created[0]
-			firstInfo, statErr := os.Lstat(candidate)
-			if statErr != nil || !firstInfo.Mode().IsRegular() {
-				worker.rejectDownloadCapture(before)
-				return DriverDownload{}, ErrDriverIncompatible
-			}
-			select {
-			case <-ctx.Done():
-				return DriverDownload{}, ctx.Err()
-			case <-time.After(50 * time.Millisecond):
-			}
-			stable, scanErr := regularFiles(worker.outputDir)
-			if scanErr != nil {
-				return DriverDownload{}, ErrWorkerUnavailable
-			}
-			newCount := 0
-			for current := range stable {
-				if _, existed := before[current]; !existed {
-					newCount++
-				}
-			}
-			secondInfo, statErr := os.Lstat(candidate)
-			if statErr != nil || newCount != 1 || !secondInfo.Mode().IsRegular() ||
-				firstInfo.Size() != secondInfo.Size() || secondInfo.Size() < 1 || secondInfo.Size() > maximumBytes {
-				worker.rejectDownloadCapture(before)
-				return DriverDownload{}, ErrDriverIncompatible
-			}
-			path = candidate
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return DriverDownload{}, ctx.Err()
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return DriverDownload{}, ErrWorkerUnavailable
-	}
-	defer file.Close()
-	hash := sha256.New()
-	count, err := io.Copy(hash, io.LimitReader(file, maximumBytes+1))
-	if err != nil || count < 1 || count > maximumBytes {
-		return DriverDownload{}, ErrDriverIncompatible
-	}
-	contentType := mime.TypeByExtension(filepath.Ext(path))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	return DriverDownload{
-		Path: path, Filename: filepath.Base(path), ContentType: contentType,
-		SHA256: hex.EncodeToString(hash.Sum(nil)), Size: count,
-	}, nil
-}
-
-func (worker *playwrightWorker) monitorDownloadWrite(
-	ctx context.Context,
-	cancel context.CancelFunc,
-	result <-chan playwrightRawOutcome,
-	before map[string]struct{},
-	maximumBytes int64,
-) (playwrightRawOutcome, error) {
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case outcome := <-result:
-			return outcome, nil
-		case <-ctx.Done():
-			return playwrightRawOutcome{}, ctx.Err()
-		case <-ticker.C:
-			files, err := regularFiles(worker.outputDir)
-			if err != nil {
-				cancel()
-				if worker.cancelLifetime != nil {
-					worker.cancelLifetime()
-				}
-				select {
-				case <-result:
-				case <-time.After(time.Second):
-				}
-				worker.rejectDownloadCapture(before)
-				return playwrightRawOutcome{}, ErrDriverIncompatible
-			}
-			created := make([]string, 0, len(files))
-			for path := range files {
-				if _, existed := before[path]; !existed {
-					created = append(created, path)
-				}
-			}
-			violation := len(created) > 1
-			for _, path := range created {
-				info, statErr := os.Lstat(path)
-				if statErr != nil || !info.Mode().IsRegular() || info.Size() > maximumBytes {
-					violation = true
-				}
-			}
-			if violation {
-				cancel()
-				if worker.cancelLifetime != nil {
-					worker.cancelLifetime()
-				}
-				select {
-				case <-result:
-				case <-time.After(time.Second):
-				}
-				worker.rejectDownloadCapture(before)
-				return playwrightRawOutcome{}, ErrDriverIncompatible
-			}
-		}
-	}
+	return worker.captureDownload(ctx, action, maximumBytes)
 }
 
 type playwrightRawOutcome struct {
@@ -804,42 +660,6 @@ func (worker *playwrightWorker) consumeRawOutcome(outcome playwrightRawOutcome) 
 		return text, ErrDriverRejected
 	}
 	return text, nil
-}
-
-func (worker *playwrightWorker) rejectDownloadCapture(before map[string]struct{}) {
-	worker.lost = true
-	if worker.cancelLifetime != nil {
-		worker.cancelLifetime()
-	}
-	entries, err := os.ReadDir(worker.outputDir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		path := filepath.Join(worker.outputDir, entry.Name())
-		if _, existed := before[path]; !existed {
-			_ = os.RemoveAll(path)
-		}
-	}
-}
-
-func regularFiles(directory string) (map[string]struct{}, error) {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return nil, err
-	}
-	files := make(map[string]struct{})
-	for _, entry := range entries {
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return nil, infoErr
-		}
-		if !info.Mode().IsRegular() {
-			return nil, errors.New("browser output contains a non-regular entry")
-		}
-		files[filepath.Join(directory, entry.Name())] = struct{}{}
-	}
-	return files, nil
 }
 
 func (worker *playwrightWorker) callRawText(
@@ -1438,6 +1258,15 @@ var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
 		"$schema":"https://json-schema.org/draft/2020-12/schema",
 		"additionalProperties":false,
 		"properties":{"paths":{"description":"The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled.","items":{"type":"string"},"type":"array"}},
+		"type":"object"
+	}`),
+	"browser_run_code_unsafe": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{
+			"code":{"description":"A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: ` + "`async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }`" + `","type":"string"},
+			"filename":{"description":"Load code from the specified file. If both code and filename are provided, code will be ignored.","type":"string"}
+		},
 		"type":"object"
 	}`),
 	"browser_type": json.RawMessage(`{

@@ -202,6 +202,7 @@ type gatewayBrowserToolSource struct {
 	screenshotRetention time.Duration
 	screenshotCopy      browserScreenshotCopyFunc
 	limits              config.BrowserLimitsConfig
+	downloadAvailable   bool
 }
 
 func (source *gatewayBrowserToolSource) Available() bool {
@@ -440,7 +441,8 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 			screenshotRetention: browserScreenshotRetention(
 				reloadCfg.Tools.Browser.Limits.Effective().RetentionSecs,
 			),
-			limits: reloadCfg.Tools.Browser.Limits.Effective(),
+			limits:            reloadCfg.Tools.Browser.Limits.Effective(),
+			downloadAvailable: browser.PlaywrightDownloadAvailable(reloadCfg),
 		}, nil
 	}
 	factories := map[string]agent.RuntimeToolFactory{

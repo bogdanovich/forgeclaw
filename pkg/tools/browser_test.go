@@ -321,7 +321,10 @@ func TestBrowserDownloadIsNotAdvertisedOrPreparedWithoutScopedDriver(t *testing.
 }
 
 func TestBrowserActSchemaDoesNotAdvertiseDeferredDownload(t *testing.T) {
-	parameters := NewBrowserActTool(browserToolTestConfig(), &fakeBrowserToolSource{available: true}).Parameters()
+	parameters := NewBrowserActTool(
+		browserToolTestConfig(),
+		&fakeBrowserToolSource{available: true, downloadUnavailable: true},
+	).Parameters()
 	properties := parameters["properties"].(map[string]any)
 	action := properties["action"].(map[string]any)
 	actionProperties := action["properties"].(map[string]any)
@@ -333,6 +336,24 @@ func TestBrowserActSchemaDoesNotAdvertiseDeferredDownload(t *testing.T) {
 	}
 	if _, ok := actionProperties["deliver"]; ok {
 		t.Fatalf("download-only deliver field advertised in schema: %#v", actionProperties)
+	}
+}
+
+func TestBrowserActSchemaAdvertisesAdmittedDownload(t *testing.T) {
+	parameters := NewBrowserActTool(browserToolTestConfig(), &fakeBrowserToolSource{available: true}).Parameters()
+	properties := parameters["properties"].(map[string]any)
+	action := properties["action"].(map[string]any)
+	actionProperties := action["properties"].(map[string]any)
+	kind := actionProperties["kind"].(map[string]any)
+	download := false
+	for _, candidate := range kind["enum"].([]string) {
+		download = download || candidate == string(browser.ActionDownload)
+	}
+	if !download {
+		t.Fatalf("admitted download action missing from schema: %#v", kind["enum"])
+	}
+	if _, ok := actionProperties["deliver"]; !ok {
+		t.Fatalf("admitted download delivery field missing from schema: %#v", actionProperties)
 	}
 }
 
