@@ -343,7 +343,7 @@ func (store *FileStore) UpdateSession(_ context.Context, expected uint64, next S
 	}
 	if current.Owner != next.Owner || current.Target != next.Target || current.Profile != next.Profile ||
 		current.CreatedAt != next.CreatedAt || current.DryRun != next.DryRun ||
-		current.PolicyRevision != next.PolicyRevision || current.ControllerGeneration != next.ControllerGeneration ||
+		current.PolicyRevision != next.PolicyRevision || !validControllerTransition(current, next) ||
 		current.TabID != next.TabID || current.ExpiresAt != next.ExpiresAt ||
 		!validSnapshotTransition(current, next) ||
 		!validSessionTransition(current.State, next.State) {
@@ -391,7 +391,8 @@ func (store *FileStore) CreatePreparation(
 		return ErrConflict
 	}
 	session, ok := store.sessions[prepared.SessionID]
-	if !ok || !session.Owner.Equal(prepared.Owner) || session.State != SessionReady {
+	if !ok || !session.Owner.Equal(prepared.Owner) || session.State != SessionReady ||
+		session.EffectiveController() != ControllerAgent {
 		return ErrDenied
 	}
 	if len(store.sessions)+len(store.prepared)+len(store.invocations)+2 > store.maxRecords {
@@ -425,7 +426,8 @@ func (store *FileStore) CreateInvocation(_ context.Context, invocation Invocatio
 		}
 	}
 	session, ok := store.sessions[invocation.SessionID]
-	if !ok || !session.Owner.Equal(invocation.Owner) || session.State != SessionReady {
+	if !ok || !session.Owner.Equal(invocation.Owner) || session.State != SessionReady ||
+		session.EffectiveController() != ControllerAgent {
 		return ErrDenied
 	}
 	if len(store.sessions)+len(store.prepared)+len(store.invocations) >= store.maxRecords {

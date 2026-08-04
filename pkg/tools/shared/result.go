@@ -142,6 +142,12 @@ type ToolResult struct {
 	// input. It is control-plane state, not model-visible tool output. The
 	// runtime must enrich it with trusted route and origin data before use.
 	Suspension *interactions.SuspensionRequest `json:"-"`
+
+	// SuspensionResolution performs a bounded domain transition when the
+	// durable interaction is answered, times out, is canceled, or fails. It is
+	// process-local; authoritative domain state must recover safely after a
+	// restart without it.
+	SuspensionResolution func(context.Context, interactions.Outcome) error `json:"-"`
 }
 
 type OutboundDelivery struct {

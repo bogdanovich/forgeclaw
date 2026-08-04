@@ -31,6 +31,31 @@ type actionTestWorker struct {
 	uploads        []DriverAction
 	download       DriverDownload
 	closed         int
+	humanControl   bool
+	beginHumanErr  error
+	endHumanErr    error
+}
+
+func (worker *actionTestWorker) BeginHumanControl(context.Context) error {
+	if worker.beginHumanErr != nil {
+		return worker.beginHumanErr
+	}
+	if worker.humanControl {
+		return ErrConflict
+	}
+	worker.humanControl = true
+	return nil
+}
+
+func (worker *actionTestWorker) EndHumanControl(context.Context) error {
+	if worker.endHumanErr != nil {
+		return worker.endHumanErr
+	}
+	if !worker.humanControl {
+		return ErrConflict
+	}
+	worker.humanControl = false
+	return nil
 }
 
 func (worker *actionTestWorker) Status(context.Context) (WorkerStatus, error) {
@@ -121,6 +146,150 @@ func TestBrokerObservationScopesOpaqueReferencesToFreshGeneration(t *testing.T) 
 	if len(worker.actions) != 0 {
 		t.Fatalf("stale preparation dispatched actions: %+v", worker.actions)
 	}
+}
+
+func TestBrokerHumanHandoffIsExclusiveAndResumeRequiresFreshObservation(t *testing.T) {
+	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	owner := testOwner()
+	observed, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_before_handoff", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observed.SnapshotID, SnapshotGeneration: observed.SnapshotGeneration,
+		Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observed.Snapshot), Value: "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human, err := broker.Handoff(context.Background(), owner, session.ID)
+	if err != nil || human.Controller != ControllerHuman || human.ControllerGeneration != 2 ||
+		human.ControllerExpiresAt <= human.UpdatedAt || human.SnapshotID != "" || !worker.humanControl {
+		t.Fatalf("Handoff() = %#v, %v; worker = %#v", human, err, worker)
+	}
+	status, err := broker.Status(context.Background(), owner, session.ID)
+	if err != nil || status.Controller != ControllerHuman || status.State != SessionReady || worker.closed != 0 {
+		t.Fatalf("Status() during human control = %#v, %v; worker = %#v", status, err, worker)
+	}
+	if _, err = broker.Observe(
+		context.Background(),
+		owner,
+		session.ID,
+		session.TabID,
+	); !errors.Is(
+		err,
+		ErrWorkerUnavailable,
+	) {
+		t.Fatalf("Observe() during human control error = %v", err)
+	}
+	invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+	if err != nil || invocation.State != InvocationCanceled || len(worker.actions) != 0 {
+		t.Fatalf("old prepared action = %#v, %v; actions = %#v", invocation, err, worker.actions)
+	}
+	released, err := broker.ReleaseHandoff(context.Background(), owner, session.ID)
+	if err != nil || released.Controller != ControllerResumePending || worker.humanControl {
+		t.Fatalf("ReleaseHandoff() = %#v, %v; worker = %#v", released, err, worker)
+	}
+	resumed, err := broker.Resume(context.Background(), owner, session.ID)
+	if err != nil || resumed.Controller != ControllerAgent || resumed.ControllerGeneration != 3 ||
+		resumed.ControllerExpiresAt != 0 || resumed.SnapshotID != "" || worker.humanControl {
+		t.Fatalf("Resume() = %#v, %v; worker = %#v", resumed, err, worker)
+	}
+	if _, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_stale_after_resume", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observed.SnapshotID, SnapshotGeneration: observed.SnapshotGeneration,
+		Action: Action{Kind: ActionFill, Ref: onlyVisibleRef(t, observed.Snapshot), Value: "Grace"},
+	}); !errors.Is(err, ErrStale) {
+		t.Fatalf("PrepareAction() after resume error = %v", err)
+	}
+	fresh, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil || fresh.SnapshotGeneration != observed.SnapshotGeneration+1 ||
+		fresh.SnapshotID == observed.SnapshotID {
+		t.Fatalf("fresh Observe() = %#v, %v; prior = %#v", fresh, err, observed)
+	}
+}
+
+func TestBrokerHumanHandoffReconcilesCommittedWriteWarnings(t *testing.T) {
+	store := &committedWarningSessionUpdateStore{
+		MemoryStore: NewMemoryStore(), warnControllers: make(map[ControllerState]int),
+	}
+	broker, worker, session := openActionTestBroker(t, store)
+	store.warnControllers = map[ControllerState]int{
+		ControllerHumanPending:  1,
+		ControllerHuman:         1,
+		ControllerResumePending: 1,
+		ControllerAgent:         1,
+	}
+	human, err := broker.Handoff(context.Background(), testOwner(), session.ID)
+	if err != nil || human.Controller != ControllerHuman || !worker.humanControl {
+		t.Fatalf("Handoff() = %#v, %v; worker = %#v", human, err, worker)
+	}
+	pending, err := broker.ReleaseHandoff(context.Background(), testOwner(), session.ID)
+	if err != nil || pending.Controller != ControllerResumePending || worker.humanControl {
+		t.Fatalf("ReleaseHandoff() = %#v, %v; worker = %#v", pending, err, worker)
+	}
+	resumed, err := broker.Resume(context.Background(), testOwner(), session.ID)
+	if err != nil || resumed.Controller != ControllerAgent || resumed.ControllerGeneration != 3 {
+		t.Fatalf("Resume() = %#v, %v", resumed, err)
+	}
+}
+
+func TestBrokerRecoveryRevokesHumanController(t *testing.T) {
+	store := NewMemoryStore()
+	broker, _, session := openActionTestBroker(t, store)
+	human, err := broker.Handoff(context.Background(), testOwner(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := newTestBroker(t, admittedBrowserConfig(), store, &actionTestFactory{worker: &actionTestWorker{}})
+	if err = recovered.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || lost.State != SessionLost || lost.Controller != ControllerAgent ||
+		lost.ControllerExpiresAt != 0 || lost.ControllerGeneration != human.ControllerGeneration+1 ||
+		lost.SafeFailure != "gateway_restarted" {
+		t.Fatalf("recovered human session = %#v, %v", lost, err)
+	}
+}
+
+func TestBrokerHumanHandoffExpiryClosesExclusiveController(t *testing.T) {
+	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	human, err := broker.Handoff(context.Background(), testOwner(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.now = func() time.Time { return time.Unix(0, human.ControllerExpiresAt) }
+	expired, err := broker.Status(context.Background(), testOwner(), session.ID)
+	if err != nil || expired.State != SessionExpired || expired.Controller != ControllerAgent ||
+		expired.ControllerExpiresAt != 0 || worker.closed != 1 {
+		t.Fatalf("expired handoff = %#v, %v; worker = %#v", expired, err, worker)
+	}
+}
+
+func TestBrokerHumanHandoffDriverFailuresCloseSession(t *testing.T) {
+	t.Run("begin", func(t *testing.T) {
+		broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+		worker.beginHumanErr = errors.New("begin failed")
+		failed, err := broker.Handoff(context.Background(), testOwner(), session.ID)
+		if err == nil || failed.State != SessionLost || failed.Controller != ControllerAgent ||
+			failed.SafeFailure != "handoff_failed" || worker.closed != 1 {
+			t.Fatalf("Handoff() = %#v, %v; worker = %#v", failed, err, worker)
+		}
+	})
+	t.Run("release", func(t *testing.T) {
+		broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+		if _, err := broker.Handoff(context.Background(), testOwner(), session.ID); err != nil {
+			t.Fatal(err)
+		}
+		worker.endHumanErr = errors.New("release failed")
+		failed, err := broker.ReleaseHandoff(context.Background(), testOwner(), session.ID)
+		if err == nil || failed.State != SessionLost || failed.Controller != ControllerAgent ||
+			failed.SafeFailure != "resume_failed" || worker.closed != 1 {
+			t.Fatalf("ReleaseHandoff() = %#v, %v; worker = %#v", failed, err, worker)
+		}
+	})
 }
 
 func TestBrokerBindsUploadArtifactAndRequiresApprovalForDownloadClick(t *testing.T) {

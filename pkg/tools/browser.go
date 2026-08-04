@@ -27,11 +27,15 @@ type BrowserToolSource interface {
 	ScreenshotAvailable() bool
 	ArtifactTransferAvailable() bool
 	DownloadAvailable() bool
+	HandoffAvailable() bool
 	ProfileAvailability(context.Context, string, string) (browser.ProfileAvailability, error)
 	PassiveTargetDiagnostics(context.Context, string, []string) (BrowserTargetDiagnostics, error)
 	Open(context.Context, browser.OpenRequest) (browser.Session, error)
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
 	Close(context.Context, browser.Owner, string) (browser.Session, error)
+	Handoff(context.Context, browser.Owner, string) (browser.Session, error)
+	ReleaseHandoff(context.Context, browser.Owner, string) (browser.Session, error)
+	Resume(context.Context, browser.Owner, string) (browser.Session, error)
 	Observe(context.Context, browser.Owner, string, string) (browser.Observation, error)
 	LookupScreenshot(context.Context, browser.Owner, string, string) (browser.ScreenshotArtifact, bool, error)
 	CaptureScreenshot(context.Context, browser.ScreenshotRequest) (browser.ScreenshotArtifact, error)
@@ -50,6 +54,8 @@ type BrowserTargetDiagnostics struct {
 	Screenshot bool
 	Upload     bool
 	Download   bool
+	HeadedView bool
+	Handoff    bool
 }
 
 type browserToolRuntime struct {
@@ -268,8 +274,8 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				Upload:      uploadAvailable,
 				Download:    downloadAvailable,
 				Diagnostics: true,
-				HeadedView:  false,
-				Handoff:     false,
+				HeadedView:  capabilitiesAvailable && diagnostics.HeadedView,
+				Handoff:     capabilitiesAvailable && diagnostics.Handoff,
 			},
 			Limits: browserLimitsView{
 				Sessions: limits.Sessions, Tabs: limits.Tabs,
@@ -312,7 +318,9 @@ func (*BrowserSessionTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"operation":          map[string]any{"type": "string", "enum": []string{"open", "status", "close"}},
+			"operation": map[string]any{
+				"type": "string", "enum": []string{"open", "status", "close", "handoff", "resume"},
+			},
 			"target":             map[string]any{"type": "string"},
 			"profile":            map[string]any{"type": "string"},
 			"browser_session_id": map[string]any{"type": "string"},
@@ -326,15 +334,17 @@ func (*BrowserSessionTool) ToolLoopSemantics() loopguard.Semantics {
 }
 
 type browserSessionView struct {
-	BrowserSessionID     string               `json:"browser_session_id"`
-	State                browser.SessionState `json:"state"`
-	Target               string               `json:"target"`
-	Profile              string               `json:"profile"`
-	DryRun               bool                 `json:"dry_run"`
-	ControllerGeneration uint64               `json:"controller_generation"`
-	ExpiresAt            int64                `json:"expires_at"`
-	Tabs                 []browserTabView     `json:"tabs"`
-	Reason               string               `json:"reason,omitempty"`
+	BrowserSessionID     string                  `json:"browser_session_id"`
+	State                browser.SessionState    `json:"state"`
+	Target               string                  `json:"target"`
+	Profile              string                  `json:"profile"`
+	DryRun               bool                    `json:"dry_run"`
+	ControllerGeneration uint64                  `json:"controller_generation"`
+	Controller           browser.ControllerState `json:"controller"`
+	ControllerExpiresAt  int64                   `json:"controller_expires_at,omitempty"`
+	ExpiresAt            int64                   `json:"expires_at"`
+	Tabs                 []browserTabView        `json:"tabs"`
+	Reason               string                  `json:"reason,omitempty"`
 }
 
 type browserTabView struct {
@@ -348,6 +358,7 @@ func browserSessionResult(session browser.Session) browserSessionView {
 		BrowserSessionID: session.ID, State: session.State, Target: session.Target,
 		Profile: session.Profile, DryRun: session.DryRun,
 		ControllerGeneration: session.ControllerGeneration, ExpiresAt: session.ExpiresAt,
+		Controller: session.EffectiveController(), ControllerExpiresAt: session.ControllerExpiresAt,
 		Tabs: []browserTabView{{
 			TabID: session.TabID, SnapshotID: session.SnapshotID,
 			SnapshotGeneration: session.SnapshotGeneration,
@@ -384,7 +395,7 @@ func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any
 		session, err = tool.runtime.source.Open(ctx, browser.OpenRequest{
 			Owner: owner, Target: target, Profile: profile,
 		})
-	case "status", "close":
+	case "status", "close", "handoff", "resume":
 		sessionID, ok := args["browser_session_id"].(string)
 		if !ok || len(args) != 2 {
 			return browserErrorResult(
@@ -395,8 +406,15 @@ func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any
 		}
 		if operation == "status" {
 			session, err = tool.runtime.source.Status(ctx, owner, sessionID)
-		} else {
+		} else if operation == "close" {
 			session, err = tool.runtime.source.Close(ctx, owner, sessionID)
+		} else if operation == "handoff" {
+			if !tool.runtime.source.HandoffAvailable() {
+				return browserToolError(browser.ErrDriverIncompatible)
+			}
+			session, err = tool.runtime.source.Handoff(ctx, owner, sessionID)
+		} else {
+			session, err = tool.runtime.source.Resume(ctx, owner, sessionID)
 		}
 	default:
 		return browserErrorResult("invalid_request", "Unknown browser session operation.", "correct_arguments")
@@ -404,7 +422,34 @@ func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any
 	if err != nil {
 		return browserToolError(err)
 	}
-	return tool.runtime.result(browserSessionResult(session))
+	result := tool.runtime.result(browserSessionResult(session))
+	if operation == "handoff" && result != nil && !result.IsError {
+		result.Suspension = &interactions.SuspensionRequest{
+			Kind: interactions.KindQuestion,
+			Questions: []interactions.Question{{
+				ID: "release_browser", Header: "Browser control",
+				Question: "Use the visible local browser window. When you are finished, release control.",
+				Options: []interactions.Option{{
+					Label: "Release control", Description: "Return exclusive control to browser automation.",
+				}},
+			}},
+			PromptSummary: "Browser automation is paused for exclusive local human control.",
+			Timeout:       time.Duration(tool.runtime.config.Limits.Effective().PreparedSeconds) * time.Second,
+		}
+		result.SuspensionResolution = func(resolutionCtx context.Context, outcome interactions.Outcome) error {
+			if outcome == interactions.OutcomeAnswered {
+				_, resolutionErr := tool.runtime.source.ReleaseHandoff(resolutionCtx, owner, session.ID)
+				if resolutionErr == nil {
+					return nil
+				}
+				_, closeErr := tool.runtime.source.Close(context.WithoutCancel(resolutionCtx), owner, session.ID)
+				return errors.Join(resolutionErr, closeErr)
+			}
+			_, resolutionErr := tool.runtime.source.Close(resolutionCtx, owner, session.ID)
+			return resolutionErr
+		}
+	}
+	return result
 }
 
 func (*BrowserObserveTool) Name() string { return "browser_observe" }

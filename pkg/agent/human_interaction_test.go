@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +124,72 @@ type approvalBindingTool struct {
 	bindingContinuations []bool
 	executionIDs         []string
 	workspaces           []string
+}
+
+type browserHandoffContinuationTool struct {
+	ownerExecutionID      string
+	released              bool
+	operations            []string
+	executionIDs          []string
+	approvalContinuations []bool
+}
+
+func (*browserHandoffContinuationTool) Name() string { return "browser_handoff_continuation" }
+
+func (*browserHandoffContinuationTool) Description() string {
+	return "Exercise browser ownership across a human handoff continuation"
+}
+
+func (*browserHandoffContinuationTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"operation": map[string]any{
+				"type": "string", "enum": []string{"handoff", "resume", "observe"},
+			},
+		},
+		"required":             []string{"operation"},
+		"additionalProperties": false,
+	}
+}
+
+func (tool *browserHandoffContinuationTool) Execute(
+	ctx context.Context,
+	args map[string]any,
+) *tools.ToolResult {
+	operation, _ := args["operation"].(string)
+	executionID := tools.ToolExecutionID(ctx)
+	tool.operations = append(tool.operations, operation)
+	tool.executionIDs = append(tool.executionIDs, executionID)
+	tool.approvalContinuations = append(
+		tool.approvalContinuations,
+		tools.ToolApprovalContinuation(ctx),
+	)
+	switch operation {
+	case "handoff":
+		tool.ownerExecutionID = executionID
+		return &tools.ToolResult{
+			ForLLM: `{"controller":"human"}`,
+			Suspension: &interactions.SuspensionRequest{
+				Kind: interactions.KindQuestion, PromptSummary: "Release browser control", Timeout: time.Minute,
+				Questions: []interactions.Question{{
+					ID: "release_browser", Header: "Browser control",
+					Question: "Release browser control?",
+				}},
+			},
+			SuspensionResolution: func(_ context.Context, outcome interactions.Outcome) error {
+				tool.released = outcome == interactions.OutcomeAnswered
+				return nil
+			},
+		}
+	case "resume", "observe":
+		if !tool.released || executionID == "" || executionID != tool.ownerExecutionID {
+			return tools.ErrorResult("browser owner identity changed across continuation")
+		}
+		return tools.NewToolResult(`{"controller":"agent"}`)
+	default:
+		return tools.ErrorResult("unknown browser continuation operation")
+	}
 }
 
 func (*approvalBindingTool) Name() string { return "approval_binding" }
@@ -603,6 +670,44 @@ func TestInteractionEventsProjectOwningTaskState(t *testing.T) {
 	task, _ = tasks.Get("task-1")
 	if task.Status != taskregistry.StatusFailed || task.Error != "continuation failed" {
 		t.Fatalf("failed task = %#v", task)
+	}
+}
+
+func TestInteractionResolutionCallbackRunsOnceForTerminalHumanOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		event   interactions.EventType
+		outcome interactions.Outcome
+	}{
+		{name: "answered", event: interactions.EventAnswerClaimed, outcome: interactions.OutcomeAnswered},
+		{name: "timed out", event: interactions.EventAnswerClaimed, outcome: interactions.OutcomeTimedOut},
+		{name: "cancelled", event: interactions.EventCancelled, outcome: interactions.OutcomeCanceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			al := &AgentLoop{cfg: config.DefaultConfig()}
+			called := make(chan interactions.Outcome, 1)
+			al.interactionResolutions.Store(
+				"interaction-browser",
+				func(_ context.Context, outcome interactions.Outcome) error {
+					called <- outcome
+					return nil
+				},
+			)
+			observation := interactions.EventObservation{
+				Event:  interactions.Event{Type: test.event},
+				Record: interactions.Record{ID: "interaction-browser", Outcome: test.outcome},
+			}
+			al.observeInteractionEvent(t.TempDir(), observation)
+			if got := <-called; got != test.outcome {
+				t.Fatalf("resolution outcome = %q, want %q", got, test.outcome)
+			}
+			al.observeInteractionEvent(t.TempDir(), observation)
+			select {
+			case duplicate := <-called:
+				t.Fatalf("duplicate resolution = %q", duplicate)
+			default:
+			}
+		})
 	}
 }
 
@@ -1831,6 +1936,78 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 		tool.workspaces[0] != agent.Workspace ||
 		tool.workspaces[1] != agent.Workspace {
 		t.Fatalf("approval workspaces = %#v", tool.workspaces)
+	}
+}
+
+func TestQuestionContinuationPreservesBrowserOwnerWithoutApproval(t *testing.T) {
+	toolCall := func(id, operation string) providers.ToolCall {
+		arguments := fmt.Sprintf(`{"operation":%q}`, operation)
+		return providers.ToolCall{
+			ID: id, Name: "browser_handoff_continuation",
+			Arguments: map[string]any{"operation": operation},
+			Function:  &providers.FunctionCall{Name: "browser_handoff_continuation", Arguments: arguments},
+		}
+	}
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: []providers.ToolCall{toolCall("call-handoff", "handoff")}},
+		{ToolCalls: []providers.ToolCall{toolCall("call-resume", "resume")}},
+		{ToolCalls: []providers.ToolCall{toolCall("call-observe", "observe")}},
+		{Content: "browser handoff continuation finished", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	tool := &browserHandoffContinuationTool{}
+	agent.Tools.Register(tool)
+	inbound := &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-browser-owner", SenderID: "user-browser-owner",
+	}
+	turnStatus := TurnEndStatusCompleted
+	response, err := al.runAgentLoop(t.Context(), agent, processOptions{
+		TurnStatus: &turnStatus,
+		Dispatch: DispatchRequest{
+			RouteSessionKey: "route-browser-owner", SessionKey: "session-browser-owner",
+			UserMessage: "hand off browser control", InboundContext: inbound,
+		},
+		DefaultResponse: defaultResponse, EnableSummary: true, SendResponse: false,
+	})
+	if err != nil || response != "" || turnStatus != TurnEndStatusSuspended {
+		t.Fatalf("initial handoff turn = (%q, %q, %v)", response, turnStatus, err)
+	}
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, ok := activeInteractionForSession(registry, "session-browser-owner")
+	if !ok || record.Kind != interactions.KindQuestion || record.Origin.ExecutionID == "" {
+		t.Fatalf("browser handoff interaction = %#v, found=%t", record, ok)
+	}
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "release_browser: release", Values: map[string]string{"release_browser": "release"},
+		MessageID: "browser-release", ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = al.resumeClaimedInteraction(
+		t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !tool.released || !reflect.DeepEqual(tool.operations, []string{"handoff", "resume", "observe"}) {
+		t.Fatalf("browser continuation operations = %#v, released=%t", tool.operations, tool.released)
+	}
+	if len(tool.executionIDs) != 3 {
+		t.Fatalf("browser execution identities = %#v", tool.executionIDs)
+	}
+	for index, executionID := range tool.executionIDs {
+		if executionID != record.Origin.ExecutionID || tool.approvalContinuations[index] {
+			t.Fatalf(
+				"browser continuation identity[%d] = %q, approval=%t, origin=%q",
+				index,
+				executionID,
+				tool.approvalContinuations[index],
+				record.Origin.ExecutionID,
+			)
+		}
 	}
 }
 

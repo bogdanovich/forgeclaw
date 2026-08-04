@@ -69,6 +69,7 @@ type AgentLoop struct {
 	asyncCompletions           sync.Map
 	taskRegistries             sync.Map
 	interactionRegistries      sync.Map
+	interactionResolutions     sync.Map
 	interactionCatalog         *interactions.WorkspaceCatalog
 	interactionCatalogMu       sync.Mutex
 	interactionRecoveryRunning atomic.Bool
@@ -108,6 +109,7 @@ type processOptions struct {
 	InteractionWorkspace        string   // Workspace owning inbound interaction routing
 	InteractionSessionKey       string   // User-facing session that owns interaction answers
 	InteractionRouteKey         string   // Routed scope key that owns interaction answers
+	InteractionOriginExecution  string   // Original non-approval execution identity for a continuation
 	TurnStatus                  *TurnEndStatus
 	ApprovalGrant               *ToolApprovalGrant // Internal one-time durable approval capability
 	Channel                     string             // Target channel for tool execution

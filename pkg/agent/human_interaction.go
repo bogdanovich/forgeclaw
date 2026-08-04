@@ -91,6 +91,7 @@ func (al *AgentLoop) observeInteractionEvent(
 	if al == nil {
 		return
 	}
+	al.resolveInteractionDomainState(observation)
 	al.projectInteractionTaskState(workspace, observation)
 	kind := runtimeKindForInteractionEvent(observation.Event.Type)
 	if kind == "" {
@@ -113,6 +114,33 @@ func (al *AgentLoop) observeInteractionEvent(
 		Code:          observation.Event.Code,
 		Success:       observation.Event.Success,
 	})
+}
+
+func (al *AgentLoop) resolveInteractionDomainState(observation interactions.EventObservation) {
+	if al == nil {
+		return
+	}
+	switch observation.Event.Type {
+	case interactions.EventAnswerClaimed, interactions.EventCancelled, interactions.EventFailed:
+	default:
+		return
+	}
+	value, ok := al.interactionResolutions.LoadAndDelete(observation.Record.ID)
+	if !ok {
+		return
+	}
+	resolve, ok := value.(func(context.Context, interactions.Outcome) error)
+	if !ok || resolve == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := resolve(ctx, observation.Record.Outcome); err != nil {
+		logger.WarnCF("agent", "Human interaction domain resolution failed", map[string]any{
+			"interaction_id": observation.Record.ID,
+			"error":          err.Error(),
+		})
+	}
 }
 
 func (al *AgentLoop) projectInteractionTaskState(
@@ -245,6 +273,9 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 	}
 	if err != nil {
 		return ToolSuspensionDisposition{}, err
+	}
+	if request.Resolution != nil {
+		runtime.al.interactionResolutions.Store(record.ID, request.Resolution)
 	}
 	disposition := ToolSuspensionDisposition{InteractionID: record.ID, Durable: true}
 	if runtime.al.channelManager == nil {

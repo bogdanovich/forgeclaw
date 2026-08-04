@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -178,6 +179,31 @@ type PlaywrightWorkerFactory struct {
 	lookPath      func(string) (string, error)
 	proxyLookupIP browserProxyLookup
 	proxyDial     browserProxyDial
+}
+
+// PlaywrightHandoffAvailable reports whether the managed driver owns a headed
+// local browser window. Handoff does not expose a remote endpoint or admit a
+// headless/browser-extension configuration.
+func PlaywrightHandoffAvailable(root *config.Config) bool {
+	if root == nil || (runtime.GOOS != "linux" && runtime.GOOS != "darwin") ||
+		!root.Tools.Browser.Enabled {
+		return false
+	}
+	target, ok := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	if !ok || !target.Enabled || target.Driver != config.BrowserDriverPlaywrightMCP {
+		return false
+	}
+	server, ok := root.Tools.MCP.Servers[target.DriverServer]
+	if !ok {
+		return false
+	}
+	for _, argument := range server.Args {
+		if argument == "--headless" || strings.HasPrefix(argument, "--headless=") ||
+			argument == "--extension" || strings.HasPrefix(argument, "--extension=") {
+			return false
+		}
+	}
+	return true
 }
 
 func playwrightOutputRoot(server config.MCPServerConfig) (config.MCPServerConfig, string) {
@@ -510,6 +536,31 @@ type playwrightWorker struct {
 	closed          bool
 	lastObservation DriverObservation
 	pendingDialog   *DialogObservation
+	humanControl    bool
+}
+
+func (worker *playwrightWorker) BeginHumanControl(context.Context) error {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if worker.closing || worker.closed || worker.lost {
+		return ErrWorkerUnavailable
+	}
+	worker.humanControl = true
+	worker.lastObservation = DriverObservation{}
+	worker.pendingDialog = nil
+	return nil
+}
+
+func (worker *playwrightWorker) EndHumanControl(context.Context) error {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if worker.closing || worker.closed || worker.lost || !worker.humanControl {
+		return ErrWorkerUnavailable
+	}
+	worker.humanControl = false
+	worker.lastObservation = DriverObservation{}
+	worker.pendingDialog = nil
+	return nil
 }
 
 func (worker *playwrightWorker) Status(ctx context.Context) (WorkerStatus, error) {
@@ -535,7 +586,7 @@ func (worker *playwrightWorker) Status(ctx context.Context) (WorkerStatus, error
 func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost {
+	if worker.closing || worker.closed || worker.lost || worker.humanControl {
 		return DriverObservation{}, ErrWorkerUnavailable
 	}
 	if worker.pendingDialog != nil {
@@ -569,7 +620,7 @@ func (worker *playwrightWorker) CaptureScreenshot(
 ) (DriverScreenshot, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost || maximumBytes <= 0 {
+	if worker.closing || worker.closed || worker.lost || worker.humanControl || maximumBytes <= 0 {
 		return DriverScreenshot{}, ErrWorkerUnavailable
 	}
 	result, err := worker.client.CallTool(ctx, "browser_take_screenshot", map[string]any{
@@ -613,7 +664,7 @@ func (worker *playwrightWorker) CaptureScreenshot(
 func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (DriverElement, string, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost || worker.pendingDialog != nil ||
+	if worker.closing || worker.closed || worker.lost || worker.humanControl || worker.pendingDialog != nil ||
 		!playwrightTargetPattern.MatchString(target) {
 		return DriverElement{}, "", ErrWorkerUnavailable
 	}
@@ -647,7 +698,7 @@ func (worker *playwrightWorker) CatalogRevision() string {
 func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction) error {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost {
+	if worker.closing || worker.closed || worker.lost || worker.humanControl {
 		return ErrWorkerUnavailable
 	}
 	if worker.pendingDialog != nil && action.Kind != DriverDialog {
@@ -669,7 +720,7 @@ func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction
 func (worker *playwrightWorker) Upload(ctx context.Context, action DriverAction) error {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost || worker.pendingDialog != nil ||
+	if worker.closing || worker.closed || worker.lost || worker.humanControl || worker.pendingDialog != nil ||
 		action.Kind != DriverUpload || !playwrightTargetPattern.MatchString(action.Target) ||
 		action.Value == "" || !filepath.IsAbs(action.Value) {
 		return ErrWorkerUnavailable
@@ -710,7 +761,7 @@ func (worker *playwrightWorker) Download(
 ) (DriverDownload, error) {
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if worker.closing || worker.closed || worker.lost || worker.pendingDialog != nil ||
+	if worker.closing || worker.closed || worker.lost || worker.humanControl || worker.pendingDialog != nil ||
 		action.Kind != DriverDownloadAction || !playwrightTargetPattern.MatchString(action.Target) ||
 		maximumBytes < 1 || maximumBytes > int64(worker.limits.DownloadBytes) {
 		return DriverDownload{}, ErrWorkerUnavailable
