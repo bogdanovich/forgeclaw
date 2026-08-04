@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,9 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +37,7 @@ type playwrightCall struct {
 }
 
 type fakePlaywrightClient struct {
+	mu          sync.Mutex
 	catalog     []*sdkmcp.Tool
 	connectErr  error
 	connectCtx  context.Context
@@ -43,6 +47,7 @@ type fakePlaywrightClient struct {
 	calls       []playwrightCall
 	callErrors  map[string]error
 	callResults map[string]*sdkmcp.CallToolResult
+	callQueues  map[string][]*sdkmcp.CallToolResult
 	onCall      func(string)
 	closeErr    error
 	closeCalls  int
@@ -72,14 +77,26 @@ func (client *fakePlaywrightClient) CallTool(
 	for key, value := range arguments {
 		cloned[key] = value
 	}
+	client.mu.Lock()
 	client.calls = append(client.calls, playwrightCall{tool: tool, arguments: cloned})
+	var queued *sdkmcp.CallToolResult
+	if len(client.callQueues[tool]) > 0 {
+		queued = client.callQueues[tool][0]
+		client.callQueues[tool] = client.callQueues[tool][1:]
+	}
+	callErr := client.callErrors[tool]
+	result := client.callResults[tool]
+	client.mu.Unlock()
 	if client.onCall != nil {
 		client.onCall(tool)
 	}
-	if err := client.callErrors[tool]; err != nil {
-		return nil, err
+	if callErr != nil {
+		return nil, callErr
 	}
-	if result := client.callResults[tool]; result != nil {
+	if queued != nil {
+		return queued, nil
+	}
+	if result != nil {
 		return result, nil
 	}
 	return playwrightTextResult("ok"), nil
@@ -230,19 +247,13 @@ func TestPlaywrightWorkerUploadsOnlyAfterExactFileChooser(t *testing.T) {
 
 func TestPlaywrightWorkerCapturesExactlyOneBoundedDownload(t *testing.T) {
 	output := t.TempDir()
-	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
-		"browser_click": playwrightTextResult("downloaded"),
-	}}
-	client.onCall = func(tool string) {
-		if tool == "browser_click" {
-			if err := os.WriteFile(
-				filepath.Join(output, "fixture.txt"),
-				[]byte("download fixture"),
-				0o600,
-			); err != nil {
-				panic(err)
-			}
-		}
+	payload := []byte("download fixture")
+	client := &fakePlaywrightClient{
+		callQueues: map[string][]*sdkmcp.CallToolResult{"browser_run_code_unsafe": {
+			playwrightDownloadControlResult(playwrightDownloadMarker + "|complete|" +
+				url.QueryEscape(`attachment; filename="fixture.txt"`) + "|text%2Fplain|" +
+				strconv.Itoa(len(payload)) + "|b:" + url.QueryEscape(base64.StdEncoding.EncodeToString(payload))),
+		}},
 	}
 	worker := &playwrightWorker{
 		client: client, limits: config.BrowserLimitsConfig{}.Effective(), outputDir: output,
@@ -250,27 +261,31 @@ func TestPlaywrightWorkerCapturesExactlyOneBoundedDownload(t *testing.T) {
 	download, err := worker.Download(context.Background(), DriverAction{
 		Kind: DriverDownloadAction, Target: "e7", Element: "Download",
 	}, 1024)
-	want := sha256.Sum256([]byte("download fixture"))
-	if err != nil || download.Filename != "fixture.txt" || download.Size != int64(len("download fixture")) ||
-		download.SHA256 != hex.EncodeToString(want[:]) || download.Path != filepath.Join(output, "fixture.txt") {
+	want := sha256.Sum256(payload)
+	if err != nil || download.Filename != "fixture.txt" || download.Size != int64(len(payload)) ||
+		download.ContentType != "text/plain" || download.SHA256 != hex.EncodeToString(want[:]) ||
+		filepath.Dir(download.Path) != output {
 		t.Fatalf("Download() = %#v, %v", download, err)
+	}
+	stored, readErr := os.ReadFile(download.Path)
+	if readErr != nil || !bytes.Equal(stored, payload) {
+		t.Fatalf("captured bytes = %q, %v", stored, readErr)
+	}
+	if len(client.calls) != 1 || client.calls[0].tool != "browser_run_code_unsafe" ||
+		!strings.Contains(client.calls[0].arguments["code"].(string), `page.locator("aria-ref=" + "e7")`) ||
+		!strings.Contains(client.calls[0].arguments["code"].(string), "const maximumBytes = 1024;") {
+		t.Fatalf("private download calls = %#v", client.calls)
 	}
 }
 
-func TestPlaywrightWorkerCancelsAndRemovesGrowingOversizeDownload(t *testing.T) {
+func TestPlaywrightWorkerRejectsChunkBeforeWritingPastDownloadLimit(t *testing.T) {
 	output := t.TempDir()
-	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
-		"browser_click": playwrightTextResult("downloaded"),
-	}}
-	client.onCall = func(tool string) {
-		if tool != "browser_click" {
-			return
-		}
-		path := filepath.Join(output, "oversize.bin")
-		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 2048), 0o600); err != nil {
-			panic(err)
-		}
-		time.Sleep(100 * time.Millisecond)
+	oversize := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 2048))
+	client := &fakePlaywrightClient{
+		callQueues: map[string][]*sdkmcp.CallToolResult{"browser_run_code_unsafe": {
+			playwrightDownloadControlResult(playwrightDownloadMarker +
+				"|complete|attachment|application%2Foctet-stream|1024|b:" + url.QueryEscape(oversize)),
+		}},
 	}
 	worker := &playwrightWorker{
 		client: client, limits: config.BrowserLimitsConfig{}.Effective(), outputDir: output,
@@ -278,13 +293,17 @@ func TestPlaywrightWorkerCancelsAndRemovesGrowingOversizeDownload(t *testing.T) 
 	_, err := worker.Download(context.Background(), DriverAction{
 		Kind: DriverDownloadAction, Target: "e7", Element: "Download",
 	}, 1024)
-	if !errors.Is(err, ErrDriverIncompatible) || !worker.lost {
-		t.Fatalf("Download() error = %v, lost = %t", err, worker.lost)
+	if !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("Download() error = %v", err)
 	}
 	entries, readErr := os.ReadDir(output)
 	if readErr != nil || len(entries) != 0 {
 		t.Fatalf("oversize output entries = %#v, %v", entries, readErr)
 	}
+}
+
+func playwrightDownloadControlResult(value string) *sdkmcp.CallToolResult {
+	return playwrightTextResult("### Result\n\"" + value + "\"\n")
 }
 
 func (client *fakePlaywrightClient) Close() error {
@@ -341,13 +360,15 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	}
 	args := client.connectCfg.Args
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
-		client.connectCfg.Enabled || len(args) != 10 ||
+		client.connectCfg.Enabled || len(args) != 12 ||
 		!reflect.DeepEqual(args[:4], []string{"--caps", "vision", "--proxy-server", args[3]}) ||
 		!strings.HasPrefix(args[3], "http://127.0.0.1:") ||
 		!reflect.DeepEqual(
 			args[4:8],
 			[]string{"--proxy-bypass", "<-loopback>", "--allowed-origins", "http://b.example;https://example.com"},
-		) || args[8] != "--output-dir" || !filepath.IsAbs(args[9]) ||
+		) || args[8] != "--config" || !filepath.IsAbs(args[9]) ||
+		filepath.Base(args[9]) != playwrightDownloadConfigName ||
+		args[10] != "--output-dir" || !filepath.IsAbs(args[11]) ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
 			"http://b.example;https://example.com" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
@@ -360,7 +381,14 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		client.connectCfg.Env["PLAYWRIGHT_MCP_EXTENSION"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
-	driverOutputDir := args[9]
+	boundary, boundaryErr := os.ReadFile(args[9])
+	boundaryInfo, boundaryStatErr := os.Lstat(args[9])
+	if boundaryErr != nil || boundaryStatErr != nil || string(boundary) !=
+		"{\"browser\":{\"contextOptions\":{\"acceptDownloads\":false}}}\n" ||
+		(runtime.GOOS != "windows" && boundaryInfo.Mode().Perm() != 0o600) {
+		t.Fatalf("download boundary = %q, %#v, %v, %v", boundary, boundaryInfo, boundaryErr, boundaryStatErr)
+	}
+	driverOutputDir := args[11]
 	if info, statErr := os.Lstat(driverOutputDir); statErr != nil || !info.IsDir() ||
 		(runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 		t.Fatalf("private output directory = %q, %#v, %v", driverOutputDir, info, statErr)
@@ -506,6 +534,21 @@ func TestPlaywrightWorkerFactoryConfiguresPublicWebWithoutDriverAllowlist(t *tes
 		client.connectCfg.EnvFile != "/operator/playwright.env" ||
 		!strings.Contains(strings.Join(client.connectCfg.Args, " "), "--proxy-bypass <-loopback>") {
 		t.Fatalf("public-web driver config = %+v", client.connectCfg)
+	}
+}
+
+func TestPlaywrightDownloadAvailabilityRequiresScopedChromiumBoundary(t *testing.T) {
+	root := admittedBrowserConfig()
+	wantSupported := runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+	if got := PlaywrightDownloadAvailable(root); got != wantSupported {
+		t.Fatalf("default PlaywrightDownloadAvailable() = %t, want %t", got, wantSupported)
+	}
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	server := root.Tools.MCP.Servers[target.DriverServer]
+	server.Args = append(server.Args, "--browser=firefox")
+	root.Tools.MCP.Servers[target.DriverServer] = server
+	if PlaywrightDownloadAvailable(root) {
+		t.Fatal("Firefox unexpectedly admitted the Chromium download boundary")
 	}
 }
 
@@ -1277,6 +1320,18 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	var privateProbeRequests atomic.Int64
 	var privateProbeURL string
 	fixture := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/download" {
+			writer.Header().Set("Content-Disposition", `attachment; filename="bounded.txt"`)
+			writer.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(writer, "bounded download fixture")
+			return
+		}
+		if request.URL.Path == "/oversize-download" {
+			writer.Header().Set("Content-Disposition", `attachment; filename="oversize.bin"`)
+			writer.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = writer.Write(bytes.Repeat([]byte("x"), 2048))
+			return
+		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if request.URL.Path == "/private-probe" {
 			privateProbeRequests.Add(1)
@@ -1299,7 +1354,8 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 <label>Name <input aria-label="Name"></label>
 <label>State <select aria-label="State"><option value="CA">California</option><option value="NY">New York</option></select></label>
 <button type="submit">Save</button><button type="button" onclick="prompt('Type DELETE'); alert('Saved')">Prompt</button>
-</form><output></output>%s<div style="height:2000px"></div>`, privateImage)
+</form><output></output><a href="/download">Download fixture</a>
+<a href="/oversize-download">Oversize fixture</a>%s<div style="height:2000px"></div>`, privateImage)
 	}))
 	defer fixture.Close()
 	privateProbeURL = fixture.URL + "/private-probe"
@@ -1319,10 +1375,14 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	root.Tools.Browser.Targets[config.BrowserDefaultTarget] = target
 	server := root.Tools.MCP.Servers["playwright"]
 	driverTemp := t.TempDir()
+	driverOutputRoot := filepath.Join(driverTemp, "output")
+	if err = os.Mkdir(driverOutputRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	server.ExclusiveLockFile = filepath.Join(driverTemp, "playwright.lock")
 	server.Args = []string{
 		"-y", "@playwright/mcp@0.0.78", "--headless", "--browser=chrome", "--isolated",
-		"--output-mode=stdout", "--output-dir=" + filepath.Join(driverTemp, "output"),
+		"--output-mode=stdout", "--output-dir=" + driverOutputRoot,
 	}
 	root.Tools.MCP.Servers["playwright"] = server
 	factory, err := NewPlaywrightWorkerFactory(root)
@@ -1415,6 +1475,32 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	if observation, err = worker.Observe(ctx); err != nil || observation.PendingDialog != nil {
 		t.Fatalf("Observe() after chained alert = %+v, %v", observation, err)
+	}
+	downloadLink := mustSnapshotRef(t, observation.Snapshot, `link "Download fixture" \[ref=(e[0-9]+)\]`)
+	download, err := worker.Download(ctx, DriverAction{
+		Kind: DriverDownloadAction, Target: downloadLink, Element: "Download fixture",
+	}, 1024)
+	wantDownload := sha256.Sum256([]byte("bounded download fixture"))
+	if err != nil || download.Filename != "bounded.txt" || download.ContentType != "text/plain" ||
+		download.Size != int64(len("bounded download fixture")) ||
+		download.SHA256 != hex.EncodeToString(wantDownload[:]) {
+		t.Fatalf("Download() = %#v, %v", download, err)
+	}
+	oversizeLink := mustSnapshotRef(t, observation.Snapshot, `link "Oversize fixture" \[ref=(e[0-9]+)\]`)
+	if _, err = worker.Download(ctx, DriverAction{
+		Kind: DriverDownloadAction, Target: oversizeLink, Element: "Oversize fixture",
+	}, 1024); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("oversize Download() error = %v", err)
+	}
+	entries, readErr := os.ReadDir(worker.outputDir)
+	if readErr != nil {
+		t.Fatalf("read output directory: %v", readErr)
+	}
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr != nil || info.Size() > 1024 {
+			t.Fatalf("output after oversize download = %q, %#v, %v", entry.Name(), info, infoErr)
+		}
 	}
 	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin + "/large"}); err != nil {
 		t.Fatalf("large fixture navigate error = %v", err)
@@ -1608,8 +1694,9 @@ func playwrightCatalogFixture() []*sdkmcp.Tool {
 		"browser_mouse_wheel",
 		"browser_handle_dialog",
 		"browser_file_upload",
+		"browser_run_code_unsafe",
 	}
-	catalog := make([]*sdkmcp.Tool, 0, len(names)+1)
+	catalog := make([]*sdkmcp.Tool, 0, len(names))
 	for _, name := range names {
 		var schema map[string]any
 		if err := json.Unmarshal(pinnedPlaywrightToolSchemas[name], &schema); err != nil {
@@ -1617,12 +1704,6 @@ func playwrightCatalogFixture() []*sdkmcp.Tool {
 		}
 		catalog = append(catalog, &sdkmcp.Tool{Name: name, InputSchema: schema})
 	}
-	catalog = append(catalog, &sdkmcp.Tool{
-		Name: "browser_run_code_unsafe",
-		InputSchema: map[string]any{
-			"type": "object", "properties": map[string]any{"code": map[string]any{"type": "string"}},
-		},
-	})
 	return catalog
 }
 
