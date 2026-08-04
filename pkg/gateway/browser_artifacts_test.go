@@ -183,7 +183,7 @@ func TestGatewayNodeDownloadResolvesThroughBrowserUploadWorker(t *testing.T) {
 	preparation, err := source.PrepareAction(ctx, browser.PrepareActionRequest{
 		Owner: owner, RequestID: "request_upload", SessionID: session.ID, TabID: session.TabID,
 		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
-		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+		Action: browser.Action{Kind: browser.ActionUpload, Ref: match[1], ArtifactRef: artifact.Ref},
 	})
 	if err != nil || preparation.Action.ArtifactSHA256 != hex.EncodeToString(digest[:]) {
 		t.Fatalf("PrepareAction() = %#v, %v", preparation, err)
@@ -228,6 +228,7 @@ func (*gatewayUploadWorker) Observe(context.Context) (browser.DriverObservation,
 		Elements: []browser.DriverElement{{Target: "e1", Role: "button", Name: "Choose file"}},
 	}, nil
 }
+
 func (*gatewayUploadWorker) Resolve(
 	context.Context, string,
 ) (browser.DriverElement, string, error) {
@@ -247,6 +248,7 @@ func (worker *gatewayUploadWorker) Upload(_ context.Context, action browser.Driv
 	worker.path, worker.got = action.Value, data
 	return nil
 }
+
 func (*gatewayUploadWorker) Download(
 	context.Context, browser.DriverAction, int64,
 ) (browser.DriverDownload, error) {
