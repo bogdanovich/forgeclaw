@@ -424,7 +424,9 @@ func TestBrowserObserveCapturesAndDeliversOpaqueScreenshotArtifact(t *testing.T)
 	}
 	if err := result.CommitOutbound(browserToolTestContext()); err != nil ||
 		source.deliveryRequest.Ref != "transfer-artifact://opaque" ||
-		source.deliveryRequest.RequestID != source.screenshotRequest.RequestID {
+		source.deliveryRequest.RequestID != source.screenshotRequest.RequestID ||
+		source.deliveryRequest.Recovery == source.screenshot.Recovery ||
+		*source.deliveryRequest.Recovery != *source.screenshot.Recovery {
 		t.Fatalf("commit outbound = %#v, %v", source.deliveryRequest, err)
 	}
 
