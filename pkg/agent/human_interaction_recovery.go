@@ -11,6 +11,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/session"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func (al *AgentLoop) scheduleHumanInteractionRecovery(ctx context.Context) {
@@ -89,12 +90,13 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 			case interactions.StatusResuming:
 				if record.FinalDeliveryState == interactions.DeliveryStateSending ||
 					record.FinalDeliveryState == interactions.DeliveryStateAmbiguous {
-					if _, err := registry.Fail(
-						record.ID,
-						record.Revision,
+					if al.failRecoveredInteraction(
+						workspace,
+						registry,
+						record,
 						"final_delivery_ambiguous",
 						"final response delivery could not be confirmed and was not retried",
-					); err == nil {
+					) {
 						recovered++
 						_ = al.drainDeferredInteractionIngress(
 							ctx,
@@ -105,12 +107,13 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 					}
 				} else if !record.FinalDelivered &&
 					record.FinalDeliveryTries >= interactions.MaxDeliveryAttempts {
-					if _, err := registry.Fail(
-						record.ID,
-						record.Revision,
+					if al.failRecoveredInteraction(
+						workspace,
+						registry,
+						record,
 						"final_delivery_exhausted",
 						"final delivery exhausted its bounded retry budget",
-					); err == nil {
+					) {
 						recovered++
 						_ = al.drainDeferredInteractionIngress(
 							ctx,
@@ -200,12 +203,13 @@ func (al *AgentLoop) recoverPromptDeliveryExhaustion(
 	); err != nil {
 		return false
 	}
-	if _, err := registry.Fail(
-		record.ID,
-		record.Revision,
+	if !al.failRecoveredInteraction(
+		workspace,
+		registry,
+		record,
 		failureCode,
 		"prompt delivery exhausted its bounded retry budget",
-	); err != nil {
+	) {
 		return false
 	}
 	_ = al.drainDeferredInteractionIngress(
@@ -214,6 +218,37 @@ func (al *AgentLoop) recoverPromptDeliveryExhaustion(
 		record.Route,
 		inboundContextForInteraction(record.Route),
 	)
+	return true
+}
+
+func (al *AgentLoop) failRecoveredInteraction(
+	workspace string,
+	registry *interactions.Registry,
+	record interactions.Record,
+	code string,
+	detail string,
+) bool {
+	if taskID := strings.TrimSpace(record.Origin.TaskID); taskID != "" {
+		tasks := al.taskRegistryForWorkspace(workspace)
+		if tasks == nil {
+			return false
+		}
+		if err := tasks.FinishInteraction(
+			taskID,
+			record.ID,
+			taskregistry.StatusFailed,
+			detail,
+		); err != nil {
+			logger.WarnCF("agent", "Failed to persist recovered interaction task failure", map[string]any{
+				"workspace": workspace, "task_id": taskID,
+				"interaction_id": record.ID, "error": err.Error(),
+			})
+			return false
+		}
+	}
+	if _, err := registry.Fail(record.ID, record.Revision, code, detail); err != nil {
+		return false
+	}
 	return true
 }
 

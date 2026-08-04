@@ -468,8 +468,8 @@ At startup, after sessions, tasks, channels, and the event sink are available:
 2. claim overdue requests with a timeout outcome;
 3. retry only prompts or final responses whose delivery is known to be
    `not_sent`, stop after three attempts, close any suspended tool-call history,
-   fail the correlated task projection, and reconcile ambiguous delivery without
-   resending;
+   durably fail the correlated task projection before terminalizing the
+   interaction, and reconcile ambiguous delivery without resending;
 4. reconcile `answer_claimed` and `resuming` records against canonical history;
 5. restore task `waiting_for_input` projections;
 6. resume eligible interactions with bounded concurrency;

@@ -1145,6 +1145,29 @@ func TestRecoveryFailsInteractionAfterFinalDeliveryRetryBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	stateDir := filepath.Dir(taskregistry.WorkspaceStorePath(workspace))
+	if err = os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 0 {
+		t.Fatalf("recovery with unwritable task store = %d, want 0", recovered)
+	}
+	nonterminal, ok := registry.Get(record.ID)
+	if !ok || nonterminal.Status != interactions.StatusResuming {
+		t.Fatalf("interaction after failed task projection = %#v, found=%t", nonterminal, ok)
+	}
+	unprojectedTask, ok := tasks.Get(request.Origin.TaskID)
+	if !ok || unprojectedTask.Status != taskregistry.StatusSucceeded {
+		t.Fatalf("task after failed projection = %#v, found=%t", unprojectedTask, ok)
+	}
+	if err = os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	al.taskRegistries.Delete(workspace)
+	al.interactionRegistries.Delete(workspace)
+	tasks = al.taskRegistryForWorkspace(workspace)
+	registry = al.interactionRegistryForWorkspace(workspace)
 	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
 	}
@@ -1179,6 +1202,15 @@ func TestRecoveryFailsInteractionAfterPromptDeliveryRetryBudget(t *testing.T) {
 	registry := al.interactionRegistryForWorkspace(workspace)
 	request := testToolSuspensionRequest(workspace)
 	request.Route.AgentID = agent.ID
+	request.Origin.TaskID = "task-prompt-delivery-budget"
+	const interactionID = "interaction_prompt_budget"
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: request.Origin.TaskID, Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending, InteractionID: interactionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	agent.Sessions.AddFullMessage(request.Route.SessionKey, providers.Message{
 		Role: "assistant",
 		ToolCalls: []providers.ToolCall{{
@@ -1186,6 +1218,7 @@ func TestRecoveryFailsInteractionAfterPromptDeliveryRetryBudget(t *testing.T) {
 		}},
 	})
 	record, err := registry.Create(interactions.CreateRequest{
+		ID:   interactionID,
 		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
 		Questions: request.Prompt.Questions, PromptSummary: request.Prompt.PromptSummary,
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -1204,6 +1237,29 @@ func TestRecoveryFailsInteractionAfterPromptDeliveryRetryBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	stateDir := filepath.Dir(taskregistry.WorkspaceStorePath(workspace))
+	if err = os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 0 {
+		t.Fatalf("recovery with unwritable task store = %d, want 0", recovered)
+	}
+	nonterminal, ok := registry.Get(record.ID)
+	if !ok || nonterminal.Status != interactions.StatusCreated {
+		t.Fatalf("interaction after failed task projection = %#v, found=%t", nonterminal, ok)
+	}
+	unprojectedTask, ok := tasks.Get(request.Origin.TaskID)
+	if !ok || unprojectedTask.Status != taskregistry.StatusWaitingForInput {
+		t.Fatalf("task after failed projection = %#v, found=%t", unprojectedTask, ok)
+	}
+	if err = os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	al.taskRegistries.Delete(workspace)
+	al.interactionRegistries.Delete(workspace)
+	_ = al.taskRegistryForWorkspace(workspace)
+	registry = al.interactionRegistryForWorkspace(workspace)
 	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
 	}
