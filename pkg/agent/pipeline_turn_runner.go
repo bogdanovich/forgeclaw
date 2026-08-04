@@ -180,8 +180,7 @@ func (p *Pipeline) runTurnLoop(
 				continue
 			}
 			finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
-			result, finalizeErr := p.Finalize(
-				ctx,
+			result, finalizeErr := p.finalizeTurn(
 				turnCtx,
 				ts,
 				exec,
@@ -240,7 +239,7 @@ func (p *Pipeline) runTurnLoop(
 					messages = exec.messages
 					continue
 				}
-				result, finalizeErr := p.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+				result, finalizeErr := p.finalizeTurn(turnCtx, ts, exec, turnStatus, finalContent)
 				if finalizeErr != nil {
 					turnStatus = TurnEndStatusError
 				}
@@ -257,8 +256,7 @@ func (p *Pipeline) runTurnLoop(
 				if strings.TrimSpace(finalContent) == "" {
 					finalContent = "The tool loop was stopped by runtime safety protection."
 				}
-				result, finalizeErr := p.Finalize(
-					ctx,
+				result, finalizeErr := p.finalizeTurn(
 					turnCtx,
 					ts,
 					exec,
@@ -293,8 +291,7 @@ func (p *Pipeline) runTurnLoop(
 					continue
 				}
 				finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
-				result, finalizeErr := p.Finalize(
-					ctx,
+				result, finalizeErr := p.finalizeTurn(
 					turnCtx,
 					ts,
 					exec,
@@ -331,7 +328,7 @@ func (p *Pipeline) runTurnLoop(
 		return result, turnStatus, abortErr
 	}
 
-	result, err := p.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+	result, err := p.finalizeTurn(turnCtx, ts, exec, turnStatus, finalContent)
 	if err != nil {
 		turnStatus = TurnEndStatusError
 	}

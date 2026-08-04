@@ -10,52 +10,133 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
-// Finalize handles turn finalization, either:
-// - Early return when allResponsesHandled=true (ExecuteTools already finalized)
-// - Normal finalization for allResponsesHandled=false (sets finalContent, saves session, compact)
-func (p *Pipeline) Finalize(
-	ctx context.Context,
+type finalResponseDisposition uint8
+
+const (
+	finalResponsePending finalResponseDisposition = iota
+	finalResponseAlreadyHandled
+)
+
+type finalizationUsage struct {
+	inputTokens  int
+	outputTokens int
+	totalTokens  int
+}
+
+type finalizationStream struct {
+	publisher *streamingChunkPublisher
+	fallback  bool
+	modelName string
+}
+
+type finalizationDelivery struct {
+	sendResponse                bool
+	allowInterimMintClawPublish bool
+	preferNewOutboundReply      bool
+	compactAfterDelivery        bool
+}
+
+// FinalizationContext is the terminal snapshot consumed by Finalize. It keeps
+// iteration-owned state out of the finalization phase.
+type FinalizationContext struct {
+	content          string
+	status           TurnEndStatus
+	disposition      finalResponseDisposition
+	modelName        string
+	defaultModelName string
+	usage            finalizationUsage
+	completionMedia  []tools.CompletionMedia
+	followUps        []bus.InboundMessage
+	historyMessage   *providers.Message
+	stream           finalizationStream
+	delivery         finalizationDelivery
+}
+
+func newFinalizationContext(
+	ts *turnState,
+	exec *turnExecution,
+	status TurnEndStatus,
+	content string,
+) FinalizationContext {
+	_, inputTokens, outputTokens, totalTokens := ts.llmUsageTotals()
+	disposition := finalResponsePending
+	if exec.allResponsesHandled {
+		disposition = finalResponseAlreadyHandled
+	}
+
+	var historyMessage *providers.Message
+	if disposition == finalResponsePending && !ts.opts.NoHistory {
+		message := providers.Message{
+			Role:             "assistant",
+			Content:          content,
+			ModelName:        exec.model.llmModelName,
+			ReasoningContent: responseReasoningContent(exec.response),
+		}
+		historyMessage = &message
+	}
+
+	return FinalizationContext{
+		content:          content,
+		status:           status,
+		disposition:      disposition,
+		modelName:        exec.model.llmModelName,
+		defaultModelName: exec.model.defaultModelName,
+		usage: finalizationUsage{
+			inputTokens:  inputTokens,
+			outputTokens: outputTokens,
+			totalTokens:  totalTokens,
+		},
+		completionMedia: append([]tools.CompletionMedia(nil), exec.completionMedia...),
+		followUps:       append([]bus.InboundMessage(nil), ts.followUps...),
+		historyMessage:  historyMessage,
+		stream: finalizationStream{
+			publisher: exec.streamingPublisher,
+			fallback:  exec.streamingFallback,
+			modelName: exec.llmModel,
+		},
+		delivery: finalizationDelivery{
+			sendResponse:                ts.opts.SendResponse,
+			allowInterimMintClawPublish: ts.opts.AllowInterimMintClawPublish,
+			preferNewOutboundReply:      exec.sawAdditionalUserInput,
+			compactAfterDelivery:        ts.opts.EnableSummary,
+		},
+	}
+}
+
+func (p *Pipeline) finalizeTurn(
 	turnCtx context.Context,
 	ts *turnState,
 	exec *turnExecution,
-	turnStatus TurnEndStatus,
-	finalContent string,
+	status TurnEndStatus,
+	content string,
 ) (turnResult, error) {
-	_, usageInputTokens, usageOutputTokens, usageTotalTokens := ts.llmUsageTotals()
+	finalization := newFinalizationContext(ts, exec, status, content)
+	return p.Finalize(turnCtx, ts, finalization)
+}
 
-	// When allResponsesHandled=true, ExecuteTools already finalized
+// Finalize commits and delivers a terminal turn snapshot.
+func (p *Pipeline) Finalize(
+	turnCtx context.Context,
+	ts *turnState,
+	finalization FinalizationContext,
+) (turnResult, error) {
+	// When the response was already handled, ExecuteTools already finalized
 	// (added handledToolResponseSummary, saved session, set phase to Completed).
 	// But still check for hard abort - if requested, abort the turn.
-	if exec.allResponsesHandled {
+	if finalization.disposition == finalResponseAlreadyHandled {
 		if ts.hardAbortRequested() {
 			return p.abortTurn(ts)
 		}
 		ts.setPhase(TurnPhaseCompleted)
-		return turnResult{
-			finalContent:           finalContent,
-			modelName:              exec.model.llmModelName,
-			defaultModelName:       exec.model.defaultModelName,
-			usageInputTokens:       usageInputTokens,
-			usageOutputTokens:      usageOutputTokens,
-			usageTotalTokens:       usageTotalTokens,
-			completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
-			status:                 turnStatus,
-			followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
-			preferNewOutboundReply: exec.sawAdditionalUserInput,
-		}, nil
+		return finalization.result(false), nil
 	}
 
 	ts.setPhase(TurnPhaseFinalizing)
-	ts.setFinalContent(finalContent)
-	if !ts.opts.NoHistory {
-		finalMsg := providers.Message{
-			Role:             "assistant",
-			Content:          finalContent,
-			ModelName:        exec.model.llmModelName,
-			ReasoningContent: responseReasoningContent(exec.response),
-		}
+	ts.setFinalContent(finalization.content)
+	if finalization.historyMessage != nil {
+		finalMsg := *finalization.historyMessage
 		if writeErr := persistFullSessionMessage(turnCtx, ts.agent.Sessions, ts.sessionKey, finalMsg); writeErr != nil {
-			cancelConfiguredStreamingLLM(turnCtx, exec)
+			finalization.stream.cancel(turnCtx)
 			return turnResult{status: TurnEndStatusError}, writeErr
 		}
 		ts.recordPersistedMessage(finalMsg)
@@ -63,14 +144,14 @@ func (p *Pipeline) Finalize(
 	}
 
 	contextUsage := computeContextUsage(ts.agent, ts.sessionKey)
-	streamErr := finalizeConfiguredStreamingLLM(turnCtx, ts, exec, finalContent, contextUsage)
+	streamErr := finalization.stream.finalize(turnCtx, ts, finalization.content, contextUsage)
 	// If streaming never became visible, keep the legacy MintClaw interim publish path
 	// so the final answer is still delivered outside normal SendResponse.
-	if ((streamErr != nil && !isConfiguredStreamingVisibleError(streamErr)) || exec.streamingFallback) &&
-		!ts.opts.SendResponse && ts.opts.AllowInterimMintClawPublish &&
-		finalContent != "" {
-		msg := outboundMessageForTurnWithOptions(ts, finalContent, outboundTurnMessageOptions{
-			modelName: exec.model.llmModelName,
+	if ((streamErr != nil && !isConfiguredStreamingVisibleError(streamErr)) || finalization.stream.fallback) &&
+		!finalization.delivery.sendResponse && finalization.delivery.allowInterimMintClawPublish &&
+		finalization.content != "" {
+		msg := outboundMessageForTurnWithOptions(ts, finalization.content, outboundTurnMessageOptions{
+			modelName: finalization.modelName,
 		})
 		msg.ContextUsage = contextUsage
 		markFinalOutbound(&msg)
@@ -78,32 +159,29 @@ func (p *Pipeline) Finalize(
 	}
 	if streamErr != nil && isConfiguredStreamingVisibleError(streamErr) {
 		ts.setPhase(TurnPhaseCompleted)
-		return turnResult{
-			finalContent:           finalContent,
-			modelName:              exec.model.llmModelName,
-			defaultModelName:       exec.model.defaultModelName,
-			usageInputTokens:       usageInputTokens,
-			usageOutputTokens:      usageOutputTokens,
-			usageTotalTokens:       usageTotalTokens,
-			completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
-			status:                 TurnEndStatusError,
-			followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
-			preferNewOutboundReply: exec.sawAdditionalUserInput,
-			compactAfterDelivery:   ts.opts.EnableSummary,
-		}, streamErr
+		result := finalization.result(true)
+		result.status = TurnEndStatusError
+		return result, streamErr
 	}
 	ts.setPhase(TurnPhaseCompleted)
-	return turnResult{
-		finalContent:           finalContent,
-		modelName:              exec.model.llmModelName,
-		defaultModelName:       exec.model.defaultModelName,
-		usageInputTokens:       usageInputTokens,
-		usageOutputTokens:      usageOutputTokens,
-		usageTotalTokens:       usageTotalTokens,
-		completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
-		status:                 turnStatus,
-		followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
-		preferNewOutboundReply: exec.sawAdditionalUserInput,
-		compactAfterDelivery:   ts.opts.EnableSummary,
-	}, nil
+	return finalization.result(true), nil
+}
+
+func (f *FinalizationContext) result(includeCompaction bool) turnResult {
+	result := turnResult{
+		finalContent:           f.content,
+		modelName:              f.modelName,
+		defaultModelName:       f.defaultModelName,
+		usageInputTokens:       f.usage.inputTokens,
+		usageOutputTokens:      f.usage.outputTokens,
+		usageTotalTokens:       f.usage.totalTokens,
+		completionMedia:        append([]tools.CompletionMedia(nil), f.completionMedia...),
+		status:                 f.status,
+		followUps:              append([]bus.InboundMessage(nil), f.followUps...),
+		preferNewOutboundReply: f.delivery.preferNewOutboundReply,
+	}
+	if includeCompaction {
+		result.compactAfterDelivery = f.delivery.compactAfterDelivery
+	}
+	return result
 }
