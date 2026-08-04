@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -42,7 +41,29 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
     await cdp.detach();
     return "MINTCLAW_DL_V1|error|unsupported_target";
   }
-  const state = { cdp, expectedURL, status: "pending", stream: "", disposition: "", contentType: "", multiple: false };
+  const frameTree = await cdp.send("Page.getFrameTree");
+  const mainFrameID = String(frameTree.frameTree && frameTree.frameTree.frame && frameTree.frameTree.frame.id || "");
+  if (!mainFrameID) {
+    await cdp.detach();
+    return "MINTCLAW_DL_V1|error|capture_failed";
+  }
+  const state = {
+    cdp, expectedURL, mainFrameID, boundRequestID: "", attachmentCount: 0, clickStarted: false,
+    status: "pending", stream: "", disposition: "", contentType: "", multiple: false
+  };
+  cdp.on("Network.requestWillBeSent", event => {
+    const request = event.request || {};
+    const directClickNavigation = state.clickStarted &&
+      event.frameId === state.mainFrameID && event.type === "Document" &&
+      request.url === state.expectedURL && request.method === "GET" && !event.redirectResponse &&
+      event.initiator && event.initiator.type === "other";
+    if (!directClickNavigation) return;
+    if (state.boundRequestID && state.boundRequestID !== event.requestId) {
+      state.multiple = true;
+      return;
+    }
+    state.boundRequestID = event.requestId;
+  });
   cdp.on("Fetch.requestPaused", async event => {
     try {
       if (!event.responseStatusCode) {
@@ -57,11 +78,19 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
         if (name === "content-type") contentType = String(header.value || "");
       }
       const attachment = /^\s*attachment(?:\s*;|$)/i.test(disposition);
-      const directDocument = event.request.url === state.expectedURL &&
+      if (!attachment) {
+        await cdp.send("Fetch.continueResponse", { requestId: event.requestId });
+        return;
+      }
+      state.attachmentCount++;
+      const directDocument = state.boundRequestID !== "" &&
+        event.networkId === state.boundRequestID && event.frameId === state.mainFrameID &&
+        event.request.url === state.expectedURL &&
         event.request.method === "GET" && event.resourceType === "Document" &&
         event.responseStatusCode >= 200 && event.responseStatusCode < 300 &&
         !event.redirectedRequestId;
-      if (!attachment || !directDocument) {
+      if (!directDocument || state.attachmentCount !== 1) {
+        state.multiple = true;
         await cdp.send("Fetch.continueResponse", { requestId: event.requestId });
         return;
       }
@@ -80,16 +109,19 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
       state.status = "error";
     }
   });
+  await cdp.send("Network.enable");
   await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Response" }] });
   let clickFinished = false;
   let clickFinishedAt = 0;
   let clickFailed = false;
+  state.clickStarted = true;
   const click = locator.click().then(
     () => { clickFinished = true; clickFinishedAt = Date.now(); },
     () => { clickFinished = true; clickFinishedAt = Date.now(); clickFailed = true; }
   );
   for (let attempt = 0; attempt < 400 &&
     (state.status === "pending" || state.status === "claiming"); attempt++) {
+    if (state.multiple) break;
     if (clickFinished && state.status === "pending" && Date.now() - clickFinishedAt >= 250) break;
     await page.waitForTimeout(25);
   }
@@ -101,33 +133,59 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
   };
   if (state.status !== "ready") {
     await finish();
-    await click;
-    return "MINTCLAW_DL_V1|error|" + (state.status === "error" ? "capture_failed" :
+    return "MINTCLAW_DL_V1|error|" + (state.multiple ? "multiple" : state.status === "error" ? "capture_failed" :
       (clickFailed ? "click_failed" : "no_attachment"));
   }
   const parts = [];
   let total = 0;
+  const encodeUTF8Base64 = value => {
+    const bytes = [];
+    for (const character of value) {
+      const point = character.codePointAt(0);
+      if (point <= 0x7f) bytes.push(point);
+      else if (point <= 0x7ff) bytes.push(0xc0 | point >> 6, 0x80 | point & 0x3f);
+      else if (point <= 0xffff) bytes.push(
+        0xe0 | point >> 12, 0x80 | point >> 6 & 0x3f, 0x80 | point & 0x3f
+      );
+      else bytes.push(
+        0xf0 | point >> 18, 0x80 | point >> 12 & 0x3f,
+        0x80 | point >> 6 & 0x3f, 0x80 | point & 0x3f
+      );
+    }
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let encoded = "";
+    for (let index = 0; index < bytes.length; index += 3) {
+      const first = bytes[index];
+      const second = index + 1 < bytes.length ? bytes[index + 1] : 0;
+      const third = index + 2 < bytes.length ? bytes[index + 2] : 0;
+      encoded += alphabet[first >> 2] + alphabet[(first & 3) << 4 | second >> 4] +
+        (index + 1 < bytes.length ? alphabet[(second & 15) << 2 | third >> 6] : "=") +
+        (index + 2 < bytes.length ? alphabet[third & 63] : "=");
+    }
+    return { bytes: bytes.length, encoded };
+  };
   try {
     for (;;) {
       const part = await cdp.send("IO.read", { handle: state.stream, size: %d });
       const data = String(part.data || "");
       let bytes = 0;
+      let encoded = "";
       if (part.base64Encoded) {
         bytes = Math.floor(data.length * 3 / 4);
         if (data.endsWith("==")) bytes -= 2;
         else if (data.endsWith("=")) bytes -= 1;
+        encoded = data;
       } else {
-        for (const character of data) {
-          const point = character.codePointAt(0);
-          bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
-        }
+        const converted = encodeUTF8Base64(data);
+        bytes = converted.bytes;
+        encoded = converted.encoded;
       }
       if (total + bytes > maximumBytes) {
         await finish();
         return "MINTCLAW_DL_V1|error|oversize";
       }
       total += bytes;
-      if (data) parts.push((part.base64Encoded ? "b:" : "t:") + encodeURIComponent(data));
+      if (encoded) parts.push(encoded);
       if (part.eof) break;
     }
   } catch (_) {
@@ -135,7 +193,6 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
     return "MINTCLAW_DL_V1|error|read_failed";
   }
   await finish();
-  await Promise.race([click, page.waitForTimeout(1000)]);
   if (!clickFinished || clickFailed) return "MINTCLAW_DL_V1|error|click_failed";
   if (state.multiple) return "MINTCLAW_DL_V1|error|multiple";
   return "MINTCLAW_DL_V1|complete|" + encodeURIComponent(state.disposition) + "|" +
@@ -247,26 +304,11 @@ func (worker *playwrightWorker) captureDownload(
 
 	hasher := sha256.New()
 	written := int64(0)
-	for _, encodedPart := range strings.Split(fields[5], ",") {
-		if encodedPart == "" {
+	for _, encoded := range strings.Split(fields[5], ",") {
+		if encoded == "" {
 			continue
 		}
-		if len(encodedPart) < 3 || encodedPart[1] != ':' {
-			return DriverDownload{}, ErrDriverIncompatible
-		}
-		encoded, decodeErr := url.QueryUnescape(encodedPart[2:])
-		if decodeErr != nil {
-			return DriverDownload{}, ErrDriverIncompatible
-		}
-		var chunk []byte
-		switch encodedPart[0] {
-		case 'b':
-			chunk, decodeErr = base64.StdEncoding.DecodeString(encoded)
-		case 't':
-			chunk = []byte(encoded)
-		default:
-			decodeErr = errors.New("unknown download encoding")
-		}
+		chunk, decodeErr := base64.StdEncoding.DecodeString(encoded)
 		if decodeErr != nil || written+int64(len(chunk)) > maximumBytes {
 			return DriverDownload{}, ErrDriverIncompatible
 		}
@@ -300,7 +342,7 @@ func (worker *playwrightWorker) downloadControl(
 		worker.lost = true
 		return nil, ErrWorkerUnavailable
 	}
-	responseLimit := int(maximumBytes*3) + playwrightDownloadEnvelopeBytes
+	responseLimit := int(((maximumBytes+2)/3)*4) + playwrightDownloadEnvelopeBytes
 	text, err := boundedPlaywrightText(result, responseLimit)
 	if err != nil {
 		return nil, fmt.Errorf("download control response: %w", ErrDriverIncompatible)

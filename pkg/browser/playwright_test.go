@@ -252,7 +252,7 @@ func TestPlaywrightWorkerCapturesExactlyOneBoundedDownload(t *testing.T) {
 		callQueues: map[string][]*sdkmcp.CallToolResult{"browser_run_code_unsafe": {
 			playwrightDownloadControlResult(playwrightDownloadMarker + "|complete|" +
 				url.QueryEscape(`attachment; filename="fixture.txt"`) + "|text%2Fplain|" +
-				strconv.Itoa(len(payload)) + "|b:" + url.QueryEscape(base64.StdEncoding.EncodeToString(payload))),
+				strconv.Itoa(len(payload)) + "|" + base64.StdEncoding.EncodeToString(payload)),
 		}},
 	}
 	worker := &playwrightWorker{
@@ -283,6 +283,11 @@ func TestPlaywrightWorkerCapturesExactlyOneBoundedDownload(t *testing.T) {
 		!strings.Contains(code,
 			`event.responseStatusCode >= 200 && event.responseStatusCode < 300`) ||
 		!strings.Contains(code, `!event.redirectedRequestId`) ||
+		!strings.Contains(code, `event.networkId === state.boundRequestID`) ||
+		!strings.Contains(code, `event.frameId === state.mainFrameID`) ||
+		!strings.Contains(code, `event.initiator.type === "other"`) ||
+		!strings.Contains(code, `state.attachmentCount++`) ||
+		!strings.Contains(code, `const encodeUTF8Base64 = value =>`) ||
 		strings.Index(code, `state.status = "claiming"`) < 0 ||
 		strings.Index(code, `state.status = "claiming"`) >
 			strings.Index(code, `Fetch.takeResponseBodyAsStream`) {
@@ -296,7 +301,7 @@ func TestPlaywrightWorkerRejectsChunkBeforeWritingPastDownloadLimit(t *testing.T
 	client := &fakePlaywrightClient{
 		callQueues: map[string][]*sdkmcp.CallToolResult{"browser_run_code_unsafe": {
 			playwrightDownloadControlResult(playwrightDownloadMarker +
-				"|complete|attachment|application%2Foctet-stream|1024|b:" + url.QueryEscape(oversize)),
+				"|complete|attachment|application%2Foctet-stream|1024|" + oversize),
 		}},
 	}
 	worker := &playwrightWorker{
@@ -311,6 +316,30 @@ func TestPlaywrightWorkerRejectsChunkBeforeWritingPastDownloadLimit(t *testing.T
 	entries, readErr := os.ReadDir(output)
 	if readErr != nil || len(entries) != 0 {
 		t.Fatalf("oversize output entries = %#v, %v", entries, readErr)
+	}
+}
+
+func TestPlaywrightWorkerAcceptsNearLimitBinaryEncoding(t *testing.T) {
+	output := t.TempDir()
+	payload := bytes.Repeat([]byte{0xff}, 3*1024*1024-1)
+	encoded := base64.StdEncoding.EncodeToString(payload)
+	client := &fakePlaywrightClient{
+		callQueues: map[string][]*sdkmcp.CallToolResult{"browser_run_code_unsafe": {
+			playwrightDownloadControlResult(playwrightDownloadMarker +
+				"|complete|attachment|application%2Foctet-stream|" +
+				strconv.Itoa(len(payload)) + "|" + encoded),
+		}},
+	}
+	worker := &playwrightWorker{
+		client: client, limits: config.BrowserLimitsConfig{}.Effective(), outputDir: output,
+	}
+	download, err := worker.Download(context.Background(), DriverAction{
+		Kind: DriverDownloadAction, Target: "e7", Element: "Download",
+	}, int64(len(payload)))
+	want := sha256.Sum256(payload)
+	if err != nil || download.Size != int64(len(payload)) ||
+		download.SHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("near-limit Download() = %#v, %v", download, err)
 	}
 }
 
@@ -1341,6 +1370,13 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 			_, _ = fmt.Fprint(writer, "bounded download fixture")
 			return
 		}
+		if request.URL.Path == "/slow-download" {
+			time.Sleep(75 * time.Millisecond)
+			writer.Header().Set("Content-Disposition", `attachment; filename="slow.txt"`)
+			writer.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(writer, "slow download fixture")
+			return
+		}
 		if request.URL.Path == "/oversize-download" {
 			writer.Header().Set("Content-Disposition", `attachment; filename="oversize.bin"`)
 			writer.Header().Set("Content-Type", "application/octet-stream")
@@ -1384,6 +1420,9 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 <a href="/oversize-download">Oversize fixture</a>
 <a href="/redirect-download">Redirect fixture</a>
 <a href="/script-download" onclick="event.preventDefault(); fetch(this.href)">Script fixture</a>
+<a href="/download" onclick="event.preventDefault(); document.querySelector('iframe').src=this.href">Frame fixture</a>
+<a href="/slow-download" onclick="fetch('/script-download')">Multiple fixture</a>
+<iframe title="Download frame"></iframe>
 %s<div style="height:2000px"></div>`, privateImage)
 	}))
 	defer fixture.Close()
@@ -1505,32 +1544,6 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if observation, err = worker.Observe(ctx); err != nil || observation.PendingDialog != nil {
 		t.Fatalf("Observe() after chained alert = %+v, %v", observation, err)
 	}
-	scriptLink := mustSnapshotRef(t, observation.Snapshot, `link "Script fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
-	if _, err = worker.Download(ctx, DriverAction{
-		Kind: DriverDownloadAction, Target: scriptLink, Element: "Script fixture",
-	}, 1024); !errors.Is(err, ErrDriverIncompatible) {
-		t.Fatalf("script-fetch Download() error = %v", err)
-	}
-	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
-		t.Fatalf("navigate after script-fetch download error = %v", err)
-	}
-	observation, err = worker.Observe(ctx)
-	if err != nil {
-		t.Fatalf("Observe() after script-fetch download error = %v", err)
-	}
-	redirectLink := mustSnapshotRef(t, observation.Snapshot, `link "Redirect fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
-	if _, err = worker.Download(ctx, DriverAction{
-		Kind: DriverDownloadAction, Target: redirectLink, Element: "Redirect fixture",
-	}, 1024); !errors.Is(err, ErrDriverIncompatible) {
-		t.Fatalf("redirect Download() error = %v", err)
-	}
-	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
-		t.Fatalf("navigate after redirect download error = %v", err)
-	}
-	observation, err = worker.Observe(ctx)
-	if err != nil {
-		t.Fatalf("Observe() after redirect download error = %v", err)
-	}
 	downloadLink := mustSnapshotRef(t, observation.Snapshot, `link "Download fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
 	download, err := worker.Download(ctx, DriverAction{
 		Kind: DriverDownloadAction, Target: downloadLink, Element: "Download fixture",
@@ -1599,6 +1612,45 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	if err = worker.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+	negativeDownloads := []struct {
+		name, element, pattern string
+	}{
+		{name: "frame", element: "Frame fixture", pattern: `link "Frame fixture" \[ref=([a-z0-9]*e[0-9]+)\]`},
+		{name: "script", element: "Script fixture", pattern: `link "Script fixture" \[ref=([a-z0-9]*e[0-9]+)\]`},
+		{name: "multiple", element: "Multiple fixture", pattern: `link "Multiple fixture" \[ref=([a-z0-9]*e[0-9]+)\]`},
+		{name: "redirect", element: "Redirect fixture", pattern: `link "Redirect fixture" \[ref=([a-z0-9]*e[0-9]+)\]`},
+	}
+	for _, test := range negativeDownloads {
+		t.Run("reject_"+test.name, func(t *testing.T) {
+			negative, openErr := factory.Open(ctx, WorkerOpenRequest{
+				SessionID: "negative_" + test.name, Target: "gateway", Profile: "managed", DryRun: true,
+				Limits: config.BrowserLimitsConfig{},
+			})
+			if openErr != nil {
+				t.Fatalf("Open() error = %v", openErr)
+			}
+			negativeWorker := negative.Owner.(*playwrightWorker)
+			t.Cleanup(func() { _ = negativeWorker.Close(context.Background()) })
+			if navigateErr := negativeWorker.Execute(ctx, DriverAction{
+				Kind: DriverNavigate, URL: fixtureOrigin,
+			}); navigateErr != nil {
+				t.Fatalf("navigate error = %v", navigateErr)
+			}
+			negativeObservation, observeErr := negativeWorker.Observe(ctx)
+			if observeErr != nil {
+				t.Fatalf("Observe() error = %v", observeErr)
+			}
+			link := mustSnapshotRef(t, negativeObservation.Snapshot, test.pattern)
+			if _, downloadErr := negativeWorker.Download(ctx, DriverAction{
+				Kind: DriverDownloadAction, Target: link, Element: test.element,
+			}, 1024); !errors.Is(downloadErr, ErrDriverIncompatible) {
+				t.Fatalf("Download() error = %v", downloadErr)
+			}
+			if closeErr := negativeWorker.Close(ctx); closeErr != nil {
+				t.Fatalf("Close() error = %v", closeErr)
+			}
+		})
 	}
 }
 
