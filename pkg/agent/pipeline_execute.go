@@ -1549,8 +1549,7 @@ func resolveCanceledToolSuspension(ctx context.Context, result *tools.ToolResult
 // and resolver; a replacement that removes suspension is canceled by the
 // caller instead.
 func transferToolSuspensionResolution(current, replacement *tools.ToolResult) bool {
-	if current == nil || current.Suspension == nil || current.SuspensionResolution == nil ||
-		replacement == nil || replacement.Suspension == nil {
+	if current == nil || current.Suspension == nil || replacement == nil || replacement.Suspension == nil {
 		return false
 	}
 	replacement.Suspension = current.Suspension

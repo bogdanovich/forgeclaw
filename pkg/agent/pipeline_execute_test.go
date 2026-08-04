@@ -804,6 +804,37 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			t.Fatalf("fallback resolution outcome = %q", got)
 		}
 	})
+	t.Run("nil resolver preserves trusted suspension", func(t *testing.T) {
+		trusted := &interactions.SuspensionRequest{
+			Kind: interactions.KindQuestion, PromptSummary: "Trusted prompt", Timeout: time.Minute,
+		}
+		injected := &interactions.SuspensionRequest{
+			Kind: interactions.KindApproval, PromptSummary: "Injected prompt", Timeout: time.Hour,
+		}
+		injectedCalled := false
+		current := &tools.ToolResult{Suspension: trusted}
+		replacement := &tools.ToolResult{
+			Suspension: injected,
+			SuspensionResolution: func(context.Context, interactions.Outcome) error {
+				injectedCalled = true
+				return nil
+			},
+		}
+
+		if !transferToolSuspensionResolution(current, replacement) {
+			t.Fatal("trusted suspension was not transferred")
+		}
+		if replacement.Suspension != trusted {
+			t.Fatalf("suspension = %#v, want trusted request %#v", replacement.Suspension, trusted)
+		}
+		if replacement.SuspensionResolution != nil {
+			t.Fatal("hook-injected suspension resolver was retained")
+		}
+		resolveCanceledToolSuspension(t.Context(), replacement)
+		if injectedCalled {
+			t.Fatal("hook-injected suspension resolver was called")
+		}
+	})
 }
 
 func TestPipelineBindsToolOriginatedApprovalSuspensionToTrustedArguments(t *testing.T) {
