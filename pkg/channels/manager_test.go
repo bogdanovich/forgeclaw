@@ -268,6 +268,23 @@ type toolFeedbackStreamingTestChannel struct {
 	streamer Streamer
 }
 
+type typedToolFeedbackTestChannel struct {
+	*toolFeedbackTestChannel
+	typedCalls int
+}
+
+func (c *typedToolFeedbackTestChannel) SendMessageResult(
+	ctx context.Context,
+	pending []bus.OutboundMessage,
+) DeliveryResult[bus.OutboundMessage] {
+	c.typedCalls++
+	messageIDs, err := c.Send(ctx, pending[0])
+	if err != nil {
+		return FailedDelivery[bus.OutboundMessage](messageIDs, nil, 0, err)
+	}
+	return SuccessfulDelivery[bus.OutboundMessage](messageIDs)
+}
+
 type uneditableToolFeedbackTestChannel struct {
 	*toolFeedbackTestChannel
 }
@@ -2676,6 +2693,42 @@ func TestSendWithRetry_ToolFeedbackLifecycleOwnedByManager(t *testing.T) {
 	}
 	if len(ch.edited) != 1 || !strings.HasPrefix(ch.edited[0], "topic-42|msg-1|prepared:") {
 		t.Fatalf("edits = %v, want resolved/prepared feedback edit", ch.edited)
+	}
+}
+
+func TestSendWithRetry_TypedChannelKeepsToolFeedbackLifecycle(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	base := &toolFeedbackTestChannel{resolvedID: "topic-42", preparedTag: "prepared:"}
+	ch := &typedToolFeedbackTestChannel{toolFeedbackTestChannel: base}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...\n- tool: exec",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, feedback); err != nil || !sent {
+		t.Fatalf("initial feedback = (%v, %v)", sent, err)
+	}
+	feedback.Content = "Working...\n- tool: read_file"
+	if _, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, feedback); err != nil || !sent {
+		t.Fatalf("feedback update = (%v, %v)", sent, err)
+	}
+
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if ch.typedCalls != 0 {
+		t.Fatalf("typed sends = %d, want coordinator-owned delivery", ch.typedCalls)
+	}
+	if len(base.operations) != 2 || !strings.HasPrefix(base.operations[0], "send:") ||
+		base.operations[1] != "edit:msg-1" {
+		t.Fatalf("operations = %v, want one send followed by one edit", base.operations)
 	}
 }
 

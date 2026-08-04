@@ -2323,14 +2323,15 @@ func (m *Manager) sendWithRetryPolicy(
 			MaxBackoff:     maxBackoff,
 		},
 		func(ctx context.Context, pending []bus.OutboundMessage) DeliveryResult[bus.OutboundMessage] {
-			if sender, ok := w.ch.(MessageDeliverySender); ok {
-				return sender.SendMessageResult(ctx, pending)
-			}
 			attemptMsg := pending[0]
 			var msgIDs []string
 			var err error
 			if isToolFeedback && m.deliveryInteractionState.hasToolFeedback() {
+				// The coordinator must own interim sends so it can retain the
+				// platform message ID and edit the same progress message later.
 				msgIDs, err = m.deliverToolFeedback(ctx, name, w.ch, attemptMsg, w.ch.Send)
+			} else if sender, ok := w.ch.(MessageDeliverySender); ok {
+				return sender.SendMessageResult(ctx, pending)
 			} else {
 				msgIDs, err = w.ch.Send(ctx, attemptMsg)
 			}
