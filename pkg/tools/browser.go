@@ -428,10 +428,7 @@ func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any
 			Kind: interactions.KindQuestion,
 			Questions: []interactions.Question{{
 				ID: "release_browser", Header: "Browser control",
-				Question: "Use the visible local browser window. When you are finished, release control.",
-				Options: []interactions.Option{{
-					Label: "Release control", Description: "Return exclusive control to browser automation.",
-				}},
+				Question: "Use the visible local browser window. When you are finished, reply to release control.",
 			}},
 			PromptSummary: "Browser automation is paused for exclusive local human control.",
 			Timeout:       time.Duration(tool.runtime.config.Limits.Effective().PreparedSeconds) * time.Second,

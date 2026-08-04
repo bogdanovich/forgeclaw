@@ -445,6 +445,9 @@ func TestBrowserSessionHandoffSuspendsForRoutedHumanRelease(t *testing.T) {
 		strings.Contains(strings.ToLower(handoff.ContentForLLM()), "token") {
 		t.Fatalf("handoff result = %#v", handoff)
 	}
+	if err := interactions.ValidateSuspensionRequest(*handoff.Suspension); err != nil {
+		t.Fatalf("handoff suspension is invalid: %v", err)
+	}
 	var handoffView browserSessionView
 	decodeBrowserToolResult(t, handoff, &handoffView)
 	if handoffView.Controller != browser.ControllerHuman || handoffView.ControllerExpiresAt != 200 {
