@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -34,7 +35,11 @@ type browserRuntime struct {
 	closed   bool
 }
 
-func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime, error) {
+func newBrowserRuntime(
+	ctx context.Context,
+	cfg *config.Config,
+	recovery ...browser.DownloadRecoveryVerifier,
+) (*browserRuntime, error) {
 	if cfg == nil || !cfg.Tools.Browser.Enabled {
 		return nil, nil
 	}
@@ -64,7 +69,7 @@ func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime
 		return nil, errors.New("browser policy unavailable")
 	}
 	runtime := &browserRuntime{broker: broker, store: store, policyRevision: policyRevision}
-	if err = broker.Recover(ctx); err != nil {
+	if err = broker.Recover(ctx, recovery...); err != nil {
 		store.Close()
 		return nil, errors.New("browser recovery unavailable")
 	}
@@ -174,7 +179,15 @@ func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningService
 	if runningServices.Browser != nil {
 		return errors.New("previous browser runtime still owns resources")
 	}
-	runtime, err := newBrowserRuntime(ctx, cfg)
+	policyRevision, policyErr := cfg.Tools.Browser.PolicyRevision()
+	if policyErr != nil && cfg.Tools.Browser.Enabled {
+		return errors.New("browser policy unavailable")
+	}
+	recoverySource := &gatewayBrowserToolSource{
+		services: runningServices, policyRevision: policyRevision, workspace: cfg.WorkspacePath(),
+		limits: cfg.Tools.Browser.Limits.Effective(),
+	}
+	runtime, err := newBrowserRuntime(ctx, cfg, recoverySource.committedBrowserDownload)
 	if err != nil {
 		return err
 	}
@@ -188,6 +201,7 @@ type gatewayBrowserToolSource struct {
 	workspace           string
 	screenshotRetention time.Duration
 	screenshotCopy      browserScreenshotCopyFunc
+	limits              config.BrowserLimitsConfig
 }
 
 func (source *gatewayBrowserToolSource) Available() bool {
@@ -295,6 +309,39 @@ func (source *gatewayBrowserToolSource) PrepareAction(
 	ctx context.Context,
 	request browser.PrepareActionRequest,
 ) (browser.Preparation, error) {
+	if request.Action.Kind == browser.ActionDownload {
+		recovered, recoverErr := withGatewayBrowserBroker(
+			ctx, source,
+			func(ctx context.Context, broker *browser.Broker) (browser.Preparation, error) {
+				preparation, found, err := broker.RecoverableDownloadPreparation(ctx, request)
+				if err != nil || !found {
+					return browser.Preparation{}, err
+				}
+				return preparation, nil
+			},
+		)
+		if recoverErr == nil && recovered.Action.ID != "" {
+			_, artifactFound, artifactErr := source.lookupBrowserDownload(
+				ctx, request.Owner, request.RequestID, request.SessionID, request.Action.Deliver,
+			)
+			if artifactErr != nil {
+				return browser.Preparation{}, artifactErr
+			}
+			if artifactFound {
+				return recovered, nil
+			}
+		}
+		if recoverErr != nil && !errors.Is(recoverErr, browser.ErrNotFound) {
+			return browser.Preparation{}, recoverErr
+		}
+	}
+	if request.Action.Kind == browser.ActionUpload {
+		binding, err := source.resolveBrowserUpload(ctx, request)
+		if err != nil {
+			return browser.Preparation{}, err
+		}
+		request.Upload = &binding
+	}
 	return withGatewayBrowserBroker(
 		ctx,
 		source,
@@ -314,7 +361,63 @@ func (source *gatewayBrowserToolSource) ExecuteAction(
 		ctx,
 		source,
 		func(ctx context.Context, broker *browser.Broker) (browser.Invocation, error) {
-			return broker.ExecuteAction(ctx, owner, preparedID, approval)
+			prepared, err := broker.PreparedAction(ctx, owner, preparedID)
+			if err != nil {
+				return browser.Invocation{}, err
+			}
+			var artifact *browser.DownloadArtifact
+			if prepared.Action.Kind == browser.ActionDownload {
+				retained, found, lookupErr := source.lookupBrowserDownload(
+					ctx, owner, prepared.RequestID, prepared.SessionID, prepared.Action.Deliver,
+				)
+				if lookupErr != nil {
+					return browser.Invocation{}, lookupErr
+				}
+				if found {
+					terminal, marshalErr := json.Marshal(map[string]any{"status": "completed", "artifact": retained})
+					if marshalErr != nil {
+						return browser.Invocation{}, marshalErr
+					}
+					recovered, recoverErr := broker.RecoverAcceptedDownload(ctx, owner, preparedID, terminal)
+					if recoverErr == nil {
+						recovered.Download = &retained
+						return recovered, nil
+					}
+					if !errors.Is(recoverErr, browser.ErrConflict) {
+						return recovered, recoverErr
+					}
+					artifact = &retained
+				}
+			}
+			invocation, executeErr := broker.ExecuteActionWithDownloadSink(
+				ctx,
+				owner,
+				preparedID,
+				approval,
+				func(sinkCtx context.Context, action browser.PreparedAction, download browser.DriverDownload) (json.RawMessage, error) {
+					retained, retainErr := source.retainBrowserDownload(sinkCtx, action, download)
+					if retainErr != nil {
+						return nil, retainErr
+					}
+					artifact = &retained
+					return json.Marshal(map[string]any{"status": "completed", "artifact": retained})
+				},
+			)
+			if executeErr == nil && prepared.Action.Kind == browser.ActionDownload {
+				if artifact == nil {
+					retained, found, lookupErr := source.lookupBrowserDownload(
+						ctx, owner, prepared.RequestID, prepared.SessionID, prepared.Action.Deliver,
+					)
+					if lookupErr != nil {
+						return invocation, lookupErr
+					}
+					if found {
+						artifact = &retained
+					}
+				}
+				invocation.Download = artifact
+			}
+			return invocation, executeErr
 		},
 	)
 }
@@ -337,6 +440,7 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 			screenshotRetention: browserScreenshotRetention(
 				reloadCfg.Tools.Browser.Limits.Effective().RetentionSecs,
 			),
+			limits: reloadCfg.Tools.Browser.Limits.Effective(),
 		}, nil
 	}
 	factories := map[string]agent.RuntimeToolFactory{

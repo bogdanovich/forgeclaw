@@ -12,6 +12,10 @@ import (
 
 func (*gatewayBrowserToolSource) ScreenshotAvailable() bool { return false }
 
+func (*gatewayBrowserToolSource) ArtifactTransferAvailable() bool { return false }
+
+func (*gatewayBrowserToolSource) DownloadAvailable() bool { return false }
+
 func openNodeTransferMedia(string) (*os.File, os.FileInfo, error) {
 	return nil, nil, errors.New("node file transfer is unsupported on this gateway platform")
 }

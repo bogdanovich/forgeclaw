@@ -1289,6 +1289,19 @@ func nodeFileArtifactOwner(
 	return owner, owner.Validate()
 }
 
+// RoutedNodeFileArtifactOwner derives the canonical P2 owner used to reuse a
+// committed node download from a later tool call on the same routed authority.
+func RoutedNodeFileArtifactOwner(
+	ctx context.Context,
+	toolCallID string,
+) (nodes.TransferArtifactOwner, error) {
+	principal, err := nodeInvocationIdentityWithoutCall(ctx)
+	if err != nil {
+		return nodes.TransferArtifactOwner{}, err
+	}
+	return nodeFileArtifactOwner(ctx, principal, toolCallID)
+}
+
 func nodeFileMediaOwner(ctx context.Context) (media.MediaOwner, error) {
 	actorID := strings.TrimSpace(ToolActorID(ctx))
 	if actorID == "" {

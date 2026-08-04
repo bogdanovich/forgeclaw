@@ -21,6 +21,8 @@ type fakeBrowserToolSource struct {
 	lookup                browser.ScreenshotArtifact
 	lookupHit             bool
 	screenshotUnavailable bool
+	transferUnavailable   bool
+	downloadUnavailable   bool
 	prepare               browser.Preparation
 	execute               browser.Invocation
 	err                   error
@@ -32,6 +34,7 @@ type fakeBrowserToolSource struct {
 	prepareRequest    browser.PrepareActionRequest
 	screenshotRequest browser.ScreenshotRequest
 	deliveryRequest   browser.ScreenshotDeliveryRequest
+	downloadDelivery  browser.DownloadDeliveryRequest
 	observeCalls      int
 	executeOwner      browser.Owner
 	executePrepared   string
@@ -45,6 +48,14 @@ func (source *fakeBrowserToolSource) Available() bool { return source.available 
 
 func (source *fakeBrowserToolSource) ScreenshotAvailable() bool {
 	return source != nil && !source.screenshotUnavailable
+}
+
+func (source *fakeBrowserToolSource) ArtifactTransferAvailable() bool {
+	return source != nil && !source.transferUnavailable
+}
+
+func (source *fakeBrowserToolSource) DownloadAvailable() bool {
+	return source != nil && !source.downloadUnavailable
 }
 
 func (source *fakeBrowserToolSource) ProfileAvailability(
@@ -130,6 +141,14 @@ func (source *fakeBrowserToolSource) ClaimScreenshotDelivery(
 	return source.err
 }
 
+func (source *fakeBrowserToolSource) ClaimDownloadDelivery(
+	_ context.Context,
+	request browser.DownloadDeliveryRequest,
+) error {
+	source.downloadDelivery = request
+	return source.err
+}
+
 func (source *fakeBrowserToolSource) PrepareAction(
 	_ context.Context,
 	request browser.PrepareActionRequest,
@@ -211,7 +230,10 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 		result.Targets[0].Status != "ready" || len(result.Targets[0].Profiles) != 1 ||
 		result.Targets[0].Profiles[0].NetworkMode != config.BrowserNetworkExactOrigins ||
 		!result.Targets[0].Profiles[0].DryRun || !result.Targets[0].Features.Screenshot ||
+		!result.Targets[0].Features.Upload || !result.Targets[0].Features.Download ||
 		result.Targets[0].Limits.ScreenshotBytes != config.BrowserMaxScreenshotBytes ||
+		result.Targets[0].Limits.UploadBytes != config.BrowserMaxUploadBytes ||
+		result.Targets[0].Limits.DownloadBytes != config.BrowserMaxDownloadBytes ||
 		source.openRequest.Target != "" {
 		t.Fatalf("browser targets = %#v", result)
 	}
@@ -242,6 +264,75 @@ func TestBrowserScreenshotIsNotAdvertisedOrCapturedWhenDeliveryIsUnsupported(t *
 		!strings.Contains(result.ContentForLLM(), `"code":"unsupported_platform"`) ||
 		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
 		t.Fatalf("unsupported screenshot result = %#v; source = %#v", result, source)
+	}
+}
+
+func TestBrowserArtifactTransfersAreNotAdvertisedOrPreparedWhenPlatformIsUnsupported(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, transferUnavailable: true}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &targets,
+	)
+	if len(targets.Targets) != 1 || targets.Targets[0].Features.Upload || targets.Targets[0].Features.Download {
+		t.Fatalf("unsupported transfer features = %#v", targets)
+	}
+	for _, action := range targets.Targets[0].Actions {
+		if action == browser.ActionUpload || action == browser.ActionDownload {
+			t.Fatalf("unsupported action advertised: %q", action)
+		}
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+		"snapshot_id": "snapshot_1", "snapshot_generation": 1,
+		"action": map[string]any{"kind": "download", "ref": "ref_download"},
+	})
+	if result == nil || !result.IsError || source.prepareCalls != 0 ||
+		!strings.Contains(result.ContentForLLM(), `"code":"driver_incompatible"`) {
+		t.Fatalf("unsupported transfer result = %#v; prepare calls = %d", result, source.prepareCalls)
+	}
+}
+
+func TestBrowserDownloadIsNotAdvertisedOrPreparedWithoutScopedDriver(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, downloadUnavailable: true}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &targets,
+	)
+	if len(targets.Targets) != 1 || !targets.Targets[0].Features.Upload || targets.Targets[0].Features.Download {
+		t.Fatalf("scoped transfer features = %#v", targets)
+	}
+	upload, download := false, false
+	for _, action := range targets.Targets[0].Actions {
+		upload = upload || action == browser.ActionUpload
+		download = download || action == browser.ActionDownload
+	}
+	if !upload || download {
+		t.Fatalf("scoped transfer actions = %#v", targets.Targets[0].Actions)
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+		"snapshot_id": "snapshot_1", "snapshot_generation": 1,
+		"action": map[string]any{"kind": "download", "ref": "ref_download"},
+	})
+	if result == nil || !result.IsError || source.prepareCalls != 0 ||
+		!strings.Contains(result.ContentForLLM(), `"code":"driver_incompatible"`) {
+		t.Fatalf("unavailable download result = %#v; prepare calls = %d", result, source.prepareCalls)
+	}
+}
+
+func TestBrowserActSchemaDoesNotAdvertiseDeferredDownload(t *testing.T) {
+	parameters := NewBrowserActTool(browserToolTestConfig(), &fakeBrowserToolSource{available: true}).Parameters()
+	properties := parameters["properties"].(map[string]any)
+	action := properties["action"].(map[string]any)
+	actionProperties := action["properties"].(map[string]any)
+	kind := actionProperties["kind"].(map[string]any)
+	for _, candidate := range kind["enum"].([]string) {
+		if candidate == string(browser.ActionDownload) {
+			t.Fatalf("deferred download action advertised in schema: %#v", kind["enum"])
+		}
+	}
+	if _, ok := actionProperties["deliver"]; ok {
+		t.Fatalf("download-only deliver field advertised in schema: %#v", actionProperties)
 	}
 }
 
@@ -499,6 +590,47 @@ func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 		*source.executeApproval != binding || source.prepareRequest.RequestID == "" ||
 		source.prepareRequest.Owner != source.executeOwner {
 		t.Fatalf("action result = %#v; source = %#v", result, source)
+	}
+}
+
+func TestBrowserActDeliversRetainedDownloadWithRecovery(t *testing.T) {
+	recovery := &browser.ScreenshotRecovery{
+		WorkspaceID: "workspace", AgentID: "agent", ActorID: "actor", RouteID: "route",
+		SessionID: "browser_session_1", ToolCallID: "request_download",
+	}
+	prepared := browser.PreparedAction{
+		ID: "prepared_download", RequestID: "request_download", TabID: "tab_primary",
+		CurrentOrigin: "https://example.com", Action: browser.Action{Kind: browser.ActionDownload, Deliver: true},
+		Effect: browser.EffectRead,
+	}
+	source := &fakeBrowserToolSource{
+		available: true,
+		prepare:   browser.Preparation{Action: prepared},
+		execute: browser.Invocation{
+			ID: "invocation_download", SessionID: "browser_session_1", Effect: browser.EffectRead,
+			State: browser.InvocationSucceeded,
+			Download: &browser.DownloadArtifact{
+				Ref: "transfer-artifact://download", Kind: "download", ContentType: "text/plain",
+				Filename: "fixture.txt", Size: 7, SHA256: strings.Repeat("a", 64), ExpiresAt: 200,
+				SessionID: "browser_session_1", TabID: "tab_primary", Generation: 2, Deliver: true,
+				DeliveryState: browser.ScreenshotDeliveryPending, MediaRef: "media://download", Recovery: recovery,
+			},
+		},
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+		"snapshot_id": "snapshot_1", "snapshot_generation": 2,
+		"action": map[string]any{"kind": "download", "ref": "ref_download", "deliver": true},
+	})
+	if result == nil || result.IsError || result.Outbound == nil || len(result.Outbound.Media) != 1 ||
+		result.Outbound.Media[0].Ref != "media://download" || result.Outbound.Recovery == nil ||
+		result.Outbound.Recovery.Kind != bus.OutboundRecoveryBrowserDownload {
+		t.Fatalf("download result = %#v", result)
+	}
+	if err := result.CommitOutbound(browserToolTestContext()); err != nil ||
+		source.downloadDelivery.Ref != "transfer-artifact://download" ||
+		source.downloadDelivery.RequestID != "request_download" {
+		t.Fatalf("download commit = %#v, %v", source.downloadDelivery, err)
 	}
 }
 

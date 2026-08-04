@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -15,6 +16,7 @@ import (
 
 type anchoredDirectory struct {
 	handle windows.Handle
+	path   string
 }
 
 type anchoredFileRenameInformation struct {
@@ -25,7 +27,11 @@ type anchoredFileRenameInformation struct {
 }
 
 func openAnchoredDirectory(path string) (*anchoredDirectory, error) {
-	pathPointer, err := windows.UTF16PtrFromString(path)
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	pathPointer, err := windows.UTF16PtrFromString(absolutePath)
 	if err != nil {
 		return nil, err
 	}
@@ -49,9 +55,9 @@ func openAnchoredDirectory(path string) (*anchoredDirectory, error) {
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 ||
 		info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		_ = windows.CloseHandle(handle)
-		return nil, fmt.Errorf("open anchored directory: linked or non-directory %q", path)
+		return nil, fmt.Errorf("open anchored directory: linked or non-directory %q", absolutePath)
 	}
-	return &anchoredDirectory{handle: handle}, nil
+	return &anchoredDirectory{handle: handle, path: absolutePath}, nil
 }
 
 func (directory *anchoredDirectory) openRegular(name string) (*os.File, os.FileInfo, error) {
@@ -64,7 +70,7 @@ func (directory *anchoredDirectory) openRegular(name string) (*os.File, os.FileI
 	if err != nil {
 		return nil, nil, err
 	}
-	file := os.NewFile(uintptr(handle), name)
+	file := os.NewFile(uintptr(handle), filepath.Join(directory.path, name))
 	if file == nil {
 		_ = windows.CloseHandle(handle)
 		return nil, nil, errors.New("open anchored regular file: invalid handle")

@@ -28,6 +28,8 @@ type actionTestWorker struct {
 	onExecute      func(DriverAction)
 	screenshot     DriverScreenshot
 	screenshotErr  error
+	uploads        []DriverAction
+	download       DriverDownload
 	closed         int
 }
 
@@ -66,6 +68,16 @@ func (worker *actionTestWorker) CatalogRevision() string {
 
 func (worker *actionTestWorker) CaptureScreenshot(context.Context, int) (DriverScreenshot, error) {
 	return worker.screenshot, worker.screenshotErr
+}
+
+func (worker *actionTestWorker) Upload(_ context.Context, action DriverAction) error {
+	worker.uploads = append(worker.uploads, action)
+	return nil
+}
+
+func (worker *actionTestWorker) Download(_ context.Context, action DriverAction, _ int64) (DriverDownload, error) {
+	worker.actions = append(worker.actions, action)
+	return worker.download, nil
 }
 
 type actionTestFactory struct {
@@ -108,6 +120,159 @@ func TestBrokerObservationScopesOpaqueReferencesToFreshGeneration(t *testing.T) 
 	}
 	if len(worker.actions) != 0 {
 		t.Fatalf("stale preparation dispatched actions: %+v", worker.actions)
+	}
+}
+
+func TestBrokerBindsUploadArtifactAndRequiresApprovalForDownloadClick(t *testing.T) {
+	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	owner := testOwner()
+	worker.observation = driverObservationFixture(DriverElement{Target: "e2", Role: "button", Name: "Choose file"})
+	worker.resolveElement = worker.observation.Elements[0]
+	uploadObservation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_upload", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: uploadObservation.SnapshotID, SnapshotGeneration: uploadObservation.SnapshotGeneration,
+		Action: Action{
+			Kind: ActionUpload, Ref: onlyVisibleRef(t, uploadObservation.Snapshot),
+			ArtifactRef: "transfer-artifact://opaque",
+		},
+		Upload: &UploadBinding{
+			Ref: "transfer-artifact://opaque", SHA256: strings.Repeat("a", 64), Size: 7,
+			Filename: "input.txt", ContentType: "text/plain", Path: "/private/retained/input.txt",
+		},
+	})
+	if err != nil || upload.RequiresApproval {
+		t.Fatalf("PrepareAction(upload) = %#v, %v", upload, err)
+	}
+	invocation, err := broker.ExecuteAction(context.Background(), owner, upload.Action.ID, nil)
+	if err != nil || invocation.State != InvocationSucceeded || len(worker.uploads) != 1 ||
+		worker.uploads[0].Value != "/private/retained/input.txt" ||
+		worker.uploads[0].ArtifactSHA256 != strings.Repeat("a", 64) || worker.uploads[0].ArtifactBytes != 7 {
+		t.Fatalf("ExecuteAction(upload) = %#v, %v; uploads = %#v", invocation, err, worker.uploads)
+	}
+
+	worker.observation = driverObservationFixture(DriverElement{Target: "e3", Role: "link", Name: "Download"})
+	worker.resolveElement = worker.observation.Elements[0]
+	worker.download = DriverDownload{
+		Path: "/private/output/result.txt", Filename: "result.txt", ContentType: "text/plain",
+		SHA256: strings.Repeat("b", 64), Size: 9,
+	}
+	downloadObservation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	download, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_download", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: downloadObservation.SnapshotID, SnapshotGeneration: downloadObservation.SnapshotGeneration,
+		Action: Action{Kind: ActionDownload, Ref: onlyVisibleRef(t, downloadObservation.Snapshot)},
+	})
+	if err != nil || !download.RequiresApproval || download.Action.Effect != EffectUnknown {
+		t.Fatalf("PrepareAction(download) = %#v, %v", download, err)
+	}
+}
+
+func TestBrokerRecoversCommittedAcceptedDownloadWithoutDriverReplay(t *testing.T) {
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	worker.observation = driverObservationFixture(DriverElement{Target: "e3", Role: "link", Name: "Download"})
+	worker.resolveElement = worker.observation.Elements[0]
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_recover_download", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionDownload, Ref: onlyVisibleRef(t, observation.Snapshot)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation, err := store.GetInvocation(
+		context.Background(), derivedIdentifier("invocation", owner, session.ID, "request_recover_download"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.State = InvocationAccepted
+	invocation.Revision++
+	invocation.AcceptedAt = invocation.CreatedAt + 1
+	invocation.UpdatedAt = invocation.AcceptedAt
+	if err = store.UpdateInvocation(context.Background(), invocation.Revision-1, invocation); err != nil {
+		t.Fatal(err)
+	}
+	if err = broker.Recover(
+		context.Background(),
+		func(_ context.Context, action PreparedAction) (bool, error) {
+			return action.ID == prepared.Action.ID, nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := broker.RecoverAcceptedDownload(
+		context.Background(), owner, prepared.Action.ID,
+		json.RawMessage(`{"status":"completed","artifact":{"ref":"transfer-artifact://retained"}}`),
+	)
+	if err != nil || recovered.State != InvocationSucceeded || len(worker.actions) != 0 {
+		t.Fatalf("RecoverAcceptedDownload() = %#v, %v; actions = %#v", recovered, err, worker.actions)
+	}
+	status, err := broker.Status(context.Background(), owner, session.ID)
+	if err != nil || status.SnapshotID != "" || status.SnapshotOrigin != "" {
+		t.Fatalf("recovered session = %#v, %v", status, err)
+	}
+}
+
+func TestBrokerRestartMakesUncommittedAcceptedDownloadUnknown(t *testing.T) {
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	worker.observation = driverObservationFixture(DriverElement{Target: "e3", Role: "link", Name: "Download"})
+	worker.resolveElement = worker.observation.Elements[0]
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_uncommitted_download", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionDownload, Ref: onlyVisibleRef(t, observation.Snapshot)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocationID := derivedIdentifier(
+		"invocation", owner, session.ID, "request_uncommitted_download",
+	)
+	invocation, err := store.GetInvocation(context.Background(), invocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.State = InvocationAccepted
+	invocation.Revision++
+	invocation.AcceptedAt = invocation.CreatedAt + 1
+	invocation.UpdatedAt = invocation.AcceptedAt
+	if err = store.UpdateInvocation(context.Background(), invocation.Revision-1, invocation); err != nil {
+		t.Fatal(err)
+	}
+	if err = broker.Recover(
+		context.Background(),
+		func(_ context.Context, action PreparedAction) (bool, error) {
+			if action.ID != prepared.Action.ID {
+				t.Fatalf("verified prepared action = %q", action.ID)
+			}
+			return false, nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.GetInvocation(context.Background(), invocationID)
+	if err != nil || recovered.State != InvocationUnknown ||
+		recovered.SafeFailure != "gateway_restarted" || recovered.CompletedAt == 0 {
+		t.Fatalf("uncommitted recovered invocation = %#v, %v", recovered, err)
 	}
 }
 

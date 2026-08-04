@@ -60,7 +60,7 @@ func NormalizeOutboundMessage(msg OutboundMessage) (OutboundMessage, error) {
 }
 
 func validateOutboundRecovery(recovery OutboundRecovery, parts []MediaPart) error {
-	if recovery.Kind != OutboundRecoveryBrowserScreenshot ||
+	if (recovery.Kind != OutboundRecoveryBrowserScreenshot && recovery.Kind != OutboundRecoveryBrowserDownload) ||
 		!strings.HasPrefix(recovery.ArtifactRef, "transfer-artifact://") ||
 		!strings.HasPrefix(recovery.MediaRef, "media://") {
 		return errors.New("invalid outbound recovery prerequisite")

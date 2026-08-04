@@ -23,6 +23,12 @@ const nodeTransferDeliveryTempAttempts = 16
 
 func (*gatewayBrowserToolSource) ScreenshotAvailable() bool { return true }
 
+func (*gatewayBrowserToolSource) ArtifactTransferAvailable() bool { return true }
+
+// Download remains unavailable until the driver can enforce the configured
+// quota on the download stream without constraining unrelated browser writes.
+func (*gatewayBrowserToolSource) DownloadAvailable() bool { return false }
+
 func openNodeTransferMedia(path string) (*os.File, os.FileInfo, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
