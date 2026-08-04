@@ -367,13 +367,14 @@ func (factory *PlaywrightWorkerFactory) Open(
 		_ = networkProxy.Close()
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
-	if factory.downloadReady {
-		server, err = configurePlaywrightDownloadBoundary(server, outputDir)
-		if err != nil {
-			_ = networkProxy.Close()
-			_ = os.RemoveAll(outputDir)
-			return WorkerOpenResult{}, ErrWorkerUnavailable
-		}
+	// Deny the driver's native disk-download path on every platform. The
+	// downloadReady bit gates only MintClaw's bounded Chromium capture path;
+	// hiding that action must never leave an unbounded click side effect.
+	server, err = configurePlaywrightDownloadBoundary(server, outputDir)
+	if err != nil {
+		_ = networkProxy.Close()
+		_ = os.RemoveAll(outputDir)
+		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	server.Args = append(server.Args, "--output-dir", outputDir)
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.WithoutCancel(ctx))

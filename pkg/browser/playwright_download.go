@@ -57,7 +57,11 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
         if (name === "content-type") contentType = String(header.value || "");
       }
       const attachment = /^\s*attachment(?:\s*;|$)/i.test(disposition);
-      if (!attachment || event.request.url !== state.expectedURL) {
+      const directDocument = event.request.url === state.expectedURL &&
+        event.request.method === "GET" && event.resourceType === "Document" &&
+        event.responseStatusCode >= 200 && event.responseStatusCode < 300 &&
+        !event.redirectedRequestId;
+      if (!attachment || !directDocument) {
         await cdp.send("Fetch.continueResponse", { requestId: event.requestId });
         return;
       }
@@ -66,6 +70,7 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
         await cdp.send("Fetch.continueResponse", { requestId: event.requestId });
         return;
       }
+      state.status = "claiming";
       const body = await cdp.send("Fetch.takeResponseBodyAsStream", { requestId: event.requestId });
       state.stream = body.stream;
       state.disposition = disposition;
@@ -77,13 +82,17 @@ func playwrightCaptureDownloadCode(target string, maximumBytes int64) string {
   });
   await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Response" }] });
   let clickFinished = false;
+  let clickFinishedAt = 0;
   let clickFailed = false;
   const click = locator.click().then(
-    () => { clickFinished = true; },
-    () => { clickFinished = true; clickFailed = true; }
+    () => { clickFinished = true; clickFinishedAt = Date.now(); },
+    () => { clickFinished = true; clickFinishedAt = Date.now(); clickFailed = true; }
   );
-  for (let attempt = 0; attempt < 400 && state.status === "pending" && !clickFinished; attempt++)
+  for (let attempt = 0; attempt < 400 &&
+    (state.status === "pending" || state.status === "claiming"); attempt++) {
+    if (clickFinished && state.status === "pending" && Date.now() - clickFinishedAt >= 250) break;
     await page.waitForTimeout(25);
+  }
   const finish = async () => {
     try { if (state.stream) await cdp.send("IO.close", { handle: state.stream }); } catch (_) {}
     try { await cdp.send("Fetch.disable"); } catch (_) {}

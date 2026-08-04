@@ -271,9 +271,21 @@ func TestPlaywrightWorkerCapturesExactlyOneBoundedDownload(t *testing.T) {
 	if readErr != nil || !bytes.Equal(stored, payload) {
 		t.Fatalf("captured bytes = %q, %v", stored, readErr)
 	}
-	if len(client.calls) != 1 || client.calls[0].tool != "browser_run_code_unsafe" ||
-		!strings.Contains(client.calls[0].arguments["code"].(string), `page.locator("aria-ref=" + "e7")`) ||
-		!strings.Contains(client.calls[0].arguments["code"].(string), "const maximumBytes = 1024;") {
+	if len(client.calls) != 1 || client.calls[0].tool != "browser_run_code_unsafe" {
+		t.Fatalf("private download calls = %#v", client.calls)
+	}
+	code, ok := client.calls[0].arguments["code"].(string)
+	if !ok ||
+		!strings.Contains(code, `page.locator("aria-ref=" + "e7")`) ||
+		!strings.Contains(code, "const maximumBytes = 1024;") ||
+		!strings.Contains(code,
+			`event.request.method === "GET" && event.resourceType === "Document"`) ||
+		!strings.Contains(code,
+			`event.responseStatusCode >= 200 && event.responseStatusCode < 300`) ||
+		!strings.Contains(code, `!event.redirectedRequestId`) ||
+		strings.Index(code, `state.status = "claiming"`) < 0 ||
+		strings.Index(code, `state.status = "claiming"`) >
+			strings.Index(code, `Fetch.takeResponseBodyAsStream`) {
 		t.Fatalf("private download calls = %#v", client.calls)
 	}
 }
@@ -379,27 +391,19 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		client.connectCfg.Env["PLAYWRIGHT_MCP_EXTENSION"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
-	var driverOutputDir string
-	if factory.downloadReady {
-		if len(args) != 12 || args[8] != "--config" || !filepath.IsAbs(args[9]) ||
-			filepath.Base(args[9]) != playwrightDownloadConfigName ||
-			args[10] != "--output-dir" || !filepath.IsAbs(args[11]) {
-			t.Fatalf("download-ready connection = %+v", client.connectCfg)
-		}
-		boundary, boundaryErr := os.ReadFile(args[9])
-		boundaryInfo, boundaryStatErr := os.Lstat(args[9])
-		if boundaryErr != nil || boundaryStatErr != nil || string(boundary) !=
-			"{\"browser\":{\"contextOptions\":{\"acceptDownloads\":false}}}\n" ||
-			boundaryInfo.Mode().Perm() != 0o600 {
-			t.Fatalf("download boundary = %q, %#v, %v, %v", boundary, boundaryInfo, boundaryErr, boundaryStatErr)
-		}
-		driverOutputDir = args[11]
-	} else {
-		if len(args) != 10 || args[8] != "--output-dir" || !filepath.IsAbs(args[9]) {
-			t.Fatalf("download-unavailable connection = %+v", client.connectCfg)
-		}
-		driverOutputDir = args[9]
+	if len(args) != 12 || args[8] != "--config" || !filepath.IsAbs(args[9]) ||
+		filepath.Base(args[9]) != playwrightDownloadConfigName ||
+		args[10] != "--output-dir" || !filepath.IsAbs(args[11]) {
+		t.Fatalf("download-denying connection = %+v", client.connectCfg)
 	}
+	boundary, boundaryErr := os.ReadFile(args[9])
+	boundaryInfo, boundaryStatErr := os.Lstat(args[9])
+	if boundaryErr != nil || boundaryStatErr != nil || string(boundary) !=
+		"{\"browser\":{\"contextOptions\":{\"acceptDownloads\":false}}}\n" ||
+		(runtime.GOOS != "windows" && boundaryInfo.Mode().Perm() != 0o600) {
+		t.Fatalf("download boundary = %q, %#v, %v, %v", boundary, boundaryInfo, boundaryErr, boundaryStatErr)
+	}
+	driverOutputDir := args[11]
 	if info, statErr := os.Lstat(driverOutputDir); statErr != nil || !info.IsDir() ||
 		(runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 		t.Fatalf("private output directory = %q, %#v, %v", driverOutputDir, info, statErr)
@@ -1343,6 +1347,17 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 			_, _ = writer.Write(bytes.Repeat([]byte("x"), 2048))
 			return
 		}
+		if request.URL.Path == "/redirect-download" {
+			writer.Header().Set("Content-Disposition", `attachment; filename="redirect.txt"`)
+			http.Redirect(writer, request, "/download", http.StatusFound)
+			return
+		}
+		if request.URL.Path == "/script-download" {
+			writer.Header().Set("Content-Disposition", `attachment; filename="script.txt"`)
+			writer.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(writer, "script fetch fixture")
+			return
+		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if request.URL.Path == "/private-probe" {
 			privateProbeRequests.Add(1)
@@ -1366,7 +1381,10 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 <label>State <select aria-label="State"><option value="CA">California</option><option value="NY">New York</option></select></label>
 <button type="submit">Save</button><button type="button" onclick="prompt('Type DELETE'); alert('Saved')">Prompt</button>
 </form><output></output><a href="/download">Download fixture</a>
-<a href="/oversize-download">Oversize fixture</a>%s<div style="height:2000px"></div>`, privateImage)
+<a href="/oversize-download">Oversize fixture</a>
+<a href="/redirect-download">Redirect fixture</a>
+<a href="/script-download" onclick="event.preventDefault(); fetch(this.href)">Script fixture</a>
+%s<div style="height:2000px"></div>`, privateImage)
 	}))
 	defer fixture.Close()
 	privateProbeURL = fixture.URL + "/private-probe"
@@ -1487,7 +1505,33 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if observation, err = worker.Observe(ctx); err != nil || observation.PendingDialog != nil {
 		t.Fatalf("Observe() after chained alert = %+v, %v", observation, err)
 	}
-	downloadLink := mustSnapshotRef(t, observation.Snapshot, `link "Download fixture" \[ref=(e[0-9]+)\]`)
+	scriptLink := mustSnapshotRef(t, observation.Snapshot, `link "Script fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
+	if _, err = worker.Download(ctx, DriverAction{
+		Kind: DriverDownloadAction, Target: scriptLink, Element: "Script fixture",
+	}, 1024); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("script-fetch Download() error = %v", err)
+	}
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
+		t.Fatalf("navigate after script-fetch download error = %v", err)
+	}
+	observation, err = worker.Observe(ctx)
+	if err != nil {
+		t.Fatalf("Observe() after script-fetch download error = %v", err)
+	}
+	redirectLink := mustSnapshotRef(t, observation.Snapshot, `link "Redirect fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
+	if _, err = worker.Download(ctx, DriverAction{
+		Kind: DriverDownloadAction, Target: redirectLink, Element: "Redirect fixture",
+	}, 1024); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("redirect Download() error = %v", err)
+	}
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
+		t.Fatalf("navigate after redirect download error = %v", err)
+	}
+	observation, err = worker.Observe(ctx)
+	if err != nil {
+		t.Fatalf("Observe() after redirect download error = %v", err)
+	}
+	downloadLink := mustSnapshotRef(t, observation.Snapshot, `link "Download fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
 	download, err := worker.Download(ctx, DriverAction{
 		Kind: DriverDownloadAction, Target: downloadLink, Element: "Download fixture",
 	}, 1024)
@@ -1497,7 +1541,14 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 		download.SHA256 != hex.EncodeToString(wantDownload[:]) {
 		t.Fatalf("Download() = %#v, %v", download, err)
 	}
-	oversizeLink := mustSnapshotRef(t, observation.Snapshot, `link "Oversize fixture" \[ref=(e[0-9]+)\]`)
+	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
+		t.Fatalf("navigate after bounded download error = %v", err)
+	}
+	observation, err = worker.Observe(ctx)
+	if err != nil {
+		t.Fatalf("Observe() after bounded download error = %v", err)
+	}
+	oversizeLink := mustSnapshotRef(t, observation.Snapshot, `link "Oversize fixture" \[ref=([a-z0-9]*e[0-9]+)\]`)
 	if _, err = worker.Download(ctx, DriverAction{
 		Kind: DriverDownloadAction, Target: oversizeLink, Element: "Oversize fixture",
 	}, 1024); !errors.Is(err, ErrDriverIncompatible) {
