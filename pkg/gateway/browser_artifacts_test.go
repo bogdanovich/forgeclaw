@@ -271,7 +271,7 @@ func TestGatewayBrowserDownloadRecoversAcrossActualBrokerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = recoveredBroker.Recover(context.Background()); err != nil {
+	if err = recoveredBroker.Recover(ctx, source.committedBrowserDownload); err != nil {
 		t.Fatal(err)
 	}
 	servicesOwner.Browser = &browserRuntime{broker: recoveredBroker, policyRevision: policyRevision}

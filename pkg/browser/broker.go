@@ -66,6 +66,10 @@ type TransferWorker interface {
 
 type DownloadSink func(context.Context, PreparedAction, DriverDownload) (json.RawMessage, error)
 
+// DownloadRecoveryVerifier proves that the exact retained artifact for an
+// accepted download was committed outside the browser ledger before restart.
+type DownloadRecoveryVerifier func(context.Context, PreparedAction) (bool, error)
+
 func (broker *Broker) PreparedAction(ctx context.Context, owner Owner, id string) (PreparedAction, error) {
 	if owner.Validate() != nil || !validIdentifier(id) {
 		return PreparedAction{}, ErrInvalid
@@ -589,9 +593,13 @@ func (broker *Broker) Sweep(ctx context.Context) error {
 // in-process, so continuity cannot be proven: live sessions become lost and
 // accepted operations become unknown without dispatch, except typed downloads
 // whose exact committed P2 artifact can still complete without replay.
-func (broker *Broker) Recover(ctx context.Context) error {
+func (broker *Broker) Recover(ctx context.Context, verifiers ...DownloadRecoveryVerifier) error {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
+	var verifier DownloadRecoveryVerifier
+	if len(verifiers) > 0 {
+		verifier = verifiers[0]
+	}
 	sessions, err := broker.store.ListSessions(ctx)
 	if err != nil {
 		return err
@@ -600,7 +608,7 @@ func (broker *Broker) Recover(ctx context.Context) error {
 		if session.State.Terminal() {
 			continue
 		}
-		if err = broker.terminateInvocationsForRestartLocked(ctx, session.ID); err != nil {
+		if err = broker.terminateInvocationsForRestartLocked(ctx, session.ID, verifier); err != nil {
 			return err
 		}
 		now := timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
@@ -617,7 +625,11 @@ func (broker *Broker) Recover(ctx context.Context) error {
 	return nil
 }
 
-func (broker *Broker) terminateInvocationsForRestartLocked(ctx context.Context, sessionID string) error {
+func (broker *Broker) terminateInvocationsForRestartLocked(
+	ctx context.Context,
+	sessionID string,
+	verifier DownloadRecoveryVerifier,
+) error {
 	invocations, err := broker.store.ListInvocations(ctx, sessionID)
 	if err != nil {
 		return err
@@ -628,8 +640,14 @@ func (broker *Broker) terminateInvocationsForRestartLocked(ctx context.Context, 
 		}
 		if invocation.State == InvocationAccepted {
 			prepared, preparedErr := broker.store.GetPreparedAction(ctx, invocation.PreparedActionID)
-			if preparedErr == nil && prepared.Action.Kind == ActionDownload {
-				continue
+			if preparedErr == nil && prepared.Action.Kind == ActionDownload && verifier != nil {
+				committed, verifyErr := verifier(ctx, prepared)
+				if verifyErr != nil {
+					return verifyErr
+				}
+				if committed {
+					continue
+				}
 			}
 			if preparedErr != nil && !errors.Is(preparedErr, ErrNotFound) {
 				return preparedErr

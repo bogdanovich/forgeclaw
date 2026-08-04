@@ -22,6 +22,10 @@ func TestGatewayTransferSpoolCommitResolveAndRelease(t *testing.T) {
 	owner := testTransferOwner("actor-a")
 	content := []byte("bounded transfer payload")
 	spec := testTransferSpec(content, now)
+	spec.SourceKind = "browser_download"
+	spec.SourceID = "prepared_1"
+	spec.SourceScope = "tab_1"
+	spec.SourceRevision = 1
 
 	writer, staged, created, err := store.Begin(owner, spec)
 	if err != nil {
@@ -44,6 +48,10 @@ func TestGatewayTransferSpoolCommitResolveAndRelease(t *testing.T) {
 		committed.ObservedSize != int64(len(content)) ||
 		committed.StagingName != "" {
 		t.Fatalf("Commit() record = %#v", committed)
+	}
+	bySource, found, err := store.LookupCommittedSource(spec.SourceKind, spec.SourceID)
+	if err != nil || !found || bySource != committed {
+		t.Fatalf("LookupCommittedSource() = %#v, %v, %v", bySource, found, err)
 	}
 
 	file, resolved, err := store.Resolve(owner, spec, committed.Ref)

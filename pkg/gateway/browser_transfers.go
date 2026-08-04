@@ -184,6 +184,31 @@ func validBrowserDownloadRecord(record nodes.TransferArtifactRecord) bool {
 		record.Spec.SourceKind == browserDownloadSourceKind
 }
 
+func (source *gatewayBrowserToolSource) committedBrowserDownload(
+	ctx context.Context,
+	prepared browser.PreparedAction,
+) (bool, error) {
+	if source == nil || source.services == nil || source.services.NodeAdmission == nil || source.workspace == "" {
+		return false, browser.ErrWorkerUnavailable
+	}
+	spool, err := source.services.NodeAdmission.gatewayTransferSpool(
+		nodes.GatewayTransferSpoolPath(source.workspace),
+	)
+	if err != nil {
+		return false, err
+	}
+	record, found, err := spool.LookupCommittedSource(browserDownloadSourceKind, prepared.ID)
+	if err != nil || !found {
+		return false, err
+	}
+	return validBrowserDownloadRecord(record) &&
+		record.Spec.TransferID == prepared.RequestID &&
+		record.Spec.Target == prepared.Target &&
+		record.Spec.ProfileRevision == prepared.PolicyRevision &&
+		record.Spec.SourceScope == prepared.TabID &&
+		record.Spec.SourceRevision == prepared.SnapshotGeneration, nil
+}
+
 func (source *gatewayBrowserToolSource) registerBrowserDownload(
 	ctx context.Context, spool *nodes.GatewayTransferSpool, owner nodes.TransferArtifactOwner,
 	artifact nodes.TransferArtifactRecord, mediaOwner media.MediaOwner,

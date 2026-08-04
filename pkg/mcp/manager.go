@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -566,8 +565,17 @@ func connectServer(
 				"server":  name,
 				"command": cfg.Command,
 			})
-		// Create command with context
-		cmd := exec.CommandContext(ctx, expandHomeCommandPath(cfg.Command), cfg.Args...)
+		// Create command with context. Internal callers may impose an operating-
+		// system write ceiling on the complete stdio process tree.
+		cmd, commandErr := stdioCommand(
+			ctx,
+			expandHomeCommandPath(cfg.Command),
+			cfg.Args,
+			cfg.StdioFileSizeLimitBytes,
+		)
+		if commandErr != nil {
+			return nil, fmt.Errorf("invalid MCP stdio process limit: %w", commandErr)
+		}
 
 		var envVars map[string]string
 		if cfg.EnvFile != "" {

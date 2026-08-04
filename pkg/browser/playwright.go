@@ -355,6 +355,7 @@ func (factory *PlaywrightWorkerFactory) Open(
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	server, outputRoot := playwrightOutputRoot(server)
+	server.StdioFileSizeLimitBytes = int64(request.Limits.Effective().DownloadBytes)
 	outputDir := ""
 	if outputRoot == "" {
 		outputDir, err = os.MkdirTemp("", "mintclaw-browser-"+request.SessionID+"-")

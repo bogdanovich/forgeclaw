@@ -205,6 +205,14 @@ func TestBrokerRecoversCommittedAcceptedDownloadWithoutDriverReplay(t *testing.T
 	if err = store.UpdateInvocation(context.Background(), invocation.Revision-1, invocation); err != nil {
 		t.Fatal(err)
 	}
+	if err = broker.Recover(
+		context.Background(),
+		func(_ context.Context, action PreparedAction) (bool, error) {
+			return action.ID == prepared.Action.ID, nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
 	recovered, err := broker.RecoverAcceptedDownload(
 		context.Background(), owner, prepared.Action.ID,
 		json.RawMessage(`{"status":"completed","artifact":{"ref":"transfer-artifact://retained"}}`),
@@ -215,6 +223,56 @@ func TestBrokerRecoversCommittedAcceptedDownloadWithoutDriverReplay(t *testing.T
 	status, err := broker.Status(context.Background(), owner, session.ID)
 	if err != nil || status.SnapshotID != "" || status.SnapshotOrigin != "" {
 		t.Fatalf("recovered session = %#v, %v", status, err)
+	}
+}
+
+func TestBrokerRestartMakesUncommittedAcceptedDownloadUnknown(t *testing.T) {
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	worker.observation = driverObservationFixture(DriverElement{Target: "e3", Role: "link", Name: "Download"})
+	worker.resolveElement = worker.observation.Elements[0]
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_uncommitted_download", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: Action{Kind: ActionDownload, Ref: onlyVisibleRef(t, observation.Snapshot)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocationID := derivedIdentifier(
+		"invocation", owner, session.ID, "request_uncommitted_download",
+	)
+	invocation, err := store.GetInvocation(context.Background(), invocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.State = InvocationAccepted
+	invocation.Revision++
+	invocation.AcceptedAt = invocation.CreatedAt + 1
+	invocation.UpdatedAt = invocation.AcceptedAt
+	if err = store.UpdateInvocation(context.Background(), invocation.Revision-1, invocation); err != nil {
+		t.Fatal(err)
+	}
+	if err = broker.Recover(
+		context.Background(),
+		func(_ context.Context, action PreparedAction) (bool, error) {
+			if action.ID != prepared.Action.ID {
+				t.Fatalf("verified prepared action = %q", action.ID)
+			}
+			return false, nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.GetInvocation(context.Background(), invocationID)
+	if err != nil || recovered.State != InvocationUnknown ||
+		recovered.SafeFailure != "gateway_restarted" || recovered.CompletedAt == 0 {
+		t.Fatalf("uncommitted recovered invocation = %#v, %v", recovered, err)
 	}
 }
 

@@ -35,7 +35,11 @@ type browserRuntime struct {
 	closed   bool
 }
 
-func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime, error) {
+func newBrowserRuntime(
+	ctx context.Context,
+	cfg *config.Config,
+	recovery ...browser.DownloadRecoveryVerifier,
+) (*browserRuntime, error) {
 	if cfg == nil || !cfg.Tools.Browser.Enabled {
 		return nil, nil
 	}
@@ -65,7 +69,7 @@ func newBrowserRuntime(ctx context.Context, cfg *config.Config) (*browserRuntime
 		return nil, errors.New("browser policy unavailable")
 	}
 	runtime := &browserRuntime{broker: broker, store: store, policyRevision: policyRevision}
-	if err = broker.Recover(ctx); err != nil {
+	if err = broker.Recover(ctx, recovery...); err != nil {
 		store.Close()
 		return nil, errors.New("browser recovery unavailable")
 	}
@@ -175,7 +179,15 @@ func setupBrowserRuntime(ctx context.Context, cfg *config.Config, runningService
 	if runningServices.Browser != nil {
 		return errors.New("previous browser runtime still owns resources")
 	}
-	runtime, err := newBrowserRuntime(ctx, cfg)
+	policyRevision, policyErr := cfg.Tools.Browser.PolicyRevision()
+	if policyErr != nil && cfg.Tools.Browser.Enabled {
+		return errors.New("browser policy unavailable")
+	}
+	recoverySource := &gatewayBrowserToolSource{
+		services: runningServices, policyRevision: policyRevision, workspace: cfg.WorkspacePath(),
+		limits: cfg.Tools.Browser.Limits.Effective(),
+	}
+	runtime, err := newBrowserRuntime(ctx, cfg, recoverySource.committedBrowserDownload)
 	if err != nil {
 		return err
 	}

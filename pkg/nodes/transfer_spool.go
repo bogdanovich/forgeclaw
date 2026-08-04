@@ -608,6 +608,42 @@ func (store *GatewayTransferSpool) LookupTransfer(
 	return TransferArtifactRecord{}, false, nil
 }
 
+// LookupCommittedSource returns the one committed artifact bound to an exact
+// producer kind and source identifier. Source identifiers are durable,
+// authority-derived correlations rather than bearer references.
+func (store *GatewayTransferSpool) LookupCommittedSource(
+	sourceKind string,
+	sourceID string,
+) (TransferArtifactRecord, bool, error) {
+	if !validInvocationIdentifier(sourceKind) || !validInvocationIdentifier(sourceID) {
+		return TransferArtifactRecord{}, false, ErrTransferArtifactNotFound
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return TransferArtifactRecord{}, false, ErrTransferSpoolClosed
+	}
+	if cleanupErr := store.cleanupExpiredLocked(store.now()); cleanupErr != nil {
+		return TransferArtifactRecord{}, false, cleanupErr
+	}
+	var matched *TransferArtifactRecord
+	for _, record := range store.records {
+		if record.State != TransferArtifactCommitted ||
+			record.Spec.SourceKind != sourceKind || record.Spec.SourceID != sourceID {
+			continue
+		}
+		if matched != nil {
+			return TransferArtifactRecord{}, false, ErrTransferArtifactConflict
+		}
+		copy := cloneTransferArtifactRecord(record)
+		matched = &copy
+	}
+	if matched == nil {
+		return TransferArtifactRecord{}, false, nil
+	}
+	return *matched, true, nil
+}
+
 // ClaimDelivery durably records the one permitted routed-delivery attempt for
 // a committed artifact. A duplicate claim returns the original record without
 // authorizing another outbound send.
