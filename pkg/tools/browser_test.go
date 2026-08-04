@@ -42,6 +42,8 @@ type fakeBrowserToolSource struct {
 	prepareCalls      int
 	executeCalls      int
 	profileStatus     browser.ProfileAvailability
+	readiness         browser.PassiveReadiness
+	readinessCalls    int
 }
 
 func (source *fakeBrowserToolSource) Available() bool { return source.available }
@@ -70,6 +72,51 @@ func (source *fakeBrowserToolSource) ProfileAvailability(
 		return browser.ProfileAvailability{Status: "ready"}, nil
 	}
 	return source.profileStatus, nil
+}
+
+func (source *fakeBrowserToolSource) PassiveTargetDiagnostics(
+	_ context.Context,
+	_ string,
+	profiles []string,
+) (BrowserTargetDiagnostics, error) {
+	source.readinessCalls++
+	if !source.available {
+		return BrowserTargetDiagnostics{}, browser.ErrWorkerUnavailable
+	}
+	if source.err != nil {
+		return BrowserTargetDiagnostics{}, source.err
+	}
+	profile := source.profileStatus
+	if profile.Status == "" {
+		profile.Status = browser.ReadinessReady
+	}
+	readiness := source.readiness
+	if readiness.Status == "" {
+		readiness = browser.PassiveReadiness{
+			Status: browser.ReadinessReady, Broker: browser.ReadinessReady,
+			Worker: browser.ReadinessReady, Driver: browser.ReadinessReady,
+			Browser: browser.ReadinessReady, Proxy: browser.ReadinessReady,
+			Compatibility: browser.CompatibilityCompatible,
+			Profile:       profile, Passive: true,
+		}
+		switch profile.Status {
+		case browser.ReadinessBusy:
+			readiness.Status = browser.ReadinessBusy
+			readiness.Code, readiness.Action = "profile_busy", "wait_or_close_session"
+		case browser.ReadinessDegraded:
+			readiness.Status, readiness.Worker = browser.ReadinessDegraded, browser.ReadinessDegraded
+			readiness.Code, readiness.Action = "recovery_required", "close_or_recover_session"
+		}
+	}
+	byProfile := make(map[string]browser.PassiveReadiness, len(profiles))
+	for _, name := range profiles {
+		byProfile[name] = readiness
+	}
+	return BrowserTargetDiagnostics{
+		Profiles: byProfile, Screenshot: !source.screenshotUnavailable,
+		Upload:   !source.transferUnavailable,
+		Download: !source.transferUnavailable && !source.downloadUnavailable,
+	}, nil
 }
 
 func (source *fakeBrowserToolSource) Open(
@@ -234,7 +281,16 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 		result.Targets[0].Limits.ScreenshotBytes != config.BrowserMaxScreenshotBytes ||
 		result.Targets[0].Limits.UploadBytes != config.BrowserMaxUploadBytes ||
 		result.Targets[0].Limits.DownloadBytes != config.BrowserMaxDownloadBytes ||
-		source.openRequest.Target != "" {
+		result.Targets[0].Limits.SessionSeconds != config.BrowserMaxSessionSeconds ||
+		result.Targets[0].Limits.ActionSeconds != config.BrowserMaxActionSeconds ||
+		result.Targets[0].Limits.SnapshotRefs != config.BrowserMaxSnapshotRefs ||
+		result.Targets[0].Limits.ToolResultBytes != config.BrowserMaxToolResultBytes ||
+		result.Targets[0].Limits.RetentionSecs != config.BrowserMaxRetentionSeconds ||
+		!result.Targets[0].Features.Diagnostics || result.Targets[0].Features.HeadedView ||
+		result.Targets[0].Features.Handoff ||
+		!result.Targets[0].Profiles[0].Readiness.Passive ||
+		result.Targets[0].Profiles[0].Readiness.Compatibility != browser.CompatibilityCompatible ||
+		source.readinessCalls != 1 || source.openRequest.Target != "" {
 		t.Fatalf("browser targets = %#v", result)
 	}
 
@@ -242,6 +298,85 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	denied := tool.Execute(other, nil)
 	if denied == nil || !denied.IsError || !strings.Contains(denied.ContentForLLM(), `"code":"not_granted"`) {
 		t.Fatalf("ungranted result = %#v", denied)
+	}
+}
+
+func TestBrowserTargetsReportsUnavailableRuntimeWithoutAdvertisingCapabilities(t *testing.T) {
+	source := &fakeBrowserToolSource{available: false}
+	var result browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &result,
+	)
+	if len(result.Targets) != 1 || result.Targets[0].Status != browser.ReadinessUnavailable ||
+		result.Targets[0].Reason != "runtime_unavailable" ||
+		result.Targets[0].Features.Screenshot || result.Targets[0].Features.Upload ||
+		result.Targets[0].Features.Download || !result.Targets[0].Features.Diagnostics ||
+		result.Targets[0].Profiles[0].Readiness.Code != "runtime_unavailable" ||
+		!result.Targets[0].Profiles[0].Readiness.Passive || source.readinessCalls != 1 {
+		t.Fatalf("unavailable browser targets = %#v", result)
+	}
+}
+
+func TestBrowserTargetsFailsCapabilitiesClosedWhenDiagnosticsSnapshotFails(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, err: errors.New("runtime reloaded")}
+	var result browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &result,
+	)
+	if len(result.Targets) != 1 || result.Targets[0].Status != browser.ReadinessUnavailable ||
+		result.Targets[0].Features.Screenshot || result.Targets[0].Features.Upload ||
+		result.Targets[0].Features.Download ||
+		result.Targets[0].Profiles[0].Readiness.Code != "runtime_unavailable" {
+		t.Fatalf("failed diagnostics snapshot = %#v", result)
+	}
+}
+
+func TestBrowserTargetsAggregatesDriverReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status string
+		code   string
+	}{
+		{name: "missing", status: browser.ReadinessUnavailable, code: "driver_missing"},
+		{name: "incompatible", status: browser.ReadinessDegraded, code: "driver_incompatible"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &fakeBrowserToolSource{available: true, readiness: browser.PassiveReadiness{
+				Status: test.status, Broker: browser.ReadinessReady, Worker: test.status,
+				Driver: test.status, Browser: browser.ReadinessUnavailable,
+				Proxy: browser.ReadinessReady, Compatibility: browser.CompatibilityUnchecked,
+				Profile: browser.ProfileAvailability{Status: browser.ReadinessReady},
+				Code:    test.code, Action: "contact_operator", Passive: true,
+			}}
+			var result browserTargetResult
+			decodeBrowserToolResult(
+				t,
+				NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil),
+				&result,
+			)
+			if len(result.Targets) != 1 || result.Targets[0].Status != test.status ||
+				result.Targets[0].Reason != test.code {
+				t.Fatalf("aggregated readiness = %#v", result)
+			}
+		})
+	}
+}
+
+func TestBrowserReadinessRankHasDeterministicFailClosedOrder(t *testing.T) {
+	statuses := []string{
+		browser.ReadinessReady,
+		browser.ReadinessConfigured,
+		browser.ReadinessBusy,
+		browser.ReadinessDegraded,
+		browser.ReadinessUnavailable,
+	}
+	for index := 1; index < len(statuses); index++ {
+		if readinessRank(statuses[index]) <= readinessRank(statuses[index-1]) {
+			t.Fatalf("readiness order = %#v", statuses)
+		}
+	}
+	if readinessRank("unexpected") != readinessRank(browser.ReadinessUnavailable) {
+		t.Fatal("unknown readiness did not fail closed")
 	}
 }
 

@@ -229,6 +229,34 @@ func (source *gatewayBrowserToolSource) ProfileAvailability(
 	)
 }
 
+func (source *gatewayBrowserToolSource) PassiveTargetDiagnostics(
+	ctx context.Context,
+	target string,
+	profiles []string,
+) (tools.BrowserTargetDiagnostics, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (tools.BrowserTargetDiagnostics, error) {
+			uploadAvailable := source.ArtifactTransferAvailable()
+			result := tools.BrowserTargetDiagnostics{
+				Profiles:   make(map[string]browser.PassiveReadiness, len(profiles)),
+				Screenshot: source.ScreenshotAvailable(),
+				Upload:     uploadAvailable,
+				Download:   uploadAvailable && source.DownloadAvailable(),
+			}
+			for _, profile := range profiles {
+				readiness, err := broker.PassiveReadiness(ctx, target, profile)
+				if err != nil {
+					return tools.BrowserTargetDiagnostics{}, err
+				}
+				result.Profiles[profile] = readiness
+			}
+			return result, nil
+		},
+	)
+}
+
 func withGatewayBrowserBroker[T any](
 	ctx context.Context,
 	source *gatewayBrowserToolSource,
