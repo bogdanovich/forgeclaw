@@ -1080,6 +1080,95 @@ func TestHumanInteractionDefiniteNotSentPromptRetries(t *testing.T) {
 	}
 }
 
+func TestRecoveryFailsInteractionAfterFinalDeliveryRetryBudget(t *testing.T) {
+	al := &AgentLoop{cfg: config.DefaultConfig()}
+	workspace := t.TempDir()
+	registry := al.interactionRegistryForWorkspace(workspace)
+	request := testToolSuspensionRequest(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, PromptSummary: request.Prompt.PromptSummary,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		interactions.Answer{Text: "continue", ReceivedAt: time.Now().UnixMilli()},
+		interactions.OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range interactions.MaxDeliveryAttempts {
+		record, err = registry.RecordFinalDeliveryAttempt(
+			record.ID,
+			record.Revision,
+			false,
+			"definitely not sent",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	failed, ok := registry.Get(record.ID)
+	if !ok || failed.Status != interactions.StatusFailed ||
+		failed.FailureCode != "final_delivery_exhausted" {
+		t.Fatalf("interaction after exhausted recovery = %#v, found=%t", failed, ok)
+	}
+}
+
+func TestRecoveryFailsInteractionAfterPromptDeliveryRetryBudget(t *testing.T) {
+	al := &AgentLoop{cfg: config.DefaultConfig()}
+	workspace := t.TempDir()
+	registry := al.interactionRegistryForWorkspace(workspace)
+	request := testToolSuspensionRequest(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, PromptSummary: request.Prompt.PromptSummary,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range interactions.MaxDeliveryAttempts {
+		record, err = registry.RecordDeliveryAttempt(
+			record.ID,
+			record.Revision,
+			false,
+			"definitely not sent",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	failed, ok := registry.Get(record.ID)
+	if !ok || failed.Status != interactions.StatusFailed ||
+		failed.FailureCode != "prompt_delivery_exhausted" {
+		t.Fatalf("interaction after exhausted recovery = %#v, found=%t", failed, ok)
+	}
+}
+
 func TestRecoveryDoesNotResendPromptAfterAmbiguousCrashWindow(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()

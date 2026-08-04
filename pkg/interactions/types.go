@@ -77,6 +77,7 @@ const (
 	DefaultMaxRecords     = 1000
 	DefaultMaxEvents      = 5000
 	DefaultMaxBytes       = 2 * 1024 * 1024
+	MaxDeliveryAttempts   = 3
 
 	MaxQuestions         = 3
 	MaxOptions           = 3

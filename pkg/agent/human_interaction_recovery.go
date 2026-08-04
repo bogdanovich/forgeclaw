@@ -74,6 +74,21 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 					if err == nil && al.recoverClaimedInteraction(ctx, workspace, claimed) {
 						recovered++
 					}
+				} else if record.DeliveryTries >= interactions.MaxDeliveryAttempts {
+					if _, err := registry.Fail(
+						record.ID,
+						record.Revision,
+						"prompt_delivery_exhausted",
+						"prompt delivery exhausted its bounded retry budget",
+					); err == nil {
+						recovered++
+						_ = al.drainDeferredInteractionIngress(
+							ctx,
+							workspace,
+							record.Route,
+							inboundContextForInteraction(record.Route),
+						)
+					}
 				} else if al.retryInteractionPrompt(ctx, registry, record) {
 					recovered++
 				}
@@ -85,6 +100,22 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 						record.Revision,
 						"final_delivery_ambiguous",
 						"final response delivery could not be confirmed and was not retried",
+					); err == nil {
+						recovered++
+						_ = al.drainDeferredInteractionIngress(
+							ctx,
+							workspace,
+							record.Route,
+							inboundContextForInteraction(record.Route),
+						)
+					}
+				} else if !record.FinalDelivered &&
+					record.FinalDeliveryTries >= interactions.MaxDeliveryAttempts {
+					if _, err := registry.Fail(
+						record.ID,
+						record.Revision,
+						"final_delivery_exhausted",
+						"final delivery exhausted its bounded retry budget",
 					); err == nil {
 						recovered++
 						_ = al.drainDeferredInteractionIngress(

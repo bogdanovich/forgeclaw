@@ -313,7 +313,7 @@ func (r *Registry) RecordDeliveryAttempt(
 		id,
 		expectedRevision,
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
-			if rec.Status != StatusCreated {
+			if rec.Status != StatusCreated || rec.DeliveryTries >= MaxDeliveryAttempts {
 				return "", "", nil, fmt.Errorf(
 					"%w: delivery from %s",
 					ErrInvalidTransition,
@@ -341,7 +341,7 @@ func (r *Registry) BeginPromptDelivery(id string, expectedRevision int64) (Recor
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
 			if rec.Status != StatusCreated ||
 				(rec.PromptDeliveryState != "" && rec.PromptDeliveryState != DeliveryStateNotSent) ||
-				rec.PromptDelivered {
+				rec.PromptDelivered || rec.DeliveryTries >= MaxDeliveryAttempts {
 				return "", "", nil, fmt.Errorf(
 					"%w: begin prompt delivery from %s/%s",
 					ErrInvalidTransition,
@@ -404,7 +404,7 @@ func (r *Registry) RecordFinalDeliveryAttempt(
 		id,
 		expectedRevision,
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
-			if rec.Status != StatusResuming {
+			if rec.Status != StatusResuming || rec.FinalDeliveryTries >= MaxDeliveryAttempts {
 				return "", "", nil, fmt.Errorf(
 					"%w: final delivery from %s", ErrInvalidTransition, rec.Status,
 				)
@@ -430,7 +430,7 @@ func (r *Registry) BeginFinalDelivery(id string, expectedRevision int64) (Record
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
 			if rec.Status != StatusResuming ||
 				(rec.FinalDeliveryState != "" && rec.FinalDeliveryState != DeliveryStateNotSent) ||
-				rec.FinalDelivered {
+				rec.FinalDelivered || rec.FinalDeliveryTries >= MaxDeliveryAttempts {
 				return "", "", nil, fmt.Errorf(
 					"%w: begin final delivery from %s/%s",
 					ErrInvalidTransition,
@@ -1439,7 +1439,49 @@ func (r *Registry) trimEventsLocked() bool {
 		r.events = append([]Event(nil), r.events[len(r.events)-r.options.MaxEvents:]...)
 		changed = true
 	}
+	if r.trimEventsToSnapshotBudgetLocked() {
+		changed = true
+	}
 	return changed
+}
+
+// trimEventsToSnapshotBudgetLocked preserves authoritative records and the
+// newest committed event while compacting the oldest diagnostic event prefix.
+// Keeping a 25 percent reserve prevents every subsequent transition from
+// immediately forcing another compaction.
+func (r *Registry) trimEventsToSnapshotBudgetLocked() bool {
+	if len(r.events) < 2 || r.options.MaxSnapshotBytes <= 0 {
+		return false
+	}
+	target := r.options.MaxSnapshotBytes * 3 / 4
+	if r.snapshotSizeLocked() <= target {
+		return false
+	}
+	original := r.events
+	findDrop := func(limit int) (int, bool) {
+		low, high, best := 1, len(original)-1, -1
+		for low <= high {
+			middle := low + (high-low)/2
+			r.events = original[middle:]
+			if r.snapshotSizeLocked() <= limit {
+				best = middle
+				high = middle - 1
+			} else {
+				low = middle + 1
+			}
+		}
+		return best, best >= 0
+	}
+	drop, ok := findDrop(target)
+	if !ok {
+		drop, ok = findDrop(r.options.MaxSnapshotBytes)
+	}
+	if !ok {
+		r.events = original
+		return false
+	}
+	r.events = append([]Event(nil), original[drop:]...)
+	return true
 }
 
 func (r *Registry) appendEventLocked(rec *Record, eventType EventType, code string, success *bool) {
