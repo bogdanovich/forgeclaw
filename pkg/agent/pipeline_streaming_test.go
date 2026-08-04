@@ -1381,8 +1381,7 @@ func TestPipelineFinalizeUsesAccumulatedTurnUsage(t *testing.T) {
 		TotalTokens:      2752,
 	})
 
-	result, err := (&Pipeline{}).Finalize(
-		context.Background(),
+	result, err := (&Pipeline{}).finalizeTurn(
 		context.Background(),
 		ts,
 		&turnExecution{
@@ -1390,9 +1389,7 @@ func TestPipelineFinalizeUsesAccumulatedTurnUsage(t *testing.T) {
 				llmModelName:     "fallback-model",
 				defaultModelName: "primary-model",
 			},
-		},
-		TurnEndStatusCompleted,
-		"final answer",
+		}, TurnEndStatusCompleted, "final answer",
 	)
 	if err != nil {
 		t.Fatalf("Finalize() error = %v", err)

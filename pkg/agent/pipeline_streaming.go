@@ -233,25 +233,24 @@ func isConfiguredStreamingVisibleError(err error) bool {
 	return errors.As(err, &visibleErr)
 }
 
-func finalizeConfiguredStreamingLLM(
+func (s *finalizationStream) finalize(
 	ctx context.Context,
 	ts *turnState,
-	exec *turnExecution,
 	content string,
 	contextUsage *bus.ContextUsage,
 ) error {
-	if exec == nil || exec.streamingPublisher == nil {
+	if s == nil || s.publisher == nil {
 		return nil
 	}
-	publisher := exec.streamingPublisher
-	exec.streamingPublisher = nil
+	publisher := s.publisher
+	s.publisher = nil
 	visibleBeforeFinalize := publisher.Published()
 	if err := publisher.Finalize(ctx, content, contextUsage); err != nil {
 		if visibleBeforeFinalize {
 			logger.WarnCF("agent", "stream final flush failed after visible output", map[string]any{
 				"agent_id": ts.agent.ID,
 				"channel":  ts.channel,
-				"model":    exec.llmModel,
+				"model":    s.modelName,
 				"error":    err.Error(),
 			})
 			return configuredStreamingVisibleError{err: err}
@@ -260,12 +259,21 @@ func finalizeConfiguredStreamingLLM(
 		logger.WarnCF("agent", "stream final flush failed", map[string]any{
 			"agent_id": ts.agent.ID,
 			"channel":  ts.channel,
-			"model":    exec.llmModel,
+			"model":    s.modelName,
 			"error":    err.Error(),
 		})
 		return err
 	}
 	return nil
+}
+
+func (s *finalizationStream) cancel(ctx context.Context) {
+	if s == nil || s.publisher == nil {
+		return
+	}
+	publisher := s.publisher
+	s.publisher = nil
+	publisher.Cancel(ctx)
 }
 
 func cancelConfiguredStreamingLLM(ctx context.Context, exec *turnExecution) {
