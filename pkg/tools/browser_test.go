@@ -320,6 +320,22 @@ func TestBrowserDownloadIsNotAdvertisedOrPreparedWithoutScopedDriver(t *testing.
 	}
 }
 
+func TestBrowserActSchemaDoesNotAdvertiseDeferredDownload(t *testing.T) {
+	parameters := NewBrowserActTool(browserToolTestConfig(), &fakeBrowserToolSource{available: true}).Parameters()
+	properties := parameters["properties"].(map[string]any)
+	action := properties["action"].(map[string]any)
+	actionProperties := action["properties"].(map[string]any)
+	kind := actionProperties["kind"].(map[string]any)
+	for _, candidate := range kind["enum"].([]string) {
+		if candidate == string(browser.ActionDownload) {
+			t.Fatalf("deferred download action advertised in schema: %#v", kind["enum"])
+		}
+	}
+	if _, ok := actionProperties["deliver"]; ok {
+		t.Fatalf("download-only deliver field advertised in schema: %#v", actionProperties)
+	}
+}
+
 func TestBrowserScreenshotRequiresRecoverableOutboundOwnerBeforeCapture(t *testing.T) {
 	source := &fakeBrowserToolSource{available: true}
 	ctx := WithToolRecoverableOutbound(browserToolTestContext(), false)
