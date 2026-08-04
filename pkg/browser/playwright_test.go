@@ -360,15 +360,13 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	}
 	args := client.connectCfg.Args
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
-		client.connectCfg.Enabled || len(args) != 12 ||
+		client.connectCfg.Enabled || len(args) < 10 ||
 		!reflect.DeepEqual(args[:4], []string{"--caps", "vision", "--proxy-server", args[3]}) ||
 		!strings.HasPrefix(args[3], "http://127.0.0.1:") ||
 		!reflect.DeepEqual(
 			args[4:8],
 			[]string{"--proxy-bypass", "<-loopback>", "--allowed-origins", "http://b.example;https://example.com"},
-		) || args[8] != "--config" || !filepath.IsAbs(args[9]) ||
-		filepath.Base(args[9]) != playwrightDownloadConfigName ||
-		args[10] != "--output-dir" || !filepath.IsAbs(args[11]) ||
+		) ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
 			"http://b.example;https://example.com" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
@@ -381,14 +379,27 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		client.connectCfg.Env["PLAYWRIGHT_MCP_EXTENSION"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
-	boundary, boundaryErr := os.ReadFile(args[9])
-	boundaryInfo, boundaryStatErr := os.Lstat(args[9])
-	if boundaryErr != nil || boundaryStatErr != nil || string(boundary) !=
-		"{\"browser\":{\"contextOptions\":{\"acceptDownloads\":false}}}\n" ||
-		(runtime.GOOS != "windows" && boundaryInfo.Mode().Perm() != 0o600) {
-		t.Fatalf("download boundary = %q, %#v, %v, %v", boundary, boundaryInfo, boundaryErr, boundaryStatErr)
+	var driverOutputDir string
+	if factory.downloadReady {
+		if len(args) != 12 || args[8] != "--config" || !filepath.IsAbs(args[9]) ||
+			filepath.Base(args[9]) != playwrightDownloadConfigName ||
+			args[10] != "--output-dir" || !filepath.IsAbs(args[11]) {
+			t.Fatalf("download-ready connection = %+v", client.connectCfg)
+		}
+		boundary, boundaryErr := os.ReadFile(args[9])
+		boundaryInfo, boundaryStatErr := os.Lstat(args[9])
+		if boundaryErr != nil || boundaryStatErr != nil || string(boundary) !=
+			"{\"browser\":{\"contextOptions\":{\"acceptDownloads\":false}}}\n" ||
+			boundaryInfo.Mode().Perm() != 0o600 {
+			t.Fatalf("download boundary = %q, %#v, %v, %v", boundary, boundaryInfo, boundaryErr, boundaryStatErr)
+		}
+		driverOutputDir = args[11]
+	} else {
+		if len(args) != 10 || args[8] != "--output-dir" || !filepath.IsAbs(args[9]) {
+			t.Fatalf("download-unavailable connection = %+v", client.connectCfg)
+		}
+		driverOutputDir = args[9]
 	}
-	driverOutputDir := args[11]
 	if info, statErr := os.Lstat(driverOutputDir); statErr != nil || !info.IsDir() ||
 		(runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 		t.Fatalf("private output directory = %q, %#v, %v", driverOutputDir, info, statErr)
