@@ -883,7 +883,13 @@ toolLoop:
 					}
 					if toolResp.Result != nil {
 						if toolResp.Result != toolResult {
-							resolveCanceledToolSuspension(execCtx, toolResult)
+							if !transferToolSuspensionResolution(toolResult, toolResp.Result) {
+								resolveCanceledToolSuspension(execCtx, toolResult)
+								if toolResult != nil && toolResult.Suspension != nil &&
+									toolResp.Result.Suspension == nil {
+									toolResp.Result.SuspensionResolution = nil
+								}
+							}
 						}
 						toolResult = toolResp.Result
 					}
@@ -1539,6 +1545,21 @@ func resolveCanceledToolSuspension(ctx context.Context, result *tools.ToolResult
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	_ = resolve(resolveCtx, interactions.OutcomeCanceled)
+}
+
+// transferToolSuspensionResolution keeps control-plane ownership linear when
+// hooks clone or rewrite the model-visible portion of a suspended tool result.
+// A replacement that retains suspension inherits the trusted original request
+// and resolver; a replacement that removes suspension is canceled by the
+// caller instead.
+func transferToolSuspensionResolution(current, replacement *tools.ToolResult) bool {
+	if current == nil || current.Suspension == nil || replacement == nil || replacement.Suspension == nil {
+		return false
+	}
+	replacement.Suspension = current.Suspension
+	replacement.SuspensionResolution = current.SuspensionResolution
+	current.SuspensionResolution = nil
+	return true
 }
 
 func effectiveToolExecutionID(ts *turnState) string {
