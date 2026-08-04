@@ -600,6 +600,50 @@ func TestPlaywrightDownloadAvailabilityRequiresScopedChromiumBoundary(t *testing
 	}
 }
 
+func TestPlaywrightHandoffAvailabilityRequiresLocalHeadedDriver(t *testing.T) {
+	root := admittedBrowserConfig()
+	wantSupported := runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+	if got := PlaywrightHandoffAvailable(root); got != wantSupported {
+		t.Fatalf("default PlaywrightHandoffAvailable() = %t, want %t", got, wantSupported)
+	}
+	target := root.Tools.Browser.Targets[config.BrowserDefaultTarget]
+	server := root.Tools.MCP.Servers[target.DriverServer]
+	server.Args = append(server.Args, "--headless")
+	root.Tools.MCP.Servers[target.DriverServer] = server
+	if PlaywrightHandoffAvailable(root) {
+		t.Fatal("headless Playwright unexpectedly admitted human handoff")
+	}
+}
+
+func TestPlaywrightWorkerBlocksAutomationDuringHumanControl(t *testing.T) {
+	client := &fakePlaywrightClient{catalog: playwrightCatalogFixture()}
+	worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+	if err := worker.BeginHumanControl(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := worker.Status(context.Background()); err != nil || status != WorkerReady {
+		t.Fatalf("Status() during human control = %q, %v", status, err)
+	}
+	if _, err := worker.Observe(context.Background()); !errors.Is(err, ErrWorkerUnavailable) {
+		t.Fatalf("Observe() during human control error = %v", err)
+	}
+	if err := worker.Execute(
+		context.Background(),
+		DriverAction{Kind: DriverPress, Key: "Tab"},
+	); !errors.Is(
+		err,
+		ErrWorkerUnavailable,
+	) {
+		t.Fatalf("Execute() during human control error = %v", err)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("driver calls during human control = %#v", client.calls)
+	}
+	if err := worker.EndHumanControl(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlaywrightPassiveReadinessIsBoundedAndDoesNotStartDriver(t *testing.T) {
 	factory, err := NewPlaywrightWorkerFactory(admittedBrowserConfig())
 	if err != nil {

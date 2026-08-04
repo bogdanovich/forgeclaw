@@ -531,7 +531,7 @@ func (broker *Broker) actionSessionLocked(
 	if !session.Owner.Equal(owner) {
 		return Session{}, nil, nil, ErrNotFound
 	}
-	if session.State != SessionReady || session.TabID != tabID {
+	if session.State != SessionReady || session.EffectiveController() != ControllerAgent || session.TabID != tabID {
 		return Session{}, nil, nil, ErrWorkerUnavailable
 	}
 	if session.PolicyRevision != broker.policyRevision {

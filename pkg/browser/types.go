@@ -140,6 +140,31 @@ type ScreenshotCapture struct {
 
 type SessionState string
 
+type ControllerState string
+
+const (
+	ControllerAgent         ControllerState = "agent"
+	ControllerHumanPending  ControllerState = "human_pending"
+	ControllerHuman         ControllerState = "human"
+	ControllerResumePending ControllerState = "resume_pending"
+)
+
+func (state ControllerState) Valid() bool {
+	switch state {
+	case ControllerAgent, ControllerHumanPending, ControllerHuman, ControllerResumePending:
+		return true
+	default:
+		return false
+	}
+}
+
+func (session Session) EffectiveController() ControllerState {
+	if session.Controller == "" {
+		return ControllerAgent
+	}
+	return session.Controller
+}
+
 const (
 	SessionOpening SessionState = "opening"
 	SessionReady   SessionState = "ready"
@@ -380,35 +405,47 @@ func (owner Owner) Equal(other Owner) bool {
 }
 
 type Session struct {
-	ID                   string       `json:"id"`
-	Owner                Owner        `json:"owner"`
-	Target               string       `json:"target"`
-	Profile              string       `json:"profile"`
-	State                SessionState `json:"state"`
-	DryRun               bool         `json:"dry_run"`
-	PolicyRevision       string       `json:"policy_revision"`
-	ControllerGeneration uint64       `json:"controller_generation"`
-	TabID                string       `json:"tab_id"`
-	SnapshotID           string       `json:"snapshot_id,omitempty"`
-	SnapshotGeneration   uint64       `json:"snapshot_generation"`
-	SnapshotOrigin       string       `json:"snapshot_origin,omitempty"`
-	Revision             uint64       `json:"revision"`
-	CreatedAt            int64        `json:"created_at"`
-	UpdatedAt            int64        `json:"updated_at"`
-	LastActivityAt       int64        `json:"last_activity_at"`
-	ExpiresAt            int64        `json:"expires_at"`
-	SafeFailure          string       `json:"safe_failure,omitempty"`
+	ID                   string          `json:"id"`
+	Owner                Owner           `json:"owner"`
+	Target               string          `json:"target"`
+	Profile              string          `json:"profile"`
+	State                SessionState    `json:"state"`
+	DryRun               bool            `json:"dry_run"`
+	PolicyRevision       string          `json:"policy_revision"`
+	ControllerGeneration uint64          `json:"controller_generation"`
+	Controller           ControllerState `json:"controller"`
+	ControllerExpiresAt  int64           `json:"controller_expires_at,omitempty"`
+	TabID                string          `json:"tab_id"`
+	SnapshotID           string          `json:"snapshot_id,omitempty"`
+	SnapshotGeneration   uint64          `json:"snapshot_generation"`
+	SnapshotOrigin       string          `json:"snapshot_origin,omitempty"`
+	Revision             uint64          `json:"revision"`
+	CreatedAt            int64           `json:"created_at"`
+	UpdatedAt            int64           `json:"updated_at"`
+	LastActivityAt       int64           `json:"last_activity_at"`
+	ExpiresAt            int64           `json:"expires_at"`
+	SafeFailure          string          `json:"safe_failure,omitempty"`
 }
 
 func (session Session) Validate() error {
 	if !validIdentifier(session.ID) || !validIdentifier(session.Target) ||
 		!validIdentifier(session.Profile) || !validIdentifier(session.PolicyRevision) ||
 		!session.State.Valid() || session.Owner.Validate() != nil ||
-		session.ControllerGeneration == 0 || !validIdentifier(session.TabID) || session.Revision == 0 ||
+		session.ControllerGeneration == 0 || !session.EffectiveController().Valid() ||
+		!validIdentifier(session.TabID) || session.Revision == 0 ||
 		session.CreatedAt <= 0 || session.UpdatedAt < session.CreatedAt ||
 		session.LastActivityAt < session.CreatedAt || session.LastActivityAt > session.UpdatedAt ||
 		session.ExpiresAt <= session.CreatedAt || len(session.SafeFailure) > MaxSafeFailureBytes {
 		return fmt.Errorf("%w: malformed session", ErrInvalid)
+	}
+	if session.EffectiveController() == ControllerAgent {
+		if session.ControllerExpiresAt != 0 {
+			return fmt.Errorf("%w: agent controller has an expiry", ErrInvalid)
+		}
+	} else if (session.State != SessionReady && session.State != SessionClosing) ||
+		session.ControllerExpiresAt <= session.UpdatedAt ||
+		session.ControllerExpiresAt > session.ExpiresAt {
+		return fmt.Errorf("%w: malformed human controller lease", ErrInvalid)
 	}
 	if (session.SnapshotID == "") != (session.SnapshotOrigin == "") ||
 		(session.SnapshotID != "" &&

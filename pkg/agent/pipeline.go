@@ -79,6 +79,7 @@ type ToolSuspensionRequest struct {
 	Origin           interactions.Origin
 	ApprovalAction   string
 	ExecutionContext *bus.InboundContext
+	Resolution       func(context.Context, interactions.Outcome) error
 }
 
 // ToolSuspensionDisposition distinguishes a durable handoff from a failure

@@ -203,6 +203,11 @@ type gatewayBrowserToolSource struct {
 	screenshotCopy      browserScreenshotCopyFunc
 	limits              config.BrowserLimitsConfig
 	downloadAvailable   bool
+	handoffAvailable    bool
+}
+
+func (source *gatewayBrowserToolSource) HandoffAvailable() bool {
+	return source != nil && source.handoffAvailable
 }
 
 func (source *gatewayBrowserToolSource) Available() bool {
@@ -244,6 +249,8 @@ func (source *gatewayBrowserToolSource) PassiveTargetDiagnostics(
 				Screenshot: source.ScreenshotAvailable(),
 				Upload:     uploadAvailable,
 				Download:   uploadAvailable && source.DownloadAvailable(),
+				HeadedView: source.HandoffAvailable(),
+				Handoff:    source.HandoffAvailable(),
 			}
 			for _, profile := range profiles {
 				readiness, err := broker.PassiveReadiness(ctx, target, profile)
@@ -253,6 +260,42 @@ func (source *gatewayBrowserToolSource) PassiveTargetDiagnostics(
 				result.Profiles[profile] = readiness
 			}
 			return result, nil
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) Handoff(
+	ctx context.Context, owner browser.Owner, sessionID string,
+) (browser.Session, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Session, error) {
+			return broker.Handoff(ctx, owner, sessionID)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) Resume(
+	ctx context.Context, owner browser.Owner, sessionID string,
+) (browser.Session, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Session, error) {
+			return broker.Resume(ctx, owner, sessionID)
+		},
+	)
+}
+
+func (source *gatewayBrowserToolSource) ReleaseHandoff(
+	ctx context.Context, owner browser.Owner, sessionID string,
+) (browser.Session, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.Session, error) {
+			return broker.ReleaseHandoff(ctx, owner, sessionID)
 		},
 	)
 }
@@ -471,6 +514,7 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 			),
 			limits:            reloadCfg.Tools.Browser.Limits.Effective(),
 			downloadAvailable: browser.PlaywrightDownloadAvailable(reloadCfg),
+			handoffAvailable:  browser.PlaywrightHandoffAvailable(reloadCfg),
 		}, nil
 	}
 	factories := map[string]agent.RuntimeToolFactory{

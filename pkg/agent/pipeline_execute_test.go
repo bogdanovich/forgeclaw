@@ -708,6 +708,97 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 	}
 }
 
+func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
+	newTool := func(called chan interactions.Outcome) *fixedToolResultTool {
+		return &fixedToolResultTool{name: "domain_suspension", result: &tools.ToolResult{
+			Silent: true,
+			Suspension: &interactions.SuspensionRequest{
+				Kind: interactions.KindQuestion, PromptSummary: "Release browser control", Timeout: time.Minute,
+				Questions: []interactions.Question{{
+					ID: "release", Header: "Browser control", Question: "Release browser control?",
+				}},
+			},
+			SuspensionResolution: func(_ context.Context, outcome interactions.Outcome) error {
+				called <- outcome
+				return nil
+			},
+		}}
+	}
+	t.Run("durable", func(t *testing.T) {
+		called := make(chan interactions.Outcome, 1)
+		tool := newTool(called)
+		registry := tools.NewToolRegistry()
+		registry.Register(tool)
+		agent := &AgentInstance{ID: "browser", Tools: registry, Sessions: session.NewSessionManager("")}
+		inbound := bus.InboundContext{
+			Channel: "telegram", Account: "primary", ChatID: "chat-domain", SenderID: "user-domain",
+		}
+		ts := &turnState{
+			agent: agent, agentID: agent.ID, turnID: "turn-domain", sessionKey: "session-domain",
+			channel: inbound.Channel, chatID: inbound.ChatID,
+			opts: processOptions{Dispatch: DispatchRequest{
+				SessionKey: "session-domain", InboundContext: &inbound,
+			}},
+		}
+		exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+		exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
+		exec.assistantToolCallsPersisted = true
+		manager := &fakeToolSuspensionManager{
+			disposition: ToolSuspensionDisposition{InteractionID: "interaction-domain", Durable: true},
+		}
+		pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
+		if outcome := pipeline.ExecuteTools(
+			t.Context(),
+			t.Context(),
+			ts,
+			exec,
+			1,
+		); outcome.Control != ToolControlSuspend {
+			t.Fatalf(
+				"control = %v, want suspend; requests=%#v messages=%#v",
+				outcome.Control,
+				manager.requests,
+				exec.messages,
+			)
+		}
+		if len(manager.requests) != 1 || manager.requests[0].Resolution == nil {
+			t.Fatalf("suspension requests = %#v", manager.requests)
+		}
+		if err := manager.requests[0].Resolution(t.Context(), interactions.OutcomeAnswered); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-called; got != interactions.OutcomeAnswered {
+			t.Fatalf("resolution outcome = %q", got)
+		}
+	})
+	t.Run("fallback", func(t *testing.T) {
+		called := make(chan interactions.Outcome, 1)
+		tool := newTool(called)
+		registry := tools.NewToolRegistry()
+		registry.Register(tool)
+		agent := &AgentInstance{ID: "browser", Tools: registry, Sessions: session.NewSessionManager("")}
+		ts := &turnState{
+			agent: agent, agentID: agent.ID, turnID: "turn-domain-fallback", sessionKey: "session-domain-fallback",
+			opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-domain-fallback"}},
+		}
+		exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+		exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
+		pipeline := &Pipeline{}
+		if outcome := pipeline.ExecuteTools(
+			t.Context(),
+			t.Context(),
+			ts,
+			exec,
+			1,
+		); outcome.Control != ToolControlContinue {
+			t.Fatalf("control = %v, want continue", outcome.Control)
+		}
+		if got := <-called; got != interactions.OutcomeCanceled {
+			t.Fatalf("fallback resolution outcome = %q", got)
+		}
+	})
+}
+
 func TestPipelineBindsToolOriginatedApprovalSuspensionToTrustedArguments(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	tool := &boundApprovalSuspensionTool{}

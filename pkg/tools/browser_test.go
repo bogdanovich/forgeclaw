@@ -10,6 +10,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/browser"
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
 )
 
 type fakeBrowserToolSource struct {
@@ -23,6 +24,9 @@ type fakeBrowserToolSource struct {
 	screenshotUnavailable bool
 	transferUnavailable   bool
 	downloadUnavailable   bool
+	handoffReady          bool
+	handoff               browser.Session
+	resume                browser.Session
 	prepare               browser.Preparation
 	execute               browser.Invocation
 	err                   error
@@ -58,6 +62,10 @@ func (source *fakeBrowserToolSource) ArtifactTransferAvailable() bool {
 
 func (source *fakeBrowserToolSource) DownloadAvailable() bool {
 	return source != nil && !source.downloadUnavailable
+}
+
+func (source *fakeBrowserToolSource) HandoffAvailable() bool {
+	return source != nil && source.handoffReady
 }
 
 func (source *fakeBrowserToolSource) ProfileAvailability(
@@ -114,8 +122,9 @@ func (source *fakeBrowserToolSource) PassiveTargetDiagnostics(
 	}
 	return BrowserTargetDiagnostics{
 		Profiles: byProfile, Screenshot: !source.screenshotUnavailable,
-		Upload:   !source.transferUnavailable,
-		Download: !source.transferUnavailable && !source.downloadUnavailable,
+		Upload:     !source.transferUnavailable,
+		Download:   !source.transferUnavailable && !source.downloadUnavailable,
+		HeadedView: source.handoffReady, Handoff: source.handoffReady,
 	}, nil
 }
 
@@ -126,6 +135,31 @@ func (source *fakeBrowserToolSource) Open(
 	source.openRequest = request
 	result := source.open
 	result.Owner = request.Owner
+	return result, source.err
+}
+
+func (source *fakeBrowserToolSource) Handoff(
+	_ context.Context, owner browser.Owner, _ string,
+) (browser.Session, error) {
+	result := source.handoff
+	result.Owner = owner
+	return result, source.err
+}
+
+func (source *fakeBrowserToolSource) Resume(
+	_ context.Context, owner browser.Owner, _ string,
+) (browser.Session, error) {
+	result := source.resume
+	result.Owner = owner
+	return result, source.err
+}
+
+func (source *fakeBrowserToolSource) ReleaseHandoff(
+	_ context.Context, owner browser.Owner, _ string,
+) (browser.Session, error) {
+	result := source.handoff
+	result.Owner = owner
+	result.Controller = browser.ControllerResumePending
 	return result, source.err
 }
 
@@ -377,6 +411,53 @@ func TestBrowserReadinessRankHasDeterministicFailClosedOrder(t *testing.T) {
 	}
 	if readinessRank("unexpected") != readinessRank(browser.ReadinessUnavailable) {
 		t.Fatal("unknown readiness did not fail closed")
+	}
+}
+
+func TestBrowserSessionHandoffSuspendsForRoutedHumanRelease(t *testing.T) {
+	source := &fakeBrowserToolSource{
+		available: true, handoffReady: true,
+		handoff: browser.Session{
+			ID: "browser_session_1", State: browser.SessionReady, Target: "gateway", Profile: "managed",
+			DryRun: true, Controller: browser.ControllerHuman, ControllerGeneration: 2,
+			ControllerExpiresAt: 200, TabID: "tab_primary", ExpiresAt: 300,
+		},
+		resume: browser.Session{
+			ID: "browser_session_1", State: browser.SessionReady, Target: "gateway", Profile: "managed",
+			DryRun: true, Controller: browser.ControllerAgent, ControllerGeneration: 3,
+			TabID: "tab_primary", ExpiresAt: 300,
+		},
+	}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &targets,
+	)
+	if len(targets.Targets) != 1 || !targets.Targets[0].Features.HeadedView ||
+		!targets.Targets[0].Features.Handoff {
+		t.Fatalf("handoff capabilities = %#v", targets)
+	}
+	tool := NewBrowserSessionTool(browserToolTestConfig(), source)
+	handoff := tool.Execute(browserToolTestContext(), map[string]any{
+		"operation": "handoff", "browser_session_id": "browser_session_1",
+	})
+	if handoff == nil || handoff.IsError || handoff.Suspension == nil || handoff.SuspensionResolution == nil ||
+		handoff.Suspension.Kind != interactions.KindQuestion || len(handoff.Suspension.Questions) != 1 ||
+		strings.Contains(strings.ToLower(handoff.ContentForLLM()), "token") {
+		t.Fatalf("handoff result = %#v", handoff)
+	}
+	var handoffView browserSessionView
+	decodeBrowserToolResult(t, handoff, &handoffView)
+	if handoffView.Controller != browser.ControllerHuman || handoffView.ControllerExpiresAt != 200 {
+		t.Fatalf("handoff view = %#v", handoffView)
+	}
+	if err := handoff.SuspensionResolution(t.Context(), interactions.OutcomeAnswered); err != nil {
+		t.Fatalf("handoff resolution error = %v", err)
+	}
+	resume := tool.Execute(browserToolTestContext(), map[string]any{
+		"operation": "resume", "browser_session_id": "browser_session_1",
+	})
+	if resume == nil || resume.IsError || resume.Suspension != nil {
+		t.Fatalf("resume result = %#v", resume)
 	}
 }
 

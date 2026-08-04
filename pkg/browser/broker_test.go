@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 type fakeWorker struct {
@@ -20,6 +21,35 @@ type fakeWorker struct {
 	status              WorkerStatus
 	statusErr           error
 	statusCalls         int
+	humanControl        bool
+	beginHumanCalls     int
+	endHumanCalls       int
+	beginHumanErr       error
+	endHumanErr         error
+}
+
+func (worker *fakeWorker) BeginHumanControl(context.Context) error {
+	worker.beginHumanCalls++
+	if worker.beginHumanErr != nil {
+		return worker.beginHumanErr
+	}
+	if worker.humanControl {
+		return ErrWorkerUnavailable
+	}
+	worker.humanControl = true
+	return nil
+}
+
+func (worker *fakeWorker) EndHumanControl(context.Context) error {
+	worker.endHumanCalls++
+	if worker.endHumanErr != nil {
+		return worker.endHumanErr
+	}
+	if !worker.humanControl {
+		return ErrWorkerUnavailable
+	}
+	worker.humanControl = false
+	return nil
 }
 
 func (worker *fakeWorker) Status(context.Context) (WorkerStatus, error) {
@@ -58,6 +88,26 @@ type failNextSessionUpdateStore struct {
 	failNext  bool
 	failAfter int
 	failState SessionState
+}
+
+type committedWarningSessionUpdateStore struct {
+	*MemoryStore
+	warnControllers map[ControllerState]int
+}
+
+func (store *committedWarningSessionUpdateStore) UpdateSession(
+	ctx context.Context,
+	expected uint64,
+	next Session,
+) error {
+	if err := store.MemoryStore.UpdateSession(ctx, expected, next); err != nil {
+		return err
+	}
+	if store.warnControllers[next.EffectiveController()] > 0 {
+		store.warnControllers[next.EffectiveController()]--
+		return &fileutil.CommittedWriteError{Err: errors.New("directory sync warning")}
+	}
+	return nil
 }
 
 func (store *failNextSessionUpdateStore) UpdateSession(

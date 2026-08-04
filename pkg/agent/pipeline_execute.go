@@ -865,6 +865,7 @@ toolLoop:
 		toolDuration := time.Since(toolStart)
 
 		if ts.hardAbortRequested() {
+			resolveCanceledToolSuspension(execCtx, toolResult)
 			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
 
@@ -884,12 +885,17 @@ toolLoop:
 						toolName = toolResp.Tool
 					}
 					if toolResp.Result != nil {
+						if toolResp.Result != toolResult {
+							resolveCanceledToolSuspension(execCtx, toolResult)
+						}
 						toolResult = toolResp.Result
 					}
 				}
 			case HookActionAbortTurn:
+				resolveCanceledToolSuspension(execCtx, toolResult)
 				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook}
 			case HookActionHardAbort:
+				resolveCanceledToolSuspension(execCtx, toolResult)
 				_ = ts.requestHardAbort()
 				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 			}
@@ -906,6 +912,7 @@ toolLoop:
 				toolResult,
 			)
 			if approvalErr != nil {
+				resolveCanceledToolSuspension(execCtx, toolResult)
 				if denial, safe := tools.SafeApprovalDenialResult(approvalErr); safe {
 					toolResult = denial
 				} else {
@@ -931,6 +938,9 @@ toolLoop:
 				}
 			}
 			toolResult = fallback
+		}
+		if toolResult != nil && toolResult.Suspension == nil {
+			resolveCanceledToolSuspension(execCtx, toolResult)
 		}
 		toolResult = normalizeToolResultForSyncDelivery(ts, toolResult)
 
@@ -1396,11 +1406,13 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	if result == nil || result.Suspension == nil {
 		return ToolControlContinue, false, result
 	}
+	resolveCanceled := func() { resolveCanceledToolSuspension(ctx, result) }
 
 	// A newer user message wins if it arrived before durable suspension. Pair
 	// every call in the current batch and let the next iteration reconcile it.
 	r.captureSteering(false)
 	if len(r.exec.pendingMessages) > 0 {
+		resolveCanceled()
 		r.appendToolMessage(providers.Message{
 			Role:       "tool",
 			Content:    queuedSteeringDeferredToolResult,
@@ -1417,6 +1429,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	}
 
 	fallback := func(message string) (ToolControl, bool, *tools.ToolResult) {
+		resolveCanceled()
 		return ToolControlContinue, false, tools.ErrorResult(message)
 	}
 	if r.ts == nil || r.ts.opts.NoHistory {
@@ -1470,6 +1483,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		Route:            route,
 		ApprovalAction:   strings.TrimSpace(approvalAction),
 		ExecutionContext: cloneInboundContext(inbound),
+		Resolution:       result.SuspensionResolution,
 		Origin: interactions.Origin{
 			TurnID:                 r.ts.turnID,
 			ExecutionID:            r.ts.executionID,
@@ -1517,6 +1531,17 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		},
 	)
 	return ToolControlSuspend, true, nil
+}
+
+func resolveCanceledToolSuspension(ctx context.Context, result *tools.ToolResult) {
+	if result == nil || result.SuspensionResolution == nil {
+		return
+	}
+	resolve := result.SuspensionResolution
+	result.SuspensionResolution = nil
+	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	_ = resolve(resolveCtx, interactions.OutcomeCanceled)
 }
 
 func (r *toolLoopRunner) appendSkippedToolMessage(

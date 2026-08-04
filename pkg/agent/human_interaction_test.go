@@ -606,6 +606,44 @@ func TestInteractionEventsProjectOwningTaskState(t *testing.T) {
 	}
 }
 
+func TestInteractionResolutionCallbackRunsOnceForTerminalHumanOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		event   interactions.EventType
+		outcome interactions.Outcome
+	}{
+		{name: "answered", event: interactions.EventAnswerClaimed, outcome: interactions.OutcomeAnswered},
+		{name: "timed out", event: interactions.EventAnswerClaimed, outcome: interactions.OutcomeTimedOut},
+		{name: "cancelled", event: interactions.EventCancelled, outcome: interactions.OutcomeCanceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			al := &AgentLoop{cfg: config.DefaultConfig()}
+			called := make(chan interactions.Outcome, 1)
+			al.interactionResolutions.Store(
+				"interaction-browser",
+				func(_ context.Context, outcome interactions.Outcome) error {
+					called <- outcome
+					return nil
+				},
+			)
+			observation := interactions.EventObservation{
+				Event:  interactions.Event{Type: test.event},
+				Record: interactions.Record{ID: "interaction-browser", Outcome: test.outcome},
+			}
+			al.observeInteractionEvent(t.TempDir(), observation)
+			if got := <-called; got != test.outcome {
+				t.Fatalf("resolution outcome = %q, want %q", got, test.outcome)
+			}
+			al.observeInteractionEvent(t.TempDir(), observation)
+			select {
+			case duplicate := <-called:
+				t.Fatalf("duplicate resolution = %q", duplicate)
+			default:
+			}
+		})
+	}
+}
+
 func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()

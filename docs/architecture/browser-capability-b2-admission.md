@@ -102,11 +102,17 @@ invocation, capture bytes, or change controller state.
 1. The specialist requests handoff for one ready session.
 2. The broker pauses agent mutations, records the controller transition, and
    invalidates all observations and prepared actions.
-3. The authenticated operator receives a short-lived view through routed
-   delivery. The model receives only redacted handoff state, never the view
-   token, provider credential, proxy address, or CDP endpoint.
+3. The initial gateway implementation routes a durable question to the
+   authenticated operator and directs that operator to the already visible,
+   local headed browser window. It does not create a remote view credential.
+   The model receives only redacted controller state, never a provider
+   credential, proxy address, browser path, or CDP endpoint.
 4. Exactly one human controller may interact while the session is handed off.
-5. Release, expiry, disconnect, or explicit cancellation revokes view access.
+5. The routed release answer is the trusted local operator's attestation that
+   physical interaction has stopped. The broker ends human-control mode but
+   keeps agent authority paused until a separate resume. Expiry, cancellation,
+   interaction failure, or gateway restart closes or loses the session instead
+   of restoring agent authority.
 6. Resume succeeds only after human control is released, rotates the snapshot
    generation, and requires a new observation before any agent action.
 
@@ -167,10 +173,20 @@ their absence is not inferred from a failed model action.
 
 ### `browser_session`
 
-The existing operation enum gains `handoff` and `resume`. Handoff's sensitive
-operator view material is routed outside model-visible JSON. Status reports
-only `agent`, `human_pending`, `human`, `resume_pending`, or terminal
+The existing operation enum gains `handoff` and `resume`. Handoff creates a
+durable routed release question but no view token or provider URL. The initial
+implementation is available only when the gateway owns a local headed browser;
+headless and extension-attached drivers report handoff as unsupported. Status
+reports only `agent`, `human_pending`, `human`, `resume_pending`, or terminal
 controller state plus bounded expiry and recovery guidance.
+
+The local headed slice assumes the authenticated operator already controls the
+gateway desktop. MintClaw can prevent its own browser worker from issuing
+actions, but it cannot revoke that operator's operating-system input while the
+window remains open. The explicit release answer is therefore the trust
+boundary. Expiry or cancellation closes the browser session. A remote view
+provider must enforce access revocation technically before it can advertise
+the same handoff capability.
 
 No new generic browser, filesystem, media, or computer tool is admitted.
 
@@ -251,10 +267,15 @@ worker. Only then may it publish `agent`, increment the snapshot generation,
 and require a fresh observation. If release is uncertain, resume returns a
 bounded unknown/lost result and keeps agent mutation denied.
 
-Gateway restart, worker loss, token expiry, and operator disconnect reconcile
-to one of two safe outcomes: exclusive human control with a bounded expiry, or
-no controller with the session closed/lost. Recovery never assumes agent
-control merely because an in-memory view record disappeared.
+Gateway restart, worker loss, controller-lease expiry, routed interaction
+cancellation, and release failure reconcile to a closed/lost session. Recovery
+never assumes agent control merely because an in-memory interaction callback
+or worker record disappeared.
+
+Authenticated remote live view is deferred to a separate provider or companion
+slice. It must preserve this controller state machine and add explicit view
+credential issuance, routing, expiry, revocation, and disconnect evidence; it
+must not expose raw CDP or generic computer control.
 
 ## Dependency-Ordered Delivery
 

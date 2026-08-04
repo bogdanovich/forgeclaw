@@ -454,10 +454,18 @@ invocation, retry a tool, or retain an artifact.
 
 - pauses agent mutation authority;
 - records a controller transition;
-- creates a short-lived authenticated local or proxied view;
+- routes a durable release question to the authenticated operator;
+- admits the initial implementation only for an already visible local headed
+  browser and creates no remote view credential;
 - invalidates element refs, frame IDs, and prepared actions;
 - allows explicit human interaction without revealing provider or CDP
   credentials.
+
+For the local headed slice, the authenticated release answer is the operator's
+attestation that physical input has stopped; MintClaw blocks its own worker but
+does not sandbox a trusted desktop operator. Expiry or cancellation closes the
+session. A remote provider must prove technical view revocation before it can
+advertise handoff.
 
 `resume`:
 
@@ -465,6 +473,11 @@ invocation, retry a tool, or retain an artifact.
 - restores the agent controller only after the human releases control;
 - produces a fresh snapshot generation;
 - does not treat the human's actions as approval for a later agent commit.
+
+An authenticated remote or companion-hosted view is a later slice. It must
+reuse the same exclusive controller transitions and add bounded issuance,
+revocation, expiry, disconnect, and routing evidence without exposing CDP or a
+generic computer-control surface.
 
 ### Suggested delivery sequence
 

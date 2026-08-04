@@ -100,7 +100,7 @@ func (store *MemoryStore) UpdateSession(_ context.Context, expected uint64, next
 	if current.Owner != next.Owner || current.Target != next.Target ||
 		current.Profile != next.Profile || current.CreatedAt != next.CreatedAt ||
 		current.DryRun != next.DryRun || current.PolicyRevision != next.PolicyRevision ||
-		current.ControllerGeneration != next.ControllerGeneration || current.TabID != next.TabID ||
+		!validControllerTransition(current, next) || current.TabID != next.TabID ||
 		current.ExpiresAt != next.ExpiresAt ||
 		!validSnapshotTransition(current, next) ||
 		!validSessionTransition(current.State, next.State) {
@@ -108,6 +108,43 @@ func (store *MemoryStore) UpdateSession(_ context.Context, expected uint64, next
 	}
 	store.sessions[next.ID] = next
 	return nil
+}
+
+func validControllerTransition(current, next Session) bool {
+	currentController, nextController := current.EffectiveController(), next.EffectiveController()
+	if next.ControllerGeneration < current.ControllerGeneration {
+		return false
+	}
+	if (next.State == SessionClosing || next.State.Terminal()) && nextController == ControllerAgent {
+		increment := uint64(0)
+		if currentController != ControllerAgent {
+			increment = 1
+		}
+		return next.ControllerGeneration == current.ControllerGeneration+increment &&
+			next.ControllerExpiresAt == 0
+	}
+	if currentController == nextController {
+		return next.ControllerGeneration == current.ControllerGeneration &&
+			next.ControllerExpiresAt == current.ControllerExpiresAt
+	}
+	switch currentController {
+	case ControllerAgent:
+		return nextController == ControllerHumanPending &&
+			next.ControllerGeneration == current.ControllerGeneration+1 && next.ControllerExpiresAt > 0
+	case ControllerHumanPending:
+		return nextController == ControllerHuman &&
+			next.ControllerGeneration == current.ControllerGeneration &&
+			next.ControllerExpiresAt == current.ControllerExpiresAt
+	case ControllerHuman:
+		return nextController == ControllerResumePending &&
+			next.ControllerGeneration == current.ControllerGeneration &&
+			next.ControllerExpiresAt == current.ControllerExpiresAt
+	case ControllerResumePending:
+		return nextController == ControllerAgent &&
+			next.ControllerGeneration == current.ControllerGeneration+1 && next.ControllerExpiresAt == 0
+	default:
+		return false
+	}
 }
 
 func validSnapshotTransition(current, next Session) bool {
@@ -155,7 +192,8 @@ func (store *MemoryStore) CreatePreparation(
 		return ErrConflict
 	}
 	session, ok := store.sessions[prepared.SessionID]
-	if !ok || !session.Owner.Equal(prepared.Owner) || session.State != SessionReady {
+	if !ok || !session.Owner.Equal(prepared.Owner) || session.State != SessionReady ||
+		session.EffectiveController() != ControllerAgent {
 		return ErrDenied
 	}
 	store.prepared[prepared.ID] = prepared
@@ -182,7 +220,8 @@ func (store *MemoryStore) CreateInvocation(_ context.Context, invocation Invocat
 		}
 	}
 	session, ok := store.sessions[invocation.SessionID]
-	if !ok || !session.Owner.Equal(invocation.Owner) || session.State != SessionReady {
+	if !ok || !session.Owner.Equal(invocation.Owner) || session.State != SessionReady ||
+		session.EffectiveController() != ControllerAgent {
 		return ErrDenied
 	}
 	invocation.TerminalResult = cloneBytes(invocation.TerminalResult)

@@ -35,6 +35,12 @@ type Worker interface {
 	Close(context.Context) error
 }
 
+type HumanControllerWorker interface {
+	Worker
+	BeginHumanControl(context.Context) error
+	EndHumanControl(context.Context) error
+}
+
 type ActionWorker interface {
 	Worker
 	Observe(context.Context) (DriverObservation, error)
@@ -256,7 +262,8 @@ func (broker *Broker) Open(ctx context.Context, request OpenRequest) (Session, e
 	session := Session{
 		ID: id, Owner: request.Owner, Target: request.Target, Profile: request.Profile,
 		State: SessionOpening, DryRun: profile.DryRun, PolicyRevision: broker.policyRevision,
-		ControllerGeneration: 1, TabID: "tab_primary", Revision: 1, CreatedAt: now.UnixNano(),
+		ControllerGeneration: 1, Controller: ControllerAgent,
+		TabID: "tab_primary", Revision: 1, CreatedAt: now.UnixNano(),
 		UpdatedAt: now.UnixNano(), LastActivityAt: now.UnixNano(),
 		ExpiresAt: now.Add(time.Duration(limits.SessionSeconds) * time.Second).UnixNano(),
 	}
@@ -560,6 +567,181 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	return session, nil
 }
 
+// Handoff durably removes agent authority before enabling local human input.
+// The controller lease is bounded by the prepared-action window and the
+// session lifetime. No view credential crosses this broker boundary.
+func (broker *Broker) Handoff(ctx context.Context, owner Owner, sessionID string) (Session, error) {
+	if owner.Validate() != nil || !validIdentifier(sessionID) {
+		return Session{}, ErrInvalid
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	session, err := broker.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !session.Owner.Equal(owner) {
+		return Session{}, ErrNotFound
+	}
+	if session.State != SessionReady || session.EffectiveController() != ControllerAgent {
+		return Session{}, ErrConflict
+	}
+	now := broker.now().UTC()
+	if broker.sessionExpired(session, now) {
+		return broker.finishSessionLocked(ctx, session, SessionExpired, "")
+	}
+	slot := broker.slots[session.ID]
+	worker, ok := slotWorker(slot).(HumanControllerWorker)
+	if !ok || slot.safeFailure != "" {
+		return Session{}, ErrDriverIncompatible
+	}
+	if err = broker.terminateInvocationsLocked(ctx, session.ID, "controller_changed"); err != nil {
+		return Session{}, err
+	}
+	pending := session
+	pending.Controller = ControllerHumanPending
+	pending.ControllerGeneration++
+	pending.ControllerExpiresAt = now.Add(
+		time.Duration(broker.config.Limits.Effective().PreparedSeconds) * time.Second,
+	).UnixNano()
+	if pending.ControllerExpiresAt > pending.ExpiresAt {
+		pending.ControllerExpiresAt = pending.ExpiresAt
+	}
+	clearSessionSnapshot(&pending)
+	pending.Revision++
+	pending.UpdatedAt = timestampAtLeast(now.UnixNano(), pending.UpdatedAt)
+	pending.LastActivityAt = pending.UpdatedAt
+	if pending, err = broker.updateSessionExact(ctx, session.Revision, pending); err != nil {
+		return Session{}, err
+	}
+	slot.refs, slot.inputs, slot.uploads = nil, nil, nil
+	if err = worker.BeginHumanControl(ctx); err != nil {
+		failed, finishErr := broker.finishSessionLocked(
+			context.WithoutCancel(ctx), pending, SessionLost, "handoff_failed",
+		)
+		return failed, errors.Join(err, finishErr)
+	}
+	human := pending
+	human.Controller = ControllerHuman
+	human.Revision++
+	human.UpdatedAt = timestampAtLeast(broker.now().UTC().UnixNano(), human.UpdatedAt)
+	if human, err = broker.updateSessionExact(ctx, pending.Revision, human); err != nil {
+		_, finishErr := broker.finishSessionLocked(context.WithoutCancel(ctx), pending, SessionLost, "handoff_failed")
+		return Session{}, errors.Join(err, finishErr)
+	}
+	return human, nil
+}
+
+// ReleaseHandoff records the authenticated local operator's release and ends
+// the worker's human-control mode. Agent authority remains paused until a
+// separate Resume call.
+func (broker *Broker) ReleaseHandoff(ctx context.Context, owner Owner, sessionID string) (Session, error) {
+	if owner.Validate() != nil || !validIdentifier(sessionID) {
+		return Session{}, ErrInvalid
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	session, err := broker.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !session.Owner.Equal(owner) {
+		return Session{}, ErrNotFound
+	}
+	if session.State != SessionReady || session.Controller != ControllerHuman {
+		return Session{}, ErrConflict
+	}
+	if broker.sessionExpired(session, broker.now().UTC()) {
+		return broker.finishSessionLocked(ctx, session, SessionExpired, "")
+	}
+	slot := broker.slots[session.ID]
+	worker, ok := slotWorker(slot).(HumanControllerWorker)
+	if !ok || slot.safeFailure != "" {
+		return Session{}, ErrDriverIncompatible
+	}
+	pending := session
+	pending.Controller = ControllerResumePending
+	pending.Revision++
+	pending.UpdatedAt = timestampAtLeast(broker.now().UTC().UnixNano(), pending.UpdatedAt)
+	if pending, err = broker.updateSessionExact(ctx, session.Revision, pending); err != nil {
+		return Session{}, err
+	}
+	if err = worker.EndHumanControl(ctx); err != nil {
+		failed, finishErr := broker.finishSessionLocked(
+			context.WithoutCancel(ctx), pending, SessionLost, "resume_failed",
+		)
+		return failed, errors.Join(err, finishErr)
+	}
+	return pending, nil
+}
+
+// Resume restores agent authority only after routed human release has already
+// revoked local input. It rotates controller generation and requires a fresh
+// observation.
+func (broker *Broker) Resume(ctx context.Context, owner Owner, sessionID string) (Session, error) {
+	if owner.Validate() != nil || !validIdentifier(sessionID) {
+		return Session{}, ErrInvalid
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	pending, err := broker.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !pending.Owner.Equal(owner) {
+		return Session{}, ErrNotFound
+	}
+	if pending.State != SessionReady || pending.Controller != ControllerResumePending {
+		return Session{}, ErrConflict
+	}
+	if broker.sessionExpired(pending, broker.now().UTC()) {
+		return broker.finishSessionLocked(ctx, pending, SessionExpired, "")
+	}
+	resumed := pending
+	resumed.Controller = ControllerAgent
+	resumed.ControllerExpiresAt = 0
+	resumed.ControllerGeneration++
+	clearSessionSnapshot(&resumed)
+	resumed.Revision++
+	resumed.UpdatedAt = timestampAtLeast(broker.now().UTC().UnixNano(), resumed.UpdatedAt)
+	resumed.LastActivityAt = resumed.UpdatedAt
+	if resumed, err = broker.updateSessionExact(ctx, pending.Revision, resumed); err != nil {
+		_, finishErr := broker.finishSessionLocked(context.WithoutCancel(ctx), pending, SessionLost, "resume_failed")
+		return Session{}, errors.Join(err, finishErr)
+	}
+	return resumed, nil
+}
+
+func slotWorker(slot *workerSlot) Worker {
+	if slot == nil {
+		return nil
+	}
+	return slot.worker
+}
+
+// updateSessionExact treats an explicitly reported committed-write warning as
+// success only when a read-back proves that the exact intended revision is
+// durable. This prevents an ambiguous controller transition from enabling
+// both the agent and the human or stranding either controller indefinitely.
+func (broker *Broker) updateSessionExact(
+	ctx context.Context,
+	expected uint64,
+	next Session,
+) (Session, error) {
+	err := broker.store.UpdateSession(ctx, expected, next)
+	if err == nil {
+		return next, nil
+	}
+	if !fileutil.IsCommittedWriteError(err) {
+		return Session{}, err
+	}
+	current, getErr := broker.store.GetSession(context.WithoutCancel(ctx), next.ID)
+	if getErr == nil && current == next {
+		return current, nil
+	}
+	return Session{}, errors.Join(err, getErr)
+}
+
 // Touch records activity after an admitted observe or action. Status and
 // discovery deliberately do not renew the idle deadline.
 func (broker *Broker) Touch(ctx context.Context, owner Owner, sessionID string) (Session, error) {
@@ -578,7 +760,8 @@ func (broker *Broker) Touch(ctx context.Context, owner Owner, sessionID string) 
 	if !session.Owner.Equal(owner) {
 		return Session{}, ErrNotFound
 	}
-	if session.State != SessionReady || broker.slots[session.ID] == nil {
+	if session.State != SessionReady || session.EffectiveController() != ControllerAgent ||
+		broker.slots[session.ID] == nil {
 		return Session{}, ErrWorkerUnavailable
 	}
 	if session.PolicyRevision != broker.policyRevision {
@@ -649,6 +832,11 @@ func (broker *Broker) Recover(ctx context.Context, verifiers ...DownloadRecovery
 		}
 		now := timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
 		session.State = SessionLost
+		if session.EffectiveController() != ControllerAgent {
+			session.Controller = ControllerAgent
+			session.ControllerExpiresAt = 0
+			session.ControllerGeneration++
+		}
 		clearSessionSnapshot(&session)
 		session.SafeFailure = "gateway_restarted"
 		session.Revision++
@@ -773,6 +961,11 @@ func (broker *Broker) finishSessionLocked(
 	}
 	if session.State != SessionClosing {
 		session.State = SessionClosing
+		if session.EffectiveController() != ControllerAgent {
+			session.Controller = ControllerAgent
+			session.ControllerExpiresAt = 0
+			session.ControllerGeneration++
+		}
 		session.Revision++
 		session.UpdatedAt = broker.now().UTC().UnixNano()
 		if err := broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
@@ -835,6 +1028,9 @@ func terminalInvocationFailure(state SessionState, safeFailure string) string {
 
 func (broker *Broker) sessionExpired(session Session, now time.Time) bool {
 	if now.UnixNano() >= session.ExpiresAt {
+		return true
+	}
+	if session.EffectiveController() != ControllerAgent && now.UnixNano() >= session.ControllerExpiresAt {
 		return true
 	}
 	idle := time.Duration(broker.config.Limits.Effective().IdleSeconds) * time.Second
@@ -922,7 +1118,8 @@ func (broker *Broker) executePreparedLocked(
 		return broker.completeInvocationLocked(ctx, invocation, InvocationCanceled, nil, "invocation_expired")
 	}
 	session, err := broker.store.GetSession(ctx, invocation.SessionID)
-	if err != nil || session.State != SessionReady || !session.Owner.Equal(owner) {
+	if err != nil || session.State != SessionReady || session.EffectiveController() != ControllerAgent ||
+		!session.Owner.Equal(owner) {
 		return Invocation{}, ErrWorkerUnavailable
 	}
 	if session.PolicyRevision != broker.policyRevision {
