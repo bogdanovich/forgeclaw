@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -360,7 +361,8 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
 	driverOutputDir := args[9]
-	if info, statErr := os.Lstat(driverOutputDir); statErr != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+	if info, statErr := os.Lstat(driverOutputDir); statErr != nil || !info.IsDir() ||
+		(runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 		t.Fatalf("private output directory = %q, %#v, %v", driverOutputDir, info, statErr)
 	}
 	if status, statusErr := worker.Status(context.Background()); statusErr != nil || status != WorkerReady {
