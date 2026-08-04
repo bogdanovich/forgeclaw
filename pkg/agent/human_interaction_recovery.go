@@ -75,19 +75,13 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 						recovered++
 					}
 				} else if record.DeliveryTries >= interactions.MaxDeliveryAttempts {
-					if _, err := registry.Fail(
-						record.ID,
-						record.Revision,
-						"prompt_delivery_exhausted",
-						"prompt delivery exhausted its bounded retry budget",
-					); err == nil {
+					if al.recoverPromptDeliveryExhaustion(
+						ctx,
+						workspace,
+						registry,
+						record,
+					) {
 						recovered++
-						_ = al.drainDeferredInteractionIngress(
-							ctx,
-							workspace,
-							record.Route,
-							inboundContextForInteraction(record.Route),
-						)
 					}
 				} else if al.retryInteractionPrompt(ctx, registry, record) {
 					recovered++
@@ -159,6 +153,68 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 		return true
 	})
 	return recovered
+}
+
+func (al *AgentLoop) recoverPromptDeliveryExhaustion(
+	ctx context.Context,
+	workspace string,
+	registry *interactions.Registry,
+	record interactions.Record,
+) bool {
+	agentRegistry := al.GetRegistry()
+	if agentRegistry == nil {
+		return false
+	}
+	agent, ok := agentRegistry.GetAgent(record.Route.AgentID)
+	if !ok || agent == nil || (record.Origin.TaskID == "" &&
+		strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace)) {
+		return false
+	}
+	routeSessionKey := record.Route.RouteSessionKey
+	if routeSessionKey == "" {
+		routeSessionKey = record.Route.SessionKey
+	}
+	target := &inboundDispatchTarget{
+		Agent:         agent,
+		RouteClaimKey: runtimeRouteClaimKey(routeSessionKey, ""),
+		Allocation: session.Allocation{
+			RouteScopeKey: routeSessionKey,
+			SessionKey:    record.Route.SessionKey,
+		},
+		SessionKey: record.Route.SessionKey,
+	}
+	claim, _, claimed := al.claimRuntimeRouteSession(
+		target,
+		fmt.Sprintf("pending-interaction-prompt-exhaustion-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+	)
+	if !claimed {
+		return false
+	}
+	defer claim.releaseIfOwned()
+	const failureCode = "prompt_delivery_exhausted"
+	if err := al.ensureInteractionCancellationToolResult(
+		ctx,
+		al.interactionContinuationAgent(record, agent),
+		record,
+		failureCode,
+	); err != nil {
+		return false
+	}
+	if _, err := registry.Fail(
+		record.ID,
+		record.Revision,
+		failureCode,
+		"prompt delivery exhausted its bounded retry budget",
+	); err != nil {
+		return false
+	}
+	_ = al.drainDeferredInteractionIngress(
+		ctx,
+		workspace,
+		record.Route,
+		inboundContextForInteraction(record.Route),
+	)
+	return true
 }
 
 func (al *AgentLoop) loadCatalogedInteractionRegistries() {
