@@ -28,6 +28,8 @@ const (
 	BrowserMaxActionSeconds     = 60
 	BrowserMaxSnapshotBytes     = 256 * 1024
 	BrowserMaxScreenshotBytes   = 8 * 1024 * 1024
+	BrowserMaxUploadBytes       = 32 * 1024 * 1024
+	BrowserMaxDownloadBytes     = 32 * 1024 * 1024
 	BrowserMaxSnapshotRefs      = 500
 	BrowserMaxTextInputBytes    = 16 * 1024
 	BrowserMaxToolResultBytes   = 320 * 1024
@@ -119,6 +121,8 @@ type BrowserLimitsConfig struct {
 	ActionSeconds   int `json:"action_seconds,omitempty"    yaml:"-"`
 	SnapshotBytes   int `json:"snapshot_bytes,omitempty"    yaml:"-"`
 	ScreenshotBytes int `json:"screenshot_bytes,omitempty"  yaml:"-"`
+	UploadBytes     int `json:"upload_bytes,omitempty"      yaml:"-"`
+	DownloadBytes   int `json:"download_bytes,omitempty"    yaml:"-"`
 	SnapshotRefs    int `json:"snapshot_refs,omitempty"     yaml:"-"`
 	TextInputBytes  int `json:"text_input_bytes,omitempty"  yaml:"-"`
 	ToolResultBytes int `json:"tool_result_bytes,omitempty" yaml:"-"`
@@ -135,6 +139,8 @@ func (limits BrowserLimitsConfig) Effective() BrowserLimitsConfig {
 		ActionSeconds:   effectiveBrowserLimit(limits.ActionSeconds, BrowserMaxActionSeconds),
 		SnapshotBytes:   effectiveBrowserLimit(limits.SnapshotBytes, BrowserMaxSnapshotBytes),
 		ScreenshotBytes: effectiveBrowserLimit(limits.ScreenshotBytes, BrowserMaxScreenshotBytes),
+		UploadBytes:     effectiveBrowserLimit(limits.UploadBytes, BrowserMaxUploadBytes),
+		DownloadBytes:   effectiveBrowserLimit(limits.DownloadBytes, BrowserMaxDownloadBytes),
 		SnapshotRefs:    effectiveBrowserLimit(limits.SnapshotRefs, BrowserMaxSnapshotRefs),
 		TextInputBytes:  effectiveBrowserLimit(limits.TextInputBytes, BrowserMaxTextInputBytes),
 		ToolResultBytes: effectiveBrowserLimit(limits.ToolResultBytes, BrowserMaxToolResultBytes),
@@ -525,6 +531,8 @@ func validateBrowserLimits(limits BrowserLimitsConfig) error {
 		{"action_seconds", limits.ActionSeconds, BrowserMaxActionSeconds},
 		{"snapshot_bytes", limits.SnapshotBytes, BrowserMaxSnapshotBytes},
 		{"screenshot_bytes", limits.ScreenshotBytes, BrowserMaxScreenshotBytes},
+		{"upload_bytes", limits.UploadBytes, BrowserMaxUploadBytes},
+		{"download_bytes", limits.DownloadBytes, BrowserMaxDownloadBytes},
 		{"snapshot_refs", limits.SnapshotRefs, BrowserMaxSnapshotRefs},
 		{"text_input_bytes", limits.TextInputBytes, BrowserMaxTextInputBytes},
 		{"tool_result_bytes", limits.ToolResultBytes, BrowserMaxToolResultBytes},

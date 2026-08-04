@@ -33,6 +33,7 @@ type BrowserToolSource interface {
 	LookupScreenshot(context.Context, browser.Owner, string, string) (browser.ScreenshotArtifact, bool, error)
 	CaptureScreenshot(context.Context, browser.ScreenshotRequest) (browser.ScreenshotArtifact, error)
 	ClaimScreenshotDelivery(context.Context, browser.ScreenshotDeliveryRequest) error
+	ClaimDownloadDelivery(context.Context, browser.DownloadDeliveryRequest) error
 	PrepareAction(context.Context, browser.PrepareActionRequest) (browser.Preparation, error)
 	ExecuteAction(context.Context, browser.Owner, string, *browser.ApprovalBinding) (browser.Invocation, error)
 }
@@ -133,6 +134,8 @@ type browserTargetView struct {
 
 type browserFeatureView struct {
 	Screenshot bool `json:"screenshot"`
+	Upload     bool `json:"upload"`
+	Download   bool `json:"download"`
 }
 
 type browserProfileView struct {
@@ -148,6 +151,8 @@ type browserLimitsView struct {
 	Tabs            int `json:"tabs"`
 	SnapshotBytes   int `json:"snapshot_bytes"`
 	ScreenshotBytes int `json:"screenshot_bytes"`
+	UploadBytes     int `json:"upload_bytes"`
+	DownloadBytes   int `json:"download_bytes"`
 }
 
 func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *ToolResult {
@@ -206,11 +211,17 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 			Actions: []browser.ActionKind{
 				browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
 				browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
+				browser.ActionUpload, browser.ActionDownload,
 			},
-			Features: browserFeatureView{Screenshot: tool.runtime.source.ScreenshotAvailable()},
+			Features: browserFeatureView{
+				Screenshot: tool.runtime.source.ScreenshotAvailable(),
+				Upload:     runtimeAvailable,
+				Download:   runtimeAvailable,
+			},
 			Limits: browserLimitsView{
 				Sessions: limits.Sessions, Tabs: limits.Tabs, SnapshotBytes: limits.SnapshotBytes,
-				ScreenshotBytes: limits.ScreenshotBytes,
+				ScreenshotBytes: limits.ScreenshotBytes, UploadBytes: limits.UploadBytes,
+				DownloadBytes: limits.DownloadBytes,
 			},
 		})
 	}
@@ -535,14 +546,16 @@ func (tool *BrowserActTool) Parameters() map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"kind": map[string]any{"type": "string", "enum": []string{
-						"navigate", "click", "fill", "select", "press", "scroll", "dialog",
+						"navigate", "click", "fill", "select", "press", "scroll", "dialog", "upload", "download",
 					}},
 					"url": map[string]any{"type": "string"}, "ref": map[string]any{"type": "string"},
-					"value":     map[string]any{"type": "string", "maxLength": limits.TextInputBytes},
-					"key":       map[string]any{"type": "string"},
-					"direction": map[string]any{"type": "string", "enum": []string{"up", "down"}},
-					"amount":    map[string]any{"type": "integer"},
-					"decision":  map[string]any{"type": "string", "enum": []string{"accept", "dismiss"}},
+					"value":        map[string]any{"type": "string", "maxLength": limits.TextInputBytes},
+					"key":          map[string]any{"type": "string"},
+					"direction":    map[string]any{"type": "string", "enum": []string{"up", "down"}},
+					"amount":       map[string]any{"type": "integer"},
+					"decision":     map[string]any{"type": "string", "enum": []string{"accept", "dismiss"}},
+					"artifact_ref": map[string]any{"type": "string"},
+					"deliver":      map[string]any{"type": "boolean"},
 				},
 				"required": []string{"kind"}, "additionalProperties": false,
 			},
@@ -573,11 +586,12 @@ func (tool *BrowserActTool) ApprovalArguments(ctx context.Context, args map[stri
 }
 
 type browserActionResult struct {
-	InvocationID string                  `json:"invocation_id"`
-	Effect       browser.Effect          `json:"effect"`
-	State        browser.InvocationState `json:"state"`
-	Reason       string                  `json:"reason,omitempty"`
-	Observation  *browserObservationView `json:"observation,omitempty"`
+	InvocationID string                    `json:"invocation_id"`
+	Effect       browser.Effect            `json:"effect"`
+	State        browser.InvocationState   `json:"state"`
+	Reason       string                    `json:"reason,omitempty"`
+	Observation  *browserObservationView   `json:"observation,omitempty"`
+	Artifact     *browser.DownloadArtifact `json:"artifact,omitempty"`
 }
 
 func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -625,6 +639,7 @@ func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *T
 		InvocationID: invocation.ID, Effect: invocation.Effect,
 		State: invocation.State, Reason: invocation.SafeFailure,
 	}
+	result.Artifact = invocation.Download
 	if invocation.State == browser.InvocationSucceeded {
 		observation, observeErr := tool.runtime.source.Observe(
 			ctx, owner, invocation.SessionID, preparation.Action.TabID,
@@ -634,7 +649,35 @@ func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *T
 			result.Observation = &view
 		}
 	}
-	return tool.runtime.result(result)
+	toolResult := tool.runtime.result(result)
+	if invocation.Download == nil || !invocation.Download.Deliver {
+		return toolResult
+	}
+	artifact := invocation.Download
+	if artifact.MediaRef == "" || artifact.Recovery == nil ||
+		(artifact.DeliveryState != browser.ScreenshotDeliveryPending &&
+			artifact.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed) {
+		return browserErrorResult(
+			"delivery_unavailable", "Browser download delivery is unavailable.", "retry_from_a_routed_turn",
+		)
+	}
+	recovery := artifact.Recovery
+	delivery := browser.DownloadDeliveryRequest{
+		Owner: owner, RequestID: preparation.Action.RequestID, SessionID: artifact.SessionID,
+		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: recovery,
+	}
+	return toolResult.WithOutboundDelivery(OutboundDelivery{
+		Media: []bus.MediaPart{{
+			Type: "file", Ref: artifact.MediaRef, Filename: artifact.Filename, ContentType: artifact.ContentType,
+		}},
+		Recovery: &bus.OutboundRecovery{
+			Kind: bus.OutboundRecoveryBrowserDownload, ArtifactRef: artifact.Ref, MediaRef: artifact.MediaRef,
+			WorkspaceID: recovery.WorkspaceID, AgentID: recovery.AgentID, ActorID: recovery.ActorID,
+			RouteID: recovery.RouteID, SessionID: recovery.SessionID, ToolCallID: recovery.ToolCallID,
+		},
+	}).WithOutboundCommit(func(commitCtx context.Context) error {
+		return tool.runtime.source.ClaimDownloadDelivery(commitCtx, delivery)
+	}).WithImmediateDelivery()
 }
 
 func browserPostActionStateError(invocation browser.Invocation, quarantined bool) *ToolResult {
@@ -667,6 +710,9 @@ func (tool *BrowserActTool) prepare(ctx context.Context, args map[string]any) (b
 	action, err := browserActionFromArgs(args["action"])
 	if err != nil {
 		return browser.Preparation{}, err
+	}
+	if action.Kind == browser.ActionDownload && action.Deliver && !ToolRecoverableOutbound(ctx) {
+		return browser.Preparation{}, browser.ErrDenied
 	}
 	sessionID, sessionOK := args["browser_session_id"].(string)
 	tabID, tabOK := args["tab_id"].(string)
@@ -701,6 +747,8 @@ func browserActionFromArgs(raw any) (browser.Action, error) {
 	action.Key, _ = args["key"].(string)
 	action.Direction, _ = args["direction"].(string)
 	action.Decision, _ = args["decision"].(string)
+	action.ArtifactRef, _ = args["artifact_ref"].(string)
+	action.Deliver, _ = args["deliver"].(bool)
 	amount, amountOK := browserInteger(args["amount"])
 	if _, present := args["amount"]; present && !amountOK {
 		return browser.Action{}, browser.ErrInvalid

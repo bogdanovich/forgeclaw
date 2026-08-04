@@ -12,6 +12,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/browser"
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
@@ -103,6 +104,67 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	capture.Data = append(capture.Data, 0)
 	if _, err = source.retainScreenshot(ctx, request, capture); err == nil {
 		t.Fatal("conflicting replay unexpectedly succeeded")
+	}
+}
+
+func TestGatewayBrowserDownloadRoundTripsIntoAuthorizedUpload(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := media.NewFileMediaStoreWithPersistentIndex(
+		filepath.Join(workspace, "state", "media", "index.json"), media.MediaCleanerConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &nodeAdmissionRuntime{}
+	t.Cleanup(func() {
+		if runtime.transferSpool != nil {
+			_ = runtime.transferSpool.Close()
+		}
+	})
+	source := &gatewayBrowserToolSource{
+		services: &services{NodeAdmission: runtime, MediaStore: store}, workspace: workspace,
+		screenshotRetention: time.Hour, limits: config.BrowserLimitsConfig{}.Effective(),
+	}
+	path := filepath.Join(t.TempDir(), "fixture.txt")
+	data := []byte("browser transfer fixture")
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(data)
+	ctx := gatewayBrowserArtifactContext(workspace)
+	prepared := browser.PreparedAction{
+		RequestID: "request_download", SessionID: "session_1", Target: "gateway",
+		PolicyRevision: "policy_1", TabID: "tab_primary", SnapshotGeneration: 3,
+		ID: "prepared_download", Action: browser.Action{Kind: browser.ActionDownload, Deliver: true},
+	}
+	artifact, err := source.retainBrowserDownload(ctx, prepared, browser.DriverDownload{
+		Path: path, Filename: "fixture.txt", ContentType: "text/plain",
+		SHA256: hex.EncodeToString(digest[:]), Size: int64(len(data)),
+	})
+	if err != nil || artifact.Ref == "" || artifact.MediaRef == "" || artifact.Size != int64(len(data)) ||
+		artifact.SHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("retainBrowserDownload() = %#v, %v", artifact, err)
+	}
+	binding, err := source.resolveBrowserUpload(ctx, browser.PrepareActionRequest{
+		RequestID: "request_upload", SessionID: "session_1",
+		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+	})
+	if err != nil || binding.Ref != artifact.Ref || binding.Size != int64(len(data)) ||
+		binding.SHA256 != artifact.SHA256 || binding.Path == "" {
+		t.Fatalf("resolveBrowserUpload() = %#v, %v", binding, err)
+	}
+	if _, err = source.resolveBrowserUpload(ctx, browser.PrepareActionRequest{
+		RequestID: "request_wrong", SessionID: "session_2",
+		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+	}); !errors.Is(err, browser.ErrDenied) {
+		t.Fatalf("cross-session upload error = %v", err)
+	}
+	if err = source.ClaimDownloadDelivery(ctx, browser.DownloadDeliveryRequest{
+		Owner:     browser.Owner{ActorID: "actor", AgentID: "agent", SessionKey: "route", ExecutionID: "execution"},
+		RequestID: prepared.RequestID, SessionID: prepared.SessionID,
+		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: artifact.Recovery,
+	}); err != nil {
+		t.Fatalf("ClaimDownloadDelivery() error = %v", err)
 	}
 }
 

@@ -48,6 +48,69 @@ type ScreenshotWorker interface {
 	CaptureScreenshot(context.Context, int) (DriverScreenshot, error)
 }
 
+type UploadBinding struct {
+	Ref, SHA256, Filename, ContentType, Path string
+	Size                                     int64
+}
+
+type DriverDownload struct {
+	Path, Filename, ContentType, SHA256 string
+	Size                                int64
+}
+
+type TransferWorker interface {
+	ActionWorker
+	Upload(context.Context, DriverAction) error
+	Download(context.Context, DriverAction, int64) (DriverDownload, error)
+}
+
+type DownloadSink func(context.Context, PreparedAction, DriverDownload) (json.RawMessage, error)
+
+func (broker *Broker) PreparedAction(ctx context.Context, owner Owner, id string) (PreparedAction, error) {
+	if owner.Validate() != nil || !validIdentifier(id) {
+		return PreparedAction{}, ErrInvalid
+	}
+	prepared, err := broker.store.GetPreparedAction(ctx, id)
+	if err != nil {
+		return PreparedAction{}, err
+	}
+	if prepared.Owner != owner {
+		return PreparedAction{}, ErrNotFound
+	}
+	return prepared, nil
+}
+
+func (broker *Broker) RecoverAcceptedDownload(
+	ctx context.Context, owner Owner, preparedID string, terminal json.RawMessage,
+) (Invocation, error) {
+	if owner.Validate() != nil || !validIdentifier(preparedID) || len(terminal) == 0 ||
+		len(terminal) > MaxTerminalBytes {
+		return Invocation{}, ErrInvalid
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	prepared, err := broker.store.GetPreparedAction(ctx, preparedID)
+	if err != nil || prepared.Owner != owner || prepared.Action.Kind != ActionDownload {
+		return Invocation{}, ErrNotFound
+	}
+	invocationID := derivedIdentifier("invocation", owner, prepared.SessionID, prepared.RequestID)
+	invocation, err := broker.store.GetInvocation(ctx, invocationID)
+	if err != nil {
+		return Invocation{}, err
+	}
+	if invocation.State == InvocationSucceeded {
+		return invocation, nil
+	}
+	if invocation.State != InvocationAccepted {
+		return Invocation{}, ErrConflict
+	}
+	recovered, completeErr := broker.completeInvocationLocked(ctx, invocation, InvocationSucceeded, terminal, "")
+	if completeErr != nil {
+		return recovered, completeErr
+	}
+	return recovered, broker.invalidateSnapshotLocked(ctx, prepared.SessionID)
+}
+
 // WorkerOpenResult transfers exactly one lifecycle owner to the broker. Owner
 // is admitted as a worker only when Open succeeds; after a failed startup it is
 // retained solely so cleanup can be retried.
@@ -82,6 +145,7 @@ type workerSlot struct {
 	worker          Worker
 	refs            map[string]DriverElement
 	inputs          map[string]string
+	uploads         map[string]UploadBinding
 	safeFailure     string
 	cleanupComplete bool
 }

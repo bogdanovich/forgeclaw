@@ -175,11 +175,14 @@ func restoreRecoveredOutboundPrerequisite(
 	if intent.Media == nil || intent.Media.Recovery == nil {
 		return nil
 	}
-	return recoverBrowserScreenshotDelivery(
-		nodeRuntime,
-		artifactWorkspace,
-		*intent.Media.Recovery,
-	)
+	switch intent.Media.Recovery.Kind {
+	case bus.OutboundRecoveryBrowserScreenshot:
+		return recoverBrowserScreenshotDelivery(nodeRuntime, artifactWorkspace, *intent.Media.Recovery)
+	case bus.OutboundRecoveryBrowserDownload:
+		return recoverBrowserDownloadDelivery(nodeRuntime, artifactWorkspace, *intent.Media.Recovery)
+	default:
+		return errors.New("unsupported outbound recovery prerequisite")
+	}
 }
 
 func releaseRecoveredAdmissions(coordinator *outbox.Coordinator, admissions []outbox.Admission) {

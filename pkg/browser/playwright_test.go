@@ -3,6 +3,8 @@ package browser
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -190,6 +192,70 @@ func TestPlaywrightWorkerRejectsInvalidScreenshotContent(t *testing.T) {
 	}
 }
 
+func TestPlaywrightWorkerUploadsOnlyAfterExactFileChooser(t *testing.T) {
+	artifact := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(artifact, []byte("upload fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+		"browser_click":       playwrightTextResult("- [File chooser]: can be handled by browser_file_upload"),
+		"browser_file_upload": playwrightTextResult("uploaded"),
+	}}
+	worker := &playwrightWorker{client: client, limits: config.BrowserLimitsConfig{}.Effective()}
+	digest := sha256.Sum256([]byte("upload fixture"))
+	err := worker.Upload(context.Background(), DriverAction{
+		Kind: DriverUpload, Target: "e4", Element: "Choose file", Value: artifact,
+		ArtifactSHA256: hex.EncodeToString(digest[:]), ArtifactBytes: int64(len("upload fixture")),
+	})
+	if err != nil || len(client.calls) != 2 || client.calls[0].tool != "browser_click" ||
+		client.calls[1].tool != "browser_file_upload" ||
+		!reflect.DeepEqual(client.calls[1].arguments["paths"], []string{artifact}) {
+		t.Fatalf("Upload() error = %v; calls = %#v", err, client.calls)
+	}
+	client.callResults["browser_click"] = playwrightTextResult("ordinary click")
+	if err = worker.Upload(context.Background(), DriverAction{
+		Kind: DriverUpload, Target: "e4", Element: "Choose file", Value: artifact,
+		ArtifactSHA256: hex.EncodeToString(digest[:]), ArtifactBytes: int64(len("upload fixture")),
+	}); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("Upload() without chooser error = %v", err)
+	}
+	if err = worker.Upload(context.Background(), DriverAction{
+		Kind: DriverUpload, Target: "e4", Element: "Choose file", Value: artifact,
+		ArtifactSHA256: strings.Repeat("b", 64), ArtifactBytes: int64(len("upload fixture")),
+	}); !errors.Is(err, ErrDenied) {
+		t.Fatalf("Upload() with wrong digest error = %v", err)
+	}
+}
+
+func TestPlaywrightWorkerCapturesExactlyOneBoundedDownload(t *testing.T) {
+	output := t.TempDir()
+	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+		"browser_click": playwrightTextResult("downloaded"),
+	}}
+	client.onCall = func(tool string) {
+		if tool == "browser_click" {
+			if err := os.WriteFile(
+				filepath.Join(output, "fixture.txt"),
+				[]byte("download fixture"),
+				0o600,
+			); err != nil {
+				panic(err)
+			}
+		}
+	}
+	worker := &playwrightWorker{
+		client: client, limits: config.BrowserLimitsConfig{}.Effective(), outputDir: output,
+	}
+	download, err := worker.Download(context.Background(), DriverAction{
+		Kind: DriverDownloadAction, Target: "e7", Element: "Download",
+	}, 1024)
+	want := sha256.Sum256([]byte("download fixture"))
+	if err != nil || download.Filename != "fixture.txt" || download.Size != int64(len("download fixture")) ||
+		download.SHA256 != hex.EncodeToString(want[:]) || download.Path != filepath.Join(output, "fixture.txt") {
+		t.Fatalf("Download() = %#v, %v", download, err)
+	}
+}
+
 func (client *fakePlaywrightClient) Close() error {
 	client.closeCalls++
 	return client.closeErr
@@ -244,14 +310,15 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	}
 	args := client.connectCfg.Args
 	if client.connectName != playwrightPrivateServerName || client.connectCfg.Command != "npx" ||
-		client.connectCfg.Enabled || len(args) != 8 ||
+		client.connectCfg.Enabled || len(args) != 10 ||
 		!reflect.DeepEqual(args[:4], []string{"--caps", "vision", "--proxy-server", args[3]}) ||
 		!strings.HasPrefix(args[3], "http://127.0.0.1:") ||
 		!reflect.DeepEqual(
-			args[4:],
+			args[4:8],
 			[]string{"--proxy-bypass", "<-loopback>", "--allowed-origins", "http://b.example;https://example.com"},
-		) || client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
-		"http://b.example;https://example.com" ||
+		) || args[8] != "--output-dir" || !filepath.IsAbs(args[9]) ||
+		client.connectCfg.Env["PLAYWRIGHT_MCP_ALLOWED_ORIGINS"] !=
+			"http://b.example;https://example.com" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_BLOCKED_ORIGINS"] != "" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_CAPS"] != "vision" ||
 		client.connectCfg.Env["PLAYWRIGHT_MCP_CONFIG"] != "" ||
@@ -1501,6 +1568,7 @@ func playwrightCatalogFixture() []*sdkmcp.Tool {
 		"browser_press_key",
 		"browser_mouse_wheel",
 		"browser_handle_dialog",
+		"browser_file_upload",
 	}
 	catalog := make([]*sdkmcp.Tool, 0, len(names)+1)
 	for _, name := range names {

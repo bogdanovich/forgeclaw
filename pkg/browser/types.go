@@ -102,6 +102,30 @@ type ScreenshotRecovery struct {
 	ToolCallID  string
 }
 
+type DownloadArtifact struct {
+	Ref           string              `json:"ref"`
+	Kind          string              `json:"kind"`
+	ContentType   string              `json:"content_type"`
+	Filename      string              `json:"filename"`
+	Size          int64               `json:"size"`
+	SHA256        string              `json:"sha256"`
+	ExpiresAt     int64               `json:"expires_at"`
+	SessionID     string              `json:"browser_session_id"`
+	TabID         string              `json:"tab_id"`
+	Generation    uint64              `json:"snapshot_generation"`
+	Truncated     bool                `json:"truncated"`
+	Deliver       bool                `json:"-"`
+	DeliveryState string              `json:"-"`
+	MediaRef      string              `json:"-"`
+	Recovery      *ScreenshotRecovery `json:"-"`
+}
+
+type DownloadDeliveryRequest struct {
+	Owner                               Owner
+	RequestID, SessionID, Ref, MediaRef string
+	Recovery                            *ScreenshotRecovery
+}
+
 type ScreenshotCapture struct {
 	SessionID          string
 	Target             string
@@ -218,11 +242,14 @@ const (
 	ActionPress    ActionKind = "press"
 	ActionScroll   ActionKind = "scroll"
 	ActionDialog   ActionKind = "dialog"
+	ActionUpload   ActionKind = "upload"
+	ActionDownload ActionKind = "download"
 )
 
 func (kind ActionKind) Valid() bool {
 	switch kind {
-	case ActionNavigate, ActionClick, ActionFill, ActionSelect, ActionPress, ActionScroll, ActionDialog:
+	case ActionNavigate, ActionClick, ActionFill, ActionSelect, ActionPress, ActionScroll, ActionDialog,
+		ActionUpload, ActionDownload:
 		return true
 	default:
 		return false
@@ -239,11 +266,17 @@ type Action struct {
 	Amount         int        `json:"amount,omitempty"`
 	Decision       string     `json:"decision,omitempty"`
 	PromptProvided bool       `json:"prompt_provided,omitempty"`
+	ArtifactRef    string     `json:"artifact_ref,omitempty"`
+	Deliver        bool       `json:"deliver,omitempty"`
 }
 
 func (action Action) Validate(maxTextBytes int) error {
 	if !action.Kind.Valid() || len(action.URL) > MaxURLBytes || len(action.Value) > maxTextBytes {
 		return fmt.Errorf("%w: malformed browser action", ErrInvalid)
+	}
+	if (action.Kind != ActionUpload && action.ArtifactRef != "") ||
+		(action.Kind != ActionDownload && action.Deliver) {
+		return fmt.Errorf("%w: malformed browser artifact action", ErrInvalid)
 	}
 	switch action.Kind {
 	case ActionNavigate:
@@ -297,6 +330,19 @@ func (action Action) Validate(maxTextBytes int) error {
 			(action.Decision == "dismiss" && (action.Value != "" || action.PromptProvided)) ||
 			(!action.PromptProvided && action.Value != "") {
 			return fmt.Errorf("%w: malformed dialog action", ErrInvalid)
+		}
+	case ActionUpload:
+		if !validIdentifier(action.Ref) || !strings.HasPrefix(action.ArtifactRef, "transfer-artifact://") ||
+			len(action.ArtifactRef) > 512 ||
+			action.URL != "" || action.Value != "" || action.Key != "" || action.Direction != "" ||
+			action.Amount != 0 || action.Decision != "" || action.PromptProvided || action.Deliver {
+			return fmt.Errorf("%w: malformed upload action", ErrInvalid)
+		}
+	case ActionDownload:
+		if !validIdentifier(action.Ref) || action.ArtifactRef != "" || action.URL != "" || action.Value != "" ||
+			action.Key != "" || action.Direction != "" || action.Amount != 0 || action.Decision != "" ||
+			action.PromptProvided {
+			return fmt.Errorf("%w: malformed download action", ErrInvalid)
 		}
 	}
 	return nil
@@ -410,6 +456,10 @@ type PreparedAction struct {
 	Action               Action `json:"action"`
 	InputDigest          string `json:"input_digest,omitempty"`
 	InputBytes           int    `json:"input_bytes,omitempty"`
+	ArtifactSHA256       string `json:"artifact_sha256,omitempty"`
+	ArtifactBytes        int64  `json:"artifact_bytes,omitempty"`
+	ArtifactFilename     string `json:"artifact_filename,omitempty"`
+	ArtifactContentType  string `json:"artifact_content_type,omitempty"`
 	ElementRole          string `json:"element_role,omitempty"`
 	ElementName          string `json:"element_name,omitempty"`
 	DialogType           string `json:"dialog_type,omitempty"`
@@ -440,6 +490,10 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 	}
 	if prepared.Action.Kind != ActionDialog && (prepared.DialogType != "" || prepared.DialogMessage != "") {
 		return fmt.Errorf("%w: unexpected prepared dialog binding", ErrInvalid)
+	}
+	if prepared.Action.Kind != ActionUpload && (prepared.ArtifactSHA256 != "" || prepared.ArtifactBytes != 0 ||
+		prepared.ArtifactFilename != "" || prepared.ArtifactContentType != "") {
+		return fmt.Errorf("%w: unexpected prepared artifact binding", ErrInvalid)
 	}
 	if prepared.CurrentOrigin == initialBlankOrigin {
 		if prepared.Action.Kind != ActionNavigate {
@@ -501,6 +555,22 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 			!validDigest(prepared.InputDigest) || prepared.InputBytes < 0 || prepared.InputBytes > maxTextBytes {
 			return fmt.Errorf("%w: malformed prepared dialog input", ErrInvalid)
 		}
+	case ActionUpload:
+		if prepared.DestinationOrigin != "" || prepared.ElementRole != "button" ||
+			prepared.Effect != EffectLocalEdit || !validDigest(prepared.ArtifactSHA256) ||
+			prepared.ArtifactBytes < 1 || prepared.ArtifactBytes > int64(config.BrowserMaxUploadBytes) ||
+			prepared.ArtifactFilename == "" || len(prepared.ArtifactFilename) > 255 ||
+			prepared.ArtifactContentType == "" || len(prepared.ArtifactContentType) > 255 ||
+			prepared.InputDigest != "" || prepared.InputBytes != 0 {
+			return fmt.Errorf("%w: malformed prepared upload", ErrInvalid)
+		}
+	case ActionDownload:
+		if prepared.DestinationOrigin != "" || !elementRoleRegexp.MatchString(prepared.ElementRole) ||
+			prepared.Effect != EffectRead || prepared.ArtifactSHA256 != "" || prepared.ArtifactBytes != 0 ||
+			prepared.ArtifactFilename != "" || prepared.ArtifactContentType != "" ||
+			prepared.InputDigest != "" || prepared.InputBytes != 0 {
+			return fmt.Errorf("%w: malformed prepared download", ErrInvalid)
+		}
 	}
 	expectedID := derivedIdentifier("prepared", prepared.Owner, prepared.SessionID, prepared.RequestID)
 	expectedHash, hashErr := hashPreparedAction(prepared)
@@ -518,21 +588,22 @@ type ApprovalBinding struct {
 }
 
 type Invocation struct {
-	ID               string          `json:"id"`
-	PreparedActionID string          `json:"prepared_action_id,omitempty"`
-	SessionID        string          `json:"session_id"`
-	Owner            Owner           `json:"owner"`
-	ActionHash       string          `json:"action_hash"`
-	Effect           Effect          `json:"effect"`
-	State            InvocationState `json:"state"`
-	Revision         uint64          `json:"revision"`
-	CreatedAt        int64           `json:"created_at"`
-	UpdatedAt        int64           `json:"updated_at"`
-	ExpiresAt        int64           `json:"expires_at"`
-	AcceptedAt       int64           `json:"accepted_at,omitempty"`
-	CompletedAt      int64           `json:"completed_at,omitempty"`
-	TerminalResult   json.RawMessage `json:"terminal_result,omitempty"`
-	SafeFailure      string          `json:"safe_failure,omitempty"`
+	ID               string            `json:"id"`
+	PreparedActionID string            `json:"prepared_action_id,omitempty"`
+	SessionID        string            `json:"session_id"`
+	Owner            Owner             `json:"owner"`
+	ActionHash       string            `json:"action_hash"`
+	Effect           Effect            `json:"effect"`
+	State            InvocationState   `json:"state"`
+	Revision         uint64            `json:"revision"`
+	CreatedAt        int64             `json:"created_at"`
+	UpdatedAt        int64             `json:"updated_at"`
+	ExpiresAt        int64             `json:"expires_at"`
+	AcceptedAt       int64             `json:"accepted_at,omitempty"`
+	CompletedAt      int64             `json:"completed_at,omitempty"`
+	TerminalResult   json.RawMessage   `json:"terminal_result,omitempty"`
+	SafeFailure      string            `json:"safe_failure,omitempty"`
+	Download         *DownloadArtifact `json:"-"`
 }
 
 func (invocation Invocation) Validate() error {

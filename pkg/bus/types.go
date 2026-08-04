@@ -134,7 +134,10 @@ type MediaPart struct {
 	ContentType string `json:"content_type,omitempty"` // MIME type hint
 }
 
-const OutboundRecoveryBrowserScreenshot = "browser_screenshot_claim"
+const (
+	OutboundRecoveryBrowserScreenshot = "browser_screenshot_claim"
+	OutboundRecoveryBrowserDownload   = "browser_download_claim"
+)
 
 // OutboundRecovery is a bounded, model-private prerequisite that must be
 // restored before a durable media intent is republished after restart.

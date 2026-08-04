@@ -8,11 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -61,13 +66,15 @@ var playwrightManagedEnvironmentNames = []string{
 type DriverActionKind string
 
 const (
-	DriverNavigate DriverActionKind = "navigate"
-	DriverClick    DriverActionKind = "click"
-	DriverFill     DriverActionKind = "fill"
-	DriverSelect   DriverActionKind = "select"
-	DriverPress    DriverActionKind = "press"
-	DriverScroll   DriverActionKind = "scroll"
-	DriverDialog   DriverActionKind = "dialog"
+	DriverNavigate       DriverActionKind = "navigate"
+	DriverClick          DriverActionKind = "click"
+	DriverFill           DriverActionKind = "fill"
+	DriverSelect         DriverActionKind = "select"
+	DriverPress          DriverActionKind = "press"
+	DriverScroll         DriverActionKind = "scroll"
+	DriverDialog         DriverActionKind = "dialog"
+	DriverUpload         DriverActionKind = "upload"
+	DriverDownloadAction DriverActionKind = "download"
 )
 
 type DriverAction struct {
@@ -81,6 +88,8 @@ type DriverAction struct {
 	Amount         int
 	Accept         bool
 	PromptProvided bool
+	ArtifactSHA256 string
+	ArtifactBytes  int64
 }
 
 type DriverObservation struct {
@@ -166,6 +175,26 @@ type PlaywrightWorkerFactory struct {
 	clientFactory func() playwrightMCPClient
 	proxyLookupIP browserProxyLookup
 	proxyDial     browserProxyDial
+}
+
+func playwrightOutputRoot(server config.MCPServerConfig) (config.MCPServerConfig, string) {
+	filtered := make([]string, 0, len(server.Args))
+	root := ""
+	for index := 0; index < len(server.Args); index++ {
+		argument := server.Args[index]
+		if argument == "--output-dir" && index+1 < len(server.Args) {
+			root = server.Args[index+1]
+			index++
+			continue
+		}
+		if strings.HasPrefix(argument, "--output-dir=") {
+			root = strings.TrimPrefix(argument, "--output-dir=")
+			continue
+		}
+		filtered = append(filtered, argument)
+	}
+	server.Args = filtered
+	return server, root
 }
 
 func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFactory, error) {
@@ -325,10 +354,25 @@ func (factory *PlaywrightWorkerFactory) Open(
 		_ = networkProxy.Close()
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
+	server, outputRoot := playwrightOutputRoot(server)
+	if outputRoot == "" {
+		outputRoot = filepath.Join(os.TempDir(), "mintclaw-browser-output")
+	}
+	if !filepath.IsAbs(outputRoot) || os.MkdirAll(outputRoot, 0o700) != nil {
+		_ = networkProxy.Close()
+		return WorkerOpenResult{}, ErrWorkerUnavailable
+	}
+	outputDir, err := os.MkdirTemp(outputRoot, request.SessionID+"-")
+	if err != nil {
+		_ = networkProxy.Close()
+		return WorkerOpenResult{}, ErrWorkerUnavailable
+	}
+	server.Args = append(server.Args, "--output-dir", outputDir)
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.WithoutCancel(ctx))
 	worker := &playwrightWorker{
 		client: client, networkProxy: networkProxy,
 		limits: request.Limits.Effective(), cancelLifetime: cancelLifetime,
+		outputDir: outputDir,
 	}
 	stopStartupCancellation := context.AfterFunc(ctx, cancelLifetime)
 	catalog, err := client.Connect(
@@ -368,6 +412,7 @@ type playwrightWorker struct {
 	limits          config.BrowserLimitsConfig
 	catalogRevision string
 	cancelLifetime  context.CancelFunc
+	outputDir       string
 
 	mu              sync.Mutex
 	lost            bool
@@ -531,6 +576,180 @@ func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction
 	return err
 }
 
+func (worker *playwrightWorker) Upload(ctx context.Context, action DriverAction) error {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if worker.closing || worker.closed || worker.lost || worker.pendingDialog != nil ||
+		action.Kind != DriverUpload || !playwrightTargetPattern.MatchString(action.Target) ||
+		action.Value == "" || !filepath.IsAbs(action.Value) {
+		return ErrWorkerUnavailable
+	}
+	info, err := os.Lstat(action.Value)
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > int64(worker.limits.UploadBytes) ||
+		info.Size() != action.ArtifactBytes || !validDigest(action.ArtifactSHA256) {
+		return ErrDenied
+	}
+	file, err := os.Open(action.Value)
+	if err != nil {
+		return ErrDenied
+	}
+	digest := sha256.New()
+	count, copyErr := io.Copy(digest, io.LimitReader(file, action.ArtifactBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil || count != action.ArtifactBytes ||
+		hex.EncodeToString(digest.Sum(nil)) != action.ArtifactSHA256 {
+		return ErrDenied
+	}
+	text, err := worker.callRawText(ctx, "browser_click", map[string]any{
+		"target": action.Target, "element": action.Element, "doubleClick": false, "button": "left",
+	})
+	if err != nil {
+		return err
+	}
+	if strings.Count(text, "[File chooser]: can be handled by browser_file_upload") != 1 {
+		return ErrDriverIncompatible
+	}
+	_, err = worker.callRawText(ctx, "browser_file_upload", map[string]any{"paths": []string{action.Value}})
+	return err
+}
+
+func (worker *playwrightWorker) Download(
+	ctx context.Context,
+	action DriverAction,
+	maximumBytes int64,
+) (DriverDownload, error) {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if worker.closing || worker.closed || worker.lost || worker.pendingDialog != nil ||
+		action.Kind != DriverDownloadAction || !playwrightTargetPattern.MatchString(action.Target) ||
+		maximumBytes < 1 || maximumBytes > int64(worker.limits.DownloadBytes) {
+		return DriverDownload{}, ErrWorkerUnavailable
+	}
+	before, err := regularFiles(worker.outputDir)
+	if err != nil {
+		return DriverDownload{}, ErrWorkerUnavailable
+	}
+	if _, err = worker.callRawText(ctx, "browser_click", map[string]any{
+		"target": action.Target, "element": action.Element, "doubleClick": false, "button": "left",
+	}); err != nil {
+		return DriverDownload{}, err
+	}
+	var path string
+	for {
+		after, scanErr := regularFiles(worker.outputDir)
+		if scanErr != nil {
+			return DriverDownload{}, ErrWorkerUnavailable
+		}
+		created := make([]string, 0, len(after))
+		for candidate := range after {
+			if _, existed := before[candidate]; !existed {
+				created = append(created, candidate)
+			}
+		}
+		if len(created) > 1 {
+			return DriverDownload{}, ErrDriverIncompatible
+		}
+		if len(created) == 1 {
+			candidate := created[0]
+			firstInfo, statErr := os.Lstat(candidate)
+			if statErr != nil || !firstInfo.Mode().IsRegular() {
+				return DriverDownload{}, ErrDriverIncompatible
+			}
+			select {
+			case <-ctx.Done():
+				return DriverDownload{}, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+			stable, scanErr := regularFiles(worker.outputDir)
+			if scanErr != nil {
+				return DriverDownload{}, ErrWorkerUnavailable
+			}
+			newCount := 0
+			for current := range stable {
+				if _, existed := before[current]; !existed {
+					newCount++
+				}
+			}
+			secondInfo, statErr := os.Lstat(candidate)
+			if statErr != nil || newCount != 1 || !secondInfo.Mode().IsRegular() ||
+				firstInfo.Size() != secondInfo.Size() || secondInfo.Size() < 1 || secondInfo.Size() > maximumBytes {
+				return DriverDownload{}, ErrDriverIncompatible
+			}
+			path = candidate
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return DriverDownload{}, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return DriverDownload{}, ErrWorkerUnavailable
+	}
+	defer file.Close()
+	hash := sha256.New()
+	count, err := io.Copy(hash, io.LimitReader(file, maximumBytes+1))
+	if err != nil || count < 1 || count > maximumBytes {
+		return DriverDownload{}, ErrDriverIncompatible
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(path))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return DriverDownload{
+		Path: path, Filename: filepath.Base(path), ContentType: contentType,
+		SHA256: hex.EncodeToString(hash.Sum(nil)), Size: count,
+	}, nil
+}
+
+func regularFiles(directory string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]struct{})
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		if info.Mode().IsRegular() {
+			files[filepath.Join(directory, entry.Name())] = struct{}{}
+		}
+	}
+	return files, nil
+}
+
+func (worker *playwrightWorker) callRawText(
+	ctx context.Context,
+	tool string,
+	arguments map[string]any,
+) (string, error) {
+	denialsBefore := uint64(0)
+	if worker.networkProxy != nil {
+		denialsBefore = worker.networkProxy.Denials()
+	}
+	result, err := worker.client.CallTool(ctx, tool, arguments)
+	if worker.networkProxy != nil && worker.networkProxy.Denials() > denialsBefore {
+		return "", ErrDenied
+	}
+	if err != nil || result == nil {
+		worker.lost = true
+		return "", ErrWorkerUnavailable
+	}
+	text, err := boundedPlaywrightText(result, playwrightDriverResponseBytes)
+	if err != nil {
+		worker.lost = true
+		return "", err
+	}
+	if result.IsError {
+		return text, ErrDriverRejected
+	}
+	return text, nil
+}
+
 func (worker *playwrightWorker) pendingDialogObservationLocked() (DriverObservation, error) {
 	if worker.pendingDialog == nil || worker.lastObservation.Origin == "" {
 		worker.lost = true
@@ -571,7 +790,11 @@ func (worker *playwrightWorker) Close(ctx context.Context) error {
 	}
 	clientErr := worker.client.Close()
 	proxyErr := worker.networkProxy.Close()
-	if clientErr != nil || proxyErr != nil {
+	outputErr := error(nil)
+	if worker.outputDir != "" {
+		outputErr = os.RemoveAll(worker.outputDir)
+	}
+	if clientErr != nil || proxyErr != nil || outputErr != nil {
 		return ErrWorkerUnavailable
 	}
 	worker.closed = true
@@ -1088,6 +1311,13 @@ var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{
 			"target":{"description":"Exact target element reference from the page snapshot, or a unique element selector","type":"string"}
 		},
 		"required":["target"],
+		"type":"object"
+	}`),
+	//nolint:misspell // The external driver schema is pinned verbatim.
+	"browser_file_upload": json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties":false,
+		"properties":{"paths":{"description":"The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled.","items":{"type":"string"},"type":"array"}},
 		"type":"object"
 	}`),
 	"browser_type": json.RawMessage(`{

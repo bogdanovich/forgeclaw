@@ -396,6 +396,20 @@ func TestBrowserConfigRejectsAuthorityExpansion(t *testing.T) {
 			},
 			wantErr: "screenshot_bytes must be between 0 and 8388608",
 		},
+		{
+			name: "expanded upload limit",
+			mutate: func(cfg *Config) {
+				cfg.Tools.Browser.Limits.UploadBytes = BrowserMaxUploadBytes + 1
+			},
+			wantErr: "upload_bytes must be between 0 and 33554432",
+		},
+		{
+			name: "expanded download limit",
+			mutate: func(cfg *Config) {
+				cfg.Tools.Browser.Limits.DownloadBytes = BrowserMaxDownloadBytes + 1
+			},
+			wantErr: "download_bytes must be between 0 and 33554432",
+		},
 	}
 
 	for _, test := range tests {
