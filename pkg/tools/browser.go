@@ -28,7 +28,7 @@ type BrowserToolSource interface {
 	ArtifactTransferAvailable() bool
 	DownloadAvailable() bool
 	ProfileAvailability(context.Context, string, string) (browser.ProfileAvailability, error)
-	PassiveReadiness(context.Context, string, string) (browser.PassiveReadiness, error)
+	PassiveTargetDiagnostics(context.Context, string, []string) (BrowserTargetDiagnostics, error)
 	Open(context.Context, browser.OpenRequest) (browser.Session, error)
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
 	Close(context.Context, browser.Owner, string) (browser.Session, error)
@@ -39,6 +39,17 @@ type BrowserToolSource interface {
 	ClaimDownloadDelivery(context.Context, browser.DownloadDeliveryRequest) error
 	PrepareAction(context.Context, browser.PrepareActionRequest) (browser.Preparation, error)
 	ExecuteAction(context.Context, browser.Owner, string, *browser.ApprovalBinding) (browser.Invocation, error)
+}
+
+// BrowserTargetDiagnostics is one gateway-owned readiness and capability
+// snapshot. Implementations must compute every field while holding the same
+// runtime generation so discovery cannot combine stale capability flags with
+// unavailable readiness.
+type BrowserTargetDiagnostics struct {
+	Profiles   map[string]browser.PassiveReadiness
+	Screenshot bool
+	Upload     bool
+	Download   bool
 }
 
 type browserToolRuntime struct {
@@ -178,7 +189,6 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 			"use_an_authorized_agent",
 		)
 	}
-	runtimeAvailable := tool.runtime.source.Available()
 	limits := tool.runtime.config.Limits.Effective()
 	targetNames := make([]string, 0, len(tool.runtime.config.Targets))
 	for name, target := range tool.runtime.config.Targets {
@@ -197,6 +207,19 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 			}
 		}
 		sort.Strings(profileNames)
+		diagnostics, diagnosticsErr := tool.runtime.source.PassiveTargetDiagnostics(
+			ctx, name, profileNames,
+		)
+		capabilitiesAvailable := diagnosticsErr == nil
+		if capabilitiesAvailable {
+			for _, profileName := range profileNames {
+				readiness, ok := diagnostics.Profiles[profileName]
+				if !ok || readiness.Status == "" || readiness.Profile.Status == "" {
+					capabilitiesAvailable = false
+					break
+				}
+			}
+		}
 		profiles := make([]browserProfileView, 0, len(profileNames))
 		for _, profileName := range profileNames {
 			profile := target.Profiles[profileName]
@@ -209,17 +232,9 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				Profile:       browser.ProfileAvailability{Status: status, Reason: reason},
 				Code:          "runtime_unavailable", Action: "contact_operator", Passive: true,
 			}
-			if runtimeAvailable {
-				diagnostics, err := tool.runtime.source.PassiveReadiness(ctx, name, profileName)
-				if err == nil {
-					readiness = diagnostics
-					status, reason = diagnostics.Profile.Status, diagnostics.Profile.Reason
-				} else {
-					reason = "recovery_required"
-					readiness.Status = browser.ReadinessDegraded
-					readiness.Profile = browser.ProfileAvailability{Status: status, Reason: reason}
-					readiness.Code, readiness.Action = "recovery_required", "contact_operator"
-				}
+			if capabilitiesAvailable {
+				readiness = diagnostics.Profiles[profileName]
+				status, reason = readiness.Profile.Status, readiness.Profile.Reason
 			}
 			profiles = append(profiles, browserProfileView{
 				Profile: profileName, Status: status, Reason: reason,
@@ -227,19 +242,18 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				Readiness: readiness,
 			})
 		}
-		targetStatus, targetReason := "ready", ""
+		targetStatus, targetReason, targetRank := browser.ReadinessReady, "", readinessRank(browser.ReadinessReady)
 		for _, profile := range profiles {
-			if profile.Status != "ready" {
-				targetStatus, targetReason = profile.Status, profile.Reason
-				break
+			if rank := readinessRank(profile.Readiness.Status); rank > targetRank {
+				targetStatus, targetReason, targetRank = profile.Readiness.Status, profile.Readiness.Code, rank
 			}
 		}
 		actions := []browser.ActionKind{
 			browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
 			browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
 		}
-		uploadAvailable := runtimeAvailable && tool.runtime.source.ArtifactTransferAvailable()
-		downloadAvailable := uploadAvailable && tool.runtime.source.DownloadAvailable()
+		uploadAvailable := capabilitiesAvailable && diagnostics.Upload
+		downloadAvailable := uploadAvailable && diagnostics.Download
 		if uploadAvailable {
 			actions = append(actions, browser.ActionUpload)
 		}
@@ -250,7 +264,7 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 			Target: name, Status: targetStatus, Reason: targetReason, Profiles: profiles,
 			Actions: actions,
 			Features: browserFeatureView{
-				Screenshot:  runtimeAvailable && tool.runtime.source.ScreenshotAvailable(),
+				Screenshot:  capabilitiesAvailable && diagnostics.Screenshot,
 				Upload:      uploadAvailable,
 				Download:    downloadAvailable,
 				Diagnostics: true,
@@ -270,6 +284,23 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 		})
 	}
 	return tool.runtime.result(browserTargetResult{Targets: views})
+}
+
+func readinessRank(status string) int {
+	switch status {
+	case browser.ReadinessUnavailable:
+		return 5
+	case browser.ReadinessDegraded:
+		return 4
+	case browser.ReadinessBusy:
+		return 3
+	case browser.ReadinessConfigured:
+		return 2
+	case browser.ReadinessReady:
+		return 1
+	default:
+		return 5
+	}
 }
 
 func (*BrowserSessionTool) Name() string { return "browser_session" }

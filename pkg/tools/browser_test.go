@@ -74,28 +74,48 @@ func (source *fakeBrowserToolSource) ProfileAvailability(
 	return source.profileStatus, nil
 }
 
-func (source *fakeBrowserToolSource) PassiveReadiness(
+func (source *fakeBrowserToolSource) PassiveTargetDiagnostics(
 	_ context.Context,
 	_ string,
-	_ string,
-) (browser.PassiveReadiness, error) {
+	profiles []string,
+) (BrowserTargetDiagnostics, error) {
 	source.readinessCalls++
-	if source.err != nil {
-		return browser.PassiveReadiness{}, source.err
+	if !source.available {
+		return BrowserTargetDiagnostics{}, browser.ErrWorkerUnavailable
 	}
-	if source.readiness.Status != "" {
-		return source.readiness, nil
+	if source.err != nil {
+		return BrowserTargetDiagnostics{}, source.err
 	}
 	profile := source.profileStatus
 	if profile.Status == "" {
 		profile.Status = browser.ReadinessReady
 	}
-	return browser.PassiveReadiness{
-		Status: browser.ReadinessReady, Broker: browser.ReadinessReady,
-		Worker: browser.ReadinessReady, Driver: browser.ReadinessReady,
-		Browser: browser.ReadinessReady, Proxy: browser.ReadinessReady,
-		Compatibility: browser.CompatibilityCompatible,
-		Profile:       profile, Passive: true,
+	readiness := source.readiness
+	if readiness.Status == "" {
+		readiness = browser.PassiveReadiness{
+			Status: browser.ReadinessReady, Broker: browser.ReadinessReady,
+			Worker: browser.ReadinessReady, Driver: browser.ReadinessReady,
+			Browser: browser.ReadinessReady, Proxy: browser.ReadinessReady,
+			Compatibility: browser.CompatibilityCompatible,
+			Profile:       profile, Passive: true,
+		}
+		switch profile.Status {
+		case browser.ReadinessBusy:
+			readiness.Status = browser.ReadinessBusy
+			readiness.Code, readiness.Action = "profile_busy", "wait_or_close_session"
+		case browser.ReadinessDegraded:
+			readiness.Status, readiness.Worker = browser.ReadinessDegraded, browser.ReadinessDegraded
+			readiness.Code, readiness.Action = "recovery_required", "close_or_recover_session"
+		}
+	}
+	byProfile := make(map[string]browser.PassiveReadiness, len(profiles))
+	for _, name := range profiles {
+		byProfile[name] = readiness
+	}
+	return BrowserTargetDiagnostics{
+		Profiles: byProfile, Screenshot: !source.screenshotUnavailable,
+		Upload:   !source.transferUnavailable,
+		Download: !source.transferUnavailable && !source.downloadUnavailable,
 	}, nil
 }
 
@@ -288,12 +308,75 @@ func TestBrowserTargetsReportsUnavailableRuntimeWithoutAdvertisingCapabilities(t
 		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &result,
 	)
 	if len(result.Targets) != 1 || result.Targets[0].Status != browser.ReadinessUnavailable ||
-		result.Targets[0].Reason != "driver_unavailable" ||
+		result.Targets[0].Reason != "runtime_unavailable" ||
 		result.Targets[0].Features.Screenshot || result.Targets[0].Features.Upload ||
 		result.Targets[0].Features.Download || !result.Targets[0].Features.Diagnostics ||
 		result.Targets[0].Profiles[0].Readiness.Code != "runtime_unavailable" ||
-		!result.Targets[0].Profiles[0].Readiness.Passive || source.readinessCalls != 0 {
+		!result.Targets[0].Profiles[0].Readiness.Passive || source.readinessCalls != 1 {
 		t.Fatalf("unavailable browser targets = %#v", result)
+	}
+}
+
+func TestBrowserTargetsFailsCapabilitiesClosedWhenDiagnosticsSnapshotFails(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, err: errors.New("runtime reloaded")}
+	var result browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &result,
+	)
+	if len(result.Targets) != 1 || result.Targets[0].Status != browser.ReadinessUnavailable ||
+		result.Targets[0].Features.Screenshot || result.Targets[0].Features.Upload ||
+		result.Targets[0].Features.Download ||
+		result.Targets[0].Profiles[0].Readiness.Code != "runtime_unavailable" {
+		t.Fatalf("failed diagnostics snapshot = %#v", result)
+	}
+}
+
+func TestBrowserTargetsAggregatesDriverReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status string
+		code   string
+	}{
+		{name: "missing", status: browser.ReadinessUnavailable, code: "driver_missing"},
+		{name: "incompatible", status: browser.ReadinessDegraded, code: "driver_incompatible"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &fakeBrowserToolSource{available: true, readiness: browser.PassiveReadiness{
+				Status: test.status, Broker: browser.ReadinessReady, Worker: test.status,
+				Driver: test.status, Browser: browser.ReadinessUnavailable,
+				Proxy: browser.ReadinessReady, Compatibility: browser.CompatibilityUnchecked,
+				Profile: browser.ProfileAvailability{Status: browser.ReadinessReady},
+				Code:    test.code, Action: "contact_operator", Passive: true,
+			}}
+			var result browserTargetResult
+			decodeBrowserToolResult(
+				t,
+				NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil),
+				&result,
+			)
+			if len(result.Targets) != 1 || result.Targets[0].Status != test.status ||
+				result.Targets[0].Reason != test.code {
+				t.Fatalf("aggregated readiness = %#v", result)
+			}
+		})
+	}
+}
+
+func TestBrowserReadinessRankHasDeterministicFailClosedOrder(t *testing.T) {
+	statuses := []string{
+		browser.ReadinessReady,
+		browser.ReadinessConfigured,
+		browser.ReadinessBusy,
+		browser.ReadinessDegraded,
+		browser.ReadinessUnavailable,
+	}
+	for index := 1; index < len(statuses); index++ {
+		if readinessRank(statuses[index]) <= readinessRank(statuses[index-1]) {
+			t.Fatalf("readiness order = %#v", statuses)
+		}
+	}
+	if readinessRank("unexpected") != readinessRank(browser.ReadinessUnavailable) {
+		t.Fatal("unknown readiness did not fail closed")
 	}
 }
 
