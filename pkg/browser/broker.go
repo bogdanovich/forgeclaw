@@ -359,6 +359,42 @@ func (broker *Broker) ProfileAvailability(
 	return ProfileAvailability{Status: "ready"}, nil
 }
 
+// PassiveReadiness reports configured and last-observed driver readiness plus
+// durable profile lease state. It does not call Worker.Status, start or close a
+// worker, reconcile state, renew activity, or resolve an artifact reference.
+func (broker *Broker) PassiveReadiness(
+	ctx context.Context,
+	targetName string,
+	profileName string,
+) (PassiveReadiness, error) {
+	availability, err := broker.ProfileAvailability(ctx, targetName, profileName)
+	if err != nil {
+		return PassiveReadiness{}, err
+	}
+	driver := configuredDriverReadiness()
+	if factory, ok := broker.factory.(readinessFactory); ok {
+		driver = factory.PassiveReadiness()
+	}
+	result := PassiveReadiness{
+		Status: driver.Status, Broker: ReadinessReady, Worker: driver.Status,
+		Driver: driver.Driver, Browser: driver.Browser, Proxy: driver.Proxy,
+		Compatibility: driver.Compatibility, Profile: availability,
+		Code: driver.Code, Action: driver.Action, Passive: true,
+	}
+	if result.Code != "" {
+		return result, nil
+	}
+	switch availability.Status {
+	case ReadinessBusy:
+		result.Status, result.Worker = ReadinessBusy, ReadinessReady
+		result.Code, result.Action = "profile_busy", "wait_or_close_session"
+	case ReadinessDegraded:
+		result.Status, result.Worker = ReadinessDegraded, ReadinessDegraded
+		result.Code, result.Action = "recovery_required", "close_or_recover_session"
+	}
+	return result, nil
+}
+
 func (broker *Broker) finishFailedOpen(
 	ctx context.Context,
 	session Session,

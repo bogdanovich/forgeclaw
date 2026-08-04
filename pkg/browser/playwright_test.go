@@ -393,6 +393,10 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	if len(worker.catalogRevision) != 64 {
 		t.Fatalf("catalog revision = %q", worker.catalogRevision)
 	}
+	readiness := factory.PassiveReadiness()
+	if readiness.Status != ReadinessReady || readiness.Compatibility != CompatibilityCompatible {
+		t.Fatalf("readiness after Open() = %#v", readiness)
+	}
 	cancelOpen()
 	select {
 	case <-client.connectCtx.Done():
@@ -596,6 +600,49 @@ func TestPlaywrightDownloadAvailabilityRequiresScopedChromiumBoundary(t *testing
 	}
 }
 
+func TestPlaywrightPassiveReadinessIsBoundedAndDoesNotStartDriver(t *testing.T) {
+	factory, err := NewPlaywrightWorkerFactory(admittedBrowserConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	factory.lookPath = func(command string) (string, error) {
+		lookups++
+		if command != "npx" {
+			t.Fatalf("lookPath command = %q", command)
+		}
+		return "/secret/operator/bin/npx", nil
+	}
+	configured := factory.PassiveReadiness()
+	if configured.Status != ReadinessConfigured || configured.Driver != ReadinessConfigured ||
+		configured.Compatibility != CompatibilityUnchecked || lookups != 1 {
+		t.Fatalf("configured readiness = %#v; lookups = %d", configured, lookups)
+	}
+	factory.lookPath = func(string) (string, error) {
+		return "", errors.New("secret executable lookup detail")
+	}
+	missing := factory.PassiveReadiness()
+	if missing.Status != ReadinessUnavailable || missing.Code != "driver_missing" ||
+		missing.Action != "install_driver" || strings.Contains(fmt.Sprintf("%#v", missing), "secret") {
+		t.Fatalf("missing readiness = %#v", missing)
+	}
+	factory.lookPath = func(string) (string, error) { return "/operator/npx", nil }
+	factory.readiness.Store(playwrightReadinessIncompatible)
+	incompatible := factory.PassiveReadiness()
+	if incompatible.Status != ReadinessDegraded ||
+		incompatible.Compatibility != CompatibilityIncompatible ||
+		incompatible.Code != "driver_incompatible" || incompatible.Action != "upgrade_driver" {
+		t.Fatalf("incompatible readiness = %#v", incompatible)
+	}
+	factory.readiness.Store(playwrightReadinessReady)
+	ready := factory.PassiveReadiness()
+	if ready.Status != ReadinessReady || ready.Driver != ReadinessReady ||
+		ready.Browser != ReadinessReady || ready.Proxy != ReadinessReady ||
+		ready.Compatibility != CompatibilityCompatible || ready.Code != "" {
+		t.Fatalf("ready readiness = %#v", ready)
+	}
+}
+
 func TestPlaywrightServerConfiguresAnyHTTPThroughManagedProxyOnly(t *testing.T) {
 	root := admittedBrowserConfig()
 	server := root.Tools.MCP.Servers["playwright"]
@@ -710,6 +757,12 @@ func TestPlaywrightWorkerFactoryRejectsIncompatibleCatalog(t *testing.T) {
 			})
 			if !errors.Is(openErr, ErrDriverIncompatible) || opened.Owner == nil || client.closeCalls != 0 {
 				t.Fatalf("Open() = %+v, %v; client closes = %d", opened, openErr, client.closeCalls)
+			}
+			readiness := factory.PassiveReadiness()
+			if readiness.Status != ReadinessDegraded ||
+				readiness.Compatibility != CompatibilityIncompatible ||
+				readiness.Code != "driver_incompatible" {
+				t.Fatalf("readiness after incompatible Open() = %#v", readiness)
 			}
 			if err = opened.Owner.Close(context.Background()); err != nil || client.closeCalls != 1 {
 				t.Fatalf("cleanup Close() error = %v, client closes = %d", err, client.closeCalls)

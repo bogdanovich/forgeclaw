@@ -19,9 +19,11 @@ type fakeWorker struct {
 	rejectRepeatedClose bool
 	status              WorkerStatus
 	statusErr           error
+	statusCalls         int
 }
 
 func (worker *fakeWorker) Status(context.Context) (WorkerStatus, error) {
+	worker.statusCalls++
 	return worker.status, worker.statusErr
 }
 
@@ -34,11 +36,21 @@ func (worker *fakeWorker) Close(context.Context) error {
 }
 
 type fakeWorkerFactory struct {
-	mu            sync.Mutex
-	openErr       error
-	cleanupWorker *fakeWorker
-	requests      []WorkerOpenRequest
-	workers       []*fakeWorker
+	mu             sync.Mutex
+	openErr        error
+	cleanupWorker  *fakeWorker
+	requests       []WorkerOpenRequest
+	workers        []*fakeWorker
+	readiness      DriverReadiness
+	readinessCalls int
+}
+
+func (factory *fakeWorkerFactory) PassiveReadiness() DriverReadiness {
+	factory.readinessCalls++
+	if factory.readiness.Status != "" {
+		return factory.readiness
+	}
+	return configuredDriverReadiness()
 }
 
 type failNextSessionUpdateStore struct {
@@ -146,6 +158,42 @@ func TestBrokerProfileAvailabilityIsReadOnly(t *testing.T) {
 	}
 	if _, err = broker.ProfileAvailability(context.Background(), "unknown", "managed"); !errors.Is(err, ErrDenied) {
 		t.Fatalf("unknown target availability error = %v", err)
+	}
+}
+
+func TestBrokerPassiveReadinessDoesNotProbeOrRenewWorker(t *testing.T) {
+	store := NewMemoryStore()
+	factory := &fakeWorkerFactory{readiness: DriverReadiness{
+		Status: ReadinessReady, Driver: ReadinessReady, Browser: ReadinessReady,
+		Proxy: ReadinessReady, Compatibility: CompatibilityCompatible,
+	}}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	initial, err := broker.PassiveReadiness(context.Background(), "gateway", "managed")
+	if err != nil || initial.Status != ReadinessReady || !initial.Passive ||
+		initial.Profile.Status != ReadinessReady || factory.readinessCalls != 1 ||
+		len(factory.requests) != 0 {
+		t.Fatalf("initial readiness = %#v, %v; factory = %#v", initial, err, factory)
+	}
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: testOwner(), Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, err := broker.PassiveReadiness(context.Background(), "gateway", "managed")
+	if err != nil || busy.Status != ReadinessBusy || busy.Code != "profile_busy" ||
+		busy.Action != "wait_or_close_session" || factory.workers[0].statusCalls != 0 {
+		t.Fatalf("busy readiness = %#v, %v; worker = %#v", busy, err, factory.workers[0])
+	}
+	stored, err := store.GetSession(context.Background(), session.ID)
+	if err != nil || stored.Revision != session.Revision || stored.LastActivityAt != session.LastActivityAt {
+		t.Fatalf("readiness changed session = %#v, %v; want %#v", stored, err, session)
+	}
+	delete(broker.slots, session.ID)
+	degraded, err := broker.PassiveReadiness(context.Background(), "gateway", "managed")
+	if err != nil || degraded.Status != ReadinessDegraded || degraded.Code != "recovery_required" ||
+		degraded.Action != "close_or_recover_session" || factory.workers[0].statusCalls != 0 {
+		t.Fatalf("degraded readiness = %#v, %v", degraded, err)
 	}
 }
 

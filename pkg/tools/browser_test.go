@@ -42,6 +42,8 @@ type fakeBrowserToolSource struct {
 	prepareCalls      int
 	executeCalls      int
 	profileStatus     browser.ProfileAvailability
+	readiness         browser.PassiveReadiness
+	readinessCalls    int
 }
 
 func (source *fakeBrowserToolSource) Available() bool { return source.available }
@@ -70,6 +72,31 @@ func (source *fakeBrowserToolSource) ProfileAvailability(
 		return browser.ProfileAvailability{Status: "ready"}, nil
 	}
 	return source.profileStatus, nil
+}
+
+func (source *fakeBrowserToolSource) PassiveReadiness(
+	_ context.Context,
+	_ string,
+	_ string,
+) (browser.PassiveReadiness, error) {
+	source.readinessCalls++
+	if source.err != nil {
+		return browser.PassiveReadiness{}, source.err
+	}
+	if source.readiness.Status != "" {
+		return source.readiness, nil
+	}
+	profile := source.profileStatus
+	if profile.Status == "" {
+		profile.Status = browser.ReadinessReady
+	}
+	return browser.PassiveReadiness{
+		Status: browser.ReadinessReady, Broker: browser.ReadinessReady,
+		Worker: browser.ReadinessReady, Driver: browser.ReadinessReady,
+		Browser: browser.ReadinessReady, Proxy: browser.ReadinessReady,
+		Compatibility: browser.CompatibilityCompatible,
+		Profile:       profile, Passive: true,
+	}, nil
 }
 
 func (source *fakeBrowserToolSource) Open(
@@ -234,7 +261,16 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 		result.Targets[0].Limits.ScreenshotBytes != config.BrowserMaxScreenshotBytes ||
 		result.Targets[0].Limits.UploadBytes != config.BrowserMaxUploadBytes ||
 		result.Targets[0].Limits.DownloadBytes != config.BrowserMaxDownloadBytes ||
-		source.openRequest.Target != "" {
+		result.Targets[0].Limits.SessionSeconds != config.BrowserMaxSessionSeconds ||
+		result.Targets[0].Limits.ActionSeconds != config.BrowserMaxActionSeconds ||
+		result.Targets[0].Limits.SnapshotRefs != config.BrowserMaxSnapshotRefs ||
+		result.Targets[0].Limits.ToolResultBytes != config.BrowserMaxToolResultBytes ||
+		result.Targets[0].Limits.RetentionSecs != config.BrowserMaxRetentionSeconds ||
+		!result.Targets[0].Features.Diagnostics || result.Targets[0].Features.HeadedView ||
+		result.Targets[0].Features.Handoff ||
+		!result.Targets[0].Profiles[0].Readiness.Passive ||
+		result.Targets[0].Profiles[0].Readiness.Compatibility != browser.CompatibilityCompatible ||
+		source.readinessCalls != 1 || source.openRequest.Target != "" {
 		t.Fatalf("browser targets = %#v", result)
 	}
 
@@ -242,6 +278,22 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 	denied := tool.Execute(other, nil)
 	if denied == nil || !denied.IsError || !strings.Contains(denied.ContentForLLM(), `"code":"not_granted"`) {
 		t.Fatalf("ungranted result = %#v", denied)
+	}
+}
+
+func TestBrowserTargetsReportsUnavailableRuntimeWithoutAdvertisingCapabilities(t *testing.T) {
+	source := &fakeBrowserToolSource{available: false}
+	var result browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &result,
+	)
+	if len(result.Targets) != 1 || result.Targets[0].Status != browser.ReadinessUnavailable ||
+		result.Targets[0].Reason != "driver_unavailable" ||
+		result.Targets[0].Features.Screenshot || result.Targets[0].Features.Upload ||
+		result.Targets[0].Features.Download || !result.Targets[0].Features.Diagnostics ||
+		result.Targets[0].Profiles[0].Readiness.Code != "runtime_unavailable" ||
+		!result.Targets[0].Profiles[0].Readiness.Passive || source.readinessCalls != 0 {
+		t.Fatalf("unavailable browser targets = %#v", result)
 	}
 }
 

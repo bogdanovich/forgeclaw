@@ -11,11 +11,13 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -171,7 +173,9 @@ type PlaywrightWorkerFactory struct {
 	profileConfig config.BrowserProfileConfig
 	serverConfig  config.MCPServerConfig
 	downloadReady bool
+	readiness     atomic.Uint32
 	clientFactory func() playwrightMCPClient
+	lookPath      func(string) (string, error)
 	proxyLookupIP browserProxyLookup
 	proxyDial     browserProxyDial
 }
@@ -225,8 +229,76 @@ func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFac
 		target: config.BrowserDefaultTarget, profileName: config.BrowserDefaultProfile,
 		profileConfig: profile, serverConfig: cloneMCPServerConfig(server),
 		downloadReady: PlaywrightDownloadAvailable(rootConfig),
-		clientFactory: newManagerPlaywrightClient,
+		clientFactory: newManagerPlaywrightClient, lookPath: exec.LookPath,
 	}, nil
+}
+
+const (
+	playwrightReadinessUnchecked uint32 = iota
+	playwrightReadinessReady
+	playwrightReadinessUnavailable
+	playwrightReadinessIncompatible
+	playwrightReadinessProxyUnavailable
+)
+
+// PassiveReadiness reads configuration, executable availability, and the
+// compatibility outcome cached by prior real opens. It never starts npx or a
+// browser and never probes an active worker.
+func (factory *PlaywrightWorkerFactory) PassiveReadiness() DriverReadiness {
+	if factory == nil {
+		return DriverReadiness{
+			Status: ReadinessUnavailable, Driver: ReadinessUnavailable,
+			Browser: ReadinessUnavailable, Proxy: ReadinessUnavailable,
+			Compatibility: CompatibilityUnchecked,
+			Code:          "driver_unavailable", Action: "contact_operator",
+		}
+	}
+	if factory.lookPath == nil {
+		return DriverReadiness{
+			Status: ReadinessUnavailable, Driver: ReadinessUnavailable,
+			Browser: ReadinessConfigured, Proxy: ReadinessConfigured,
+			Compatibility: CompatibilityUnchecked,
+			Code:          "driver_missing", Action: "install_driver",
+		}
+	}
+	if _, err := factory.lookPath(factory.serverConfig.Command); err != nil {
+		return DriverReadiness{
+			Status: ReadinessUnavailable, Driver: ReadinessUnavailable,
+			Browser: ReadinessConfigured, Proxy: ReadinessConfigured,
+			Compatibility: CompatibilityUnchecked,
+			Code:          "driver_missing", Action: "install_driver",
+		}
+	}
+	switch factory.readiness.Load() {
+	case playwrightReadinessReady:
+		return DriverReadiness{
+			Status: ReadinessReady, Driver: ReadinessReady, Browser: ReadinessReady,
+			Proxy: ReadinessReady, Compatibility: CompatibilityCompatible,
+		}
+	case playwrightReadinessUnavailable:
+		return DriverReadiness{
+			Status: ReadinessUnavailable, Driver: ReadinessUnavailable,
+			Browser: ReadinessUnavailable, Proxy: ReadinessConfigured,
+			Compatibility: CompatibilityUnchecked,
+			Code:          "driver_unavailable", Action: "contact_operator",
+		}
+	case playwrightReadinessIncompatible:
+		return DriverReadiness{
+			Status: ReadinessDegraded, Driver: ReadinessDegraded,
+			Browser: ReadinessUnavailable, Proxy: ReadinessReady,
+			Compatibility: CompatibilityIncompatible,
+			Code:          "driver_incompatible", Action: "upgrade_driver",
+		}
+	case playwrightReadinessProxyUnavailable:
+		return DriverReadiness{
+			Status: ReadinessDegraded, Driver: ReadinessConfigured,
+			Browser: ReadinessConfigured, Proxy: ReadinessUnavailable,
+			Compatibility: CompatibilityUnchecked,
+			Code:          "proxy_unavailable", Action: "contact_operator",
+		}
+	default:
+		return configuredDriverReadiness()
+	}
 }
 
 func validatePlaywrightManagedPolicy(server config.MCPServerConfig) error {
@@ -335,6 +407,7 @@ func (factory *PlaywrightWorkerFactory) Open(
 	}
 	client := factory.clientFactory()
 	if client == nil {
+		factory.readiness.Store(playwrightReadinessUnavailable)
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	networkProxy, err := startBrowserNetworkProxy(
@@ -343,6 +416,7 @@ func (factory *PlaywrightWorkerFactory) Open(
 		factory.proxyDial,
 	)
 	if err != nil {
+		factory.readiness.Store(playwrightReadinessProxyUnavailable)
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	server, err := playwrightServerWithNetworkPolicy(
@@ -351,6 +425,7 @@ func (factory *PlaywrightWorkerFactory) Open(
 		networkProxy.URL(),
 	)
 	if err != nil {
+		factory.readiness.Store(playwrightReadinessUnavailable)
 		_ = networkProxy.Close()
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
@@ -364,6 +439,7 @@ func (factory *PlaywrightWorkerFactory) Open(
 		outputDir, err = os.MkdirTemp(outputRoot, request.SessionID+"-")
 	}
 	if err != nil {
+		factory.readiness.Store(playwrightReadinessUnavailable)
 		_ = networkProxy.Close()
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
@@ -372,6 +448,7 @@ func (factory *PlaywrightWorkerFactory) Open(
 	// hiding that action must never leave an unbounded click side effect.
 	server, err = configurePlaywrightDownloadBoundary(server, outputDir)
 	if err != nil {
+		factory.readiness.Store(playwrightReadinessUnavailable)
 		_ = networkProxy.Close()
 		_ = os.RemoveAll(outputDir)
 		return WorkerOpenResult{}, ErrWorkerUnavailable
@@ -391,16 +468,20 @@ func (factory *PlaywrightWorkerFactory) Open(
 	)
 	startupActive := stopStartupCancellation()
 	if err != nil {
+		factory.readiness.Store(playwrightReadinessUnavailable)
 		return failedPlaywrightOpen(worker, ErrWorkerUnavailable)
 	}
 	if !startupActive {
+		factory.readiness.Store(playwrightReadinessUnavailable)
 		return failedPlaywrightOpen(worker, ErrWorkerUnavailable)
 	}
 	catalogRevision, err := validatePlaywrightCatalog(catalog)
 	if err != nil {
+		factory.readiness.Store(playwrightReadinessIncompatible)
 		return failedPlaywrightOpen(worker, ErrDriverIncompatible)
 	}
 	worker.catalogRevision = catalogRevision
+	factory.readiness.Store(playwrightReadinessReady)
 	return WorkerOpenResult{Owner: worker}, nil
 }
 

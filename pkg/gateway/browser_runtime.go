@@ -229,6 +229,20 @@ func (source *gatewayBrowserToolSource) ProfileAvailability(
 	)
 }
 
+func (source *gatewayBrowserToolSource) PassiveReadiness(
+	ctx context.Context,
+	target string,
+	profile string,
+) (browser.PassiveReadiness, error) {
+	return withGatewayBrowserBroker(
+		ctx,
+		source,
+		func(ctx context.Context, broker *browser.Broker) (browser.PassiveReadiness, error) {
+			return broker.PassiveReadiness(ctx, target, profile)
+		},
+	)
+}
+
 func withGatewayBrowserBroker[T any](
 	ctx context.Context,
 	source *gatewayBrowserToolSource,

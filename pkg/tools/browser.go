@@ -28,6 +28,7 @@ type BrowserToolSource interface {
 	ArtifactTransferAvailable() bool
 	DownloadAvailable() bool
 	ProfileAvailability(context.Context, string, string) (browser.ProfileAvailability, error)
+	PassiveReadiness(context.Context, string, string) (browser.PassiveReadiness, error)
 	Open(context.Context, browser.OpenRequest) (browser.Session, error)
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
 	Close(context.Context, browser.Owner, string) (browser.Session, error)
@@ -135,26 +136,38 @@ type browserTargetView struct {
 }
 
 type browserFeatureView struct {
-	Screenshot bool `json:"screenshot"`
-	Upload     bool `json:"upload"`
-	Download   bool `json:"download"`
+	Screenshot  bool `json:"screenshot"`
+	Upload      bool `json:"upload"`
+	Download    bool `json:"download"`
+	Diagnostics bool `json:"diagnostics"`
+	HeadedView  bool `json:"headed_view"`
+	Handoff     bool `json:"handoff"`
 }
 
 type browserProfileView struct {
-	Profile     string `json:"profile"`
-	Status      string `json:"status"`
-	Reason      string `json:"reason,omitempty"`
-	NetworkMode string `json:"network_mode"`
-	DryRun      bool   `json:"dry_run"`
+	Profile     string                   `json:"profile"`
+	Status      string                   `json:"status"`
+	Reason      string                   `json:"reason,omitempty"`
+	NetworkMode string                   `json:"network_mode"`
+	DryRun      bool                     `json:"dry_run"`
+	Readiness   browser.PassiveReadiness `json:"readiness"`
 }
 
 type browserLimitsView struct {
 	Sessions        int `json:"sessions"`
 	Tabs            int `json:"tabs"`
+	SessionSeconds  int `json:"session_seconds"`
+	IdleSeconds     int `json:"idle_seconds"`
+	PreparedSeconds int `json:"prepared_seconds"`
+	ActionSeconds   int `json:"action_seconds"`
 	SnapshotBytes   int `json:"snapshot_bytes"`
 	ScreenshotBytes int `json:"screenshot_bytes"`
 	UploadBytes     int `json:"upload_bytes"`
 	DownloadBytes   int `json:"download_bytes"`
+	SnapshotRefs    int `json:"snapshot_refs"`
+	TextInputBytes  int `json:"text_input_bytes"`
+	ToolResultBytes int `json:"tool_result_bytes"`
+	RetentionSecs   int `json:"retention_seconds"`
 }
 
 func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *ToolResult {
@@ -188,17 +201,30 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 		for _, profileName := range profileNames {
 			profile := target.Profiles[profileName]
 			status, reason := "unavailable", "driver_unavailable"
+			readiness := browser.PassiveReadiness{
+				Status: browser.ReadinessUnavailable, Broker: browser.ReadinessUnavailable,
+				Worker: browser.ReadinessUnavailable, Driver: browser.ReadinessUnavailable,
+				Browser: browser.ReadinessUnavailable, Proxy: browser.ReadinessUnavailable,
+				Compatibility: browser.CompatibilityUnchecked,
+				Profile:       browser.ProfileAvailability{Status: status, Reason: reason},
+				Code:          "runtime_unavailable", Action: "contact_operator", Passive: true,
+			}
 			if runtimeAvailable {
-				availability, err := tool.runtime.source.ProfileAvailability(ctx, name, profileName)
+				diagnostics, err := tool.runtime.source.PassiveReadiness(ctx, name, profileName)
 				if err == nil {
-					status, reason = availability.Status, availability.Reason
+					readiness = diagnostics
+					status, reason = diagnostics.Profile.Status, diagnostics.Profile.Reason
 				} else {
 					reason = "recovery_required"
+					readiness.Status = browser.ReadinessDegraded
+					readiness.Profile = browser.ProfileAvailability{Status: status, Reason: reason}
+					readiness.Code, readiness.Action = "recovery_required", "contact_operator"
 				}
 			}
 			profiles = append(profiles, browserProfileView{
 				Profile: profileName, Status: status, Reason: reason,
 				NetworkMode: profile.EffectiveNetworkMode(), DryRun: profile.DryRun,
+				Readiness: readiness,
 			})
 		}
 		targetStatus, targetReason := "ready", ""
@@ -224,14 +250,22 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 			Target: name, Status: targetStatus, Reason: targetReason, Profiles: profiles,
 			Actions: actions,
 			Features: browserFeatureView{
-				Screenshot: tool.runtime.source.ScreenshotAvailable(),
-				Upload:     uploadAvailable,
-				Download:   downloadAvailable,
+				Screenshot:  runtimeAvailable && tool.runtime.source.ScreenshotAvailable(),
+				Upload:      uploadAvailable,
+				Download:    downloadAvailable,
+				Diagnostics: true,
+				HeadedView:  false,
+				Handoff:     false,
 			},
 			Limits: browserLimitsView{
-				Sessions: limits.Sessions, Tabs: limits.Tabs, SnapshotBytes: limits.SnapshotBytes,
+				Sessions: limits.Sessions, Tabs: limits.Tabs,
+				SessionSeconds: limits.SessionSeconds, IdleSeconds: limits.IdleSeconds,
+				PreparedSeconds: limits.PreparedSeconds, ActionSeconds: limits.ActionSeconds,
+				SnapshotBytes:   limits.SnapshotBytes,
 				ScreenshotBytes: limits.ScreenshotBytes, UploadBytes: limits.UploadBytes,
-				DownloadBytes: limits.DownloadBytes,
+				DownloadBytes: limits.DownloadBytes, SnapshotRefs: limits.SnapshotRefs,
+				TextInputBytes: limits.TextInputBytes, ToolResultBytes: limits.ToolResultBytes,
+				RetentionSecs: limits.RetentionSecs,
 			},
 		})
 	}
