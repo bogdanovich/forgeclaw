@@ -491,9 +491,10 @@ func (tool *BrowserObserveTool) screenshotResult(
 			"retry_observation",
 		)
 	}
+	deliveryRecovery := *artifact.Recovery
 	delivery := browser.ScreenshotDeliveryRequest{
 		Owner: owner, RequestID: requestID, SessionID: artifact.SessionID,
-		Ref: artifact.Ref, MediaRef: artifact.MediaRef,
+		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: &deliveryRecovery,
 	}
 	recovery := artifact.Recovery
 	return result.WithOutboundDelivery(OutboundDelivery{

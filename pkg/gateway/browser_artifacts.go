@@ -74,15 +74,15 @@ func (source *gatewayBrowserToolSource) LookupScreenshot(
 }
 
 func (source *gatewayBrowserToolSource) ClaimScreenshotDelivery(
-	ctx context.Context,
+	_ context.Context,
 	request browser.ScreenshotDeliveryRequest,
 ) error {
 	if source == nil || source.services == nil || source.services.NodeAdmission == nil ||
-		source.workspace == "" || request.Owner.Validate() != nil {
+		source.workspace == "" || request.Owner.Validate() != nil || request.Recovery == nil {
 		return browser.ErrWorkerUnavailable
 	}
-	owner, _, err := browserScreenshotOwners(
-		ctx, source.workspace, request.SessionID, request.RequestID,
+	owner, err := browserScreenshotRecoveryOwner(
+		*request.Recovery, request.SessionID, request.RequestID,
 	)
 	if err != nil {
 		return browser.ErrDenied
@@ -94,6 +94,22 @@ func (source *gatewayBrowserToolSource) ClaimScreenshotDelivery(
 		return browser.ErrWorkerUnavailable
 	}
 	return claimBrowserScreenshotDelivery(spool, owner, request.Ref, request.MediaRef)
+}
+
+func browserScreenshotRecoveryOwner(
+	recovery browser.ScreenshotRecovery,
+	sessionID string,
+	requestID string,
+) (nodes.TransferArtifactOwner, error) {
+	owner := nodes.TransferArtifactOwner{
+		WorkspaceID: recovery.WorkspaceID, AgentID: recovery.AgentID,
+		ActorID: recovery.ActorID, RouteID: recovery.RouteID,
+		SessionID: recovery.SessionID, ToolCallID: recovery.ToolCallID,
+	}
+	if recovery.SessionID != sessionID || recovery.ToolCallID != requestID || owner.Validate() != nil {
+		return nodes.TransferArtifactOwner{}, nodes.ErrTransferArtifactNotFound
+	}
+	return owner, nil
 }
 
 func claimBrowserScreenshotDelivery(

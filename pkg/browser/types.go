@@ -67,6 +67,7 @@ type ScreenshotDeliveryRequest struct {
 	SessionID string
 	Ref       string
 	MediaRef  string
+	Recovery  *ScreenshotRecovery
 }
 
 const (

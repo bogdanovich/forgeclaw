@@ -77,9 +77,10 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	}
 	delivery := browser.ScreenshotDeliveryRequest{
 		Owner: owner, RequestID: request.RequestID, SessionID: capture.SessionID,
-		Ref: artifact.Ref, MediaRef: artifact.MediaRef,
+		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: artifact.Recovery,
 	}
-	if err = source.ClaimScreenshotDelivery(ctx, delivery); err != nil {
+	claimCtx := tools.WithToolRouteSessionKey(ctx, "delivery-route-drift")
+	if err = source.ClaimScreenshotDelivery(claimCtx, delivery); err != nil {
 		t.Fatalf("ClaimScreenshotDelivery() error = %v", err)
 	}
 	replay, found, err = source.LookupScreenshot(ctx, owner, request.RequestID, capture.SessionID)
@@ -88,8 +89,16 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 		replay.SnapshotID != artifact.SnapshotID || replay.SnapshotGeneration != artifact.SnapshotGeneration {
 		t.Fatalf("claimed LookupScreenshot() = %+v, %t, %v", replay, found, err)
 	}
-	if err = source.ClaimScreenshotDelivery(ctx, delivery); err != nil {
+	if err = source.ClaimScreenshotDelivery(claimCtx, delivery); err != nil {
 		t.Fatalf("idempotent ClaimScreenshotDelivery() error = %v", err)
+	}
+	wrongRecovery := *artifact.Recovery
+	wrongRecovery.RouteID = "route_wrong"
+	delivery.Recovery = &wrongRecovery
+	if err = source.ClaimScreenshotDelivery(claimCtx, delivery); !errors.Is(
+		err, nodes.ErrTransferArtifactNotFound,
+	) {
+		t.Fatalf("wrong recovery owner error = %v", err)
 	}
 	capture.Data = append(capture.Data, 0)
 	if _, err = source.retainScreenshot(ctx, request, capture); err == nil {
