@@ -360,10 +360,6 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 		client.connectCfg.Env["PLAYWRIGHT_MCP_EXTENSION"] != "" {
 		t.Fatalf("private connection = %q, %+v", client.connectName, client.connectCfg)
 	}
-	if client.connectCfg.StdioFileSizeLimitBytes !=
-		int64((config.BrowserLimitsConfig{}).Effective().DownloadBytes) {
-		t.Fatalf("stdio file size limit = %d", client.connectCfg.StdioFileSizeLimitBytes)
-	}
 	driverOutputDir := args[9]
 	if info, statErr := os.Lstat(driverOutputDir); statErr != nil || !info.IsDir() ||
 		(runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {

@@ -22,6 +22,7 @@ type fakeBrowserToolSource struct {
 	lookupHit             bool
 	screenshotUnavailable bool
 	transferUnavailable   bool
+	downloadUnavailable   bool
 	prepare               browser.Preparation
 	execute               browser.Invocation
 	err                   error
@@ -51,6 +52,10 @@ func (source *fakeBrowserToolSource) ScreenshotAvailable() bool {
 
 func (source *fakeBrowserToolSource) ArtifactTransferAvailable() bool {
 	return source != nil && !source.transferUnavailable
+}
+
+func (source *fakeBrowserToolSource) DownloadAvailable() bool {
+	return source != nil && !source.downloadUnavailable
 }
 
 func (source *fakeBrowserToolSource) ProfileAvailability(
@@ -284,6 +289,34 @@ func TestBrowserArtifactTransfersAreNotAdvertisedOrPreparedWhenPlatformIsUnsuppo
 	if result == nil || !result.IsError || source.prepareCalls != 0 ||
 		!strings.Contains(result.ContentForLLM(), `"code":"driver_incompatible"`) {
 		t.Fatalf("unsupported transfer result = %#v; prepare calls = %d", result, source.prepareCalls)
+	}
+}
+
+func TestBrowserDownloadIsNotAdvertisedOrPreparedWithoutScopedDriver(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, downloadUnavailable: true}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &targets,
+	)
+	if len(targets.Targets) != 1 || !targets.Targets[0].Features.Upload || targets.Targets[0].Features.Download {
+		t.Fatalf("scoped transfer features = %#v", targets)
+	}
+	upload, download := false, false
+	for _, action := range targets.Targets[0].Actions {
+		upload = upload || action == browser.ActionUpload
+		download = download || action == browser.ActionDownload
+	}
+	if !upload || download {
+		t.Fatalf("scoped transfer actions = %#v", targets.Targets[0].Actions)
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+		"snapshot_id": "snapshot_1", "snapshot_generation": 1,
+		"action": map[string]any{"kind": "download", "ref": "ref_download"},
+	})
+	if result == nil || !result.IsError || source.prepareCalls != 0 ||
+		!strings.Contains(result.ContentForLLM(), `"code":"driver_incompatible"`) {
+		t.Fatalf("unavailable download result = %#v; prepare calls = %d", result, source.prepareCalls)
 	}
 }
 

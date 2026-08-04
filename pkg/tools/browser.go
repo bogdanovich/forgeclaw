@@ -26,6 +26,7 @@ type BrowserToolSource interface {
 	Available() bool
 	ScreenshotAvailable() bool
 	ArtifactTransferAvailable() bool
+	DownloadAvailable() bool
 	ProfileAvailability(context.Context, string, string) (browser.ProfileAvailability, error)
 	Open(context.Context, browser.OpenRequest) (browser.Session, error)
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
@@ -211,17 +212,21 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 			browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
 			browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
 		}
-		transferAvailable := runtimeAvailable && tool.runtime.source.ArtifactTransferAvailable()
-		if transferAvailable {
-			actions = append(actions, browser.ActionUpload, browser.ActionDownload)
+		uploadAvailable := runtimeAvailable && tool.runtime.source.ArtifactTransferAvailable()
+		downloadAvailable := uploadAvailable && tool.runtime.source.DownloadAvailable()
+		if uploadAvailable {
+			actions = append(actions, browser.ActionUpload)
+		}
+		if downloadAvailable {
+			actions = append(actions, browser.ActionDownload)
 		}
 		views = append(views, browserTargetView{
 			Target: name, Status: targetStatus, Reason: targetReason, Profiles: profiles,
 			Actions: actions,
 			Features: browserFeatureView{
 				Screenshot: tool.runtime.source.ScreenshotAvailable(),
-				Upload:     transferAvailable,
-				Download:   transferAvailable,
+				Upload:     uploadAvailable,
+				Download:   downloadAvailable,
 			},
 			Limits: browserLimitsView{
 				Sessions: limits.Sessions, Tabs: limits.Tabs, SnapshotBytes: limits.SnapshotBytes,
@@ -719,8 +724,11 @@ func (tool *BrowserActTool) prepare(ctx context.Context, args map[string]any) (b
 	if action.Kind == browser.ActionDownload && action.Deliver && !ToolRecoverableOutbound(ctx) {
 		return browser.Preparation{}, browser.ErrDenied
 	}
-	if (action.Kind == browser.ActionUpload || action.Kind == browser.ActionDownload) &&
-		!tool.runtime.source.ArtifactTransferAvailable() {
+	if action.Kind == browser.ActionUpload && !tool.runtime.source.ArtifactTransferAvailable() {
+		return browser.Preparation{}, browser.ErrDriverIncompatible
+	}
+	if action.Kind == browser.ActionDownload &&
+		(!tool.runtime.source.ArtifactTransferAvailable() || !tool.runtime.source.DownloadAvailable()) {
 		return browser.Preparation{}, browser.ErrDriverIncompatible
 	}
 	sessionID, sessionOK := args["browser_session_id"].(string)

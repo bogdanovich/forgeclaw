@@ -1503,9 +1503,6 @@ type MCPServerConfig struct {
 	// ExclusiveLockFile is an optional cross-process lease for stdio servers.
 	// It is held for the lifetime of the managed server, including reconnects.
 	ExclusiveLockFile string `json:"exclusive_lock_file,omitempty"`
-	// StdioFileSizeLimitBytes is an internal per-file write ceiling inherited by
-	// the stdio server process tree. It is intentionally not user-configurable.
-	StdioFileSizeLimitBytes int64 `json:"-"`
 }
 
 // MCPConfig defines configuration for all MCP servers
