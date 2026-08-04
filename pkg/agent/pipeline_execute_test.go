@@ -746,7 +746,9 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 		manager := &fakeToolSuspensionManager{
 			disposition: ToolSuspensionDisposition{InteractionID: "interaction-domain", Durable: true},
 		}
-		pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
+		pipeline := &Pipeline{Interaction: PipelineInteractionServices{
+			Hooks: NewHookManager(nil), Suspension: manager,
+		}}
 		if outcome := pipeline.ExecuteTools(
 			t.Context(),
 			t.Context(),
@@ -763,6 +765,11 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 		}
 		if len(manager.requests) != 1 || manager.requests[0].Resolution == nil {
 			t.Fatalf("suspension requests = %#v", manager.requests)
+		}
+		select {
+		case outcome := <-called:
+			t.Fatalf("hook clone resolved suspension before durable answer: %q", outcome)
+		default:
 		}
 		if err := manager.requests[0].Resolution(t.Context(), interactions.OutcomeAnswered); err != nil {
 			t.Fatal(err)
