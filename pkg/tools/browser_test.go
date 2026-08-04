@@ -21,6 +21,7 @@ type fakeBrowserToolSource struct {
 	lookup                browser.ScreenshotArtifact
 	lookupHit             bool
 	screenshotUnavailable bool
+	transferUnavailable   bool
 	prepare               browser.Preparation
 	execute               browser.Invocation
 	err                   error
@@ -46,6 +47,10 @@ func (source *fakeBrowserToolSource) Available() bool { return source.available 
 
 func (source *fakeBrowserToolSource) ScreenshotAvailable() bool {
 	return source != nil && !source.screenshotUnavailable
+}
+
+func (source *fakeBrowserToolSource) ArtifactTransferAvailable() bool {
+	return source != nil && !source.transferUnavailable
 }
 
 func (source *fakeBrowserToolSource) ProfileAvailability(
@@ -254,6 +259,31 @@ func TestBrowserScreenshotIsNotAdvertisedOrCapturedWhenDeliveryIsUnsupported(t *
 		!strings.Contains(result.ContentForLLM(), `"code":"unsupported_platform"`) ||
 		source.observeCalls != 0 || source.screenshotRequest.RequestID != "" {
 		t.Fatalf("unsupported screenshot result = %#v; source = %#v", result, source)
+	}
+}
+
+func TestBrowserArtifactTransfersAreNotAdvertisedOrPreparedWhenPlatformIsUnsupported(t *testing.T) {
+	source := &fakeBrowserToolSource{available: true, transferUnavailable: true}
+	var targets browserTargetResult
+	decodeBrowserToolResult(
+		t, NewBrowserTargetsTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), nil), &targets,
+	)
+	if len(targets.Targets) != 1 || targets.Targets[0].Features.Upload || targets.Targets[0].Features.Download {
+		t.Fatalf("unsupported transfer features = %#v", targets)
+	}
+	for _, action := range targets.Targets[0].Actions {
+		if action == browser.ActionUpload || action == browser.ActionDownload {
+			t.Fatalf("unsupported action advertised: %q", action)
+		}
+	}
+	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
+		"snapshot_id": "snapshot_1", "snapshot_generation": 1,
+		"action": map[string]any{"kind": "download", "ref": "ref_download"},
+	})
+	if result == nil || !result.IsError || source.prepareCalls != 0 ||
+		!strings.Contains(result.ContentForLLM(), `"code":"driver_incompatible"`) {
+		t.Fatalf("unsupported transfer result = %#v; prepare calls = %d", result, source.prepareCalls)
 	}
 }
 

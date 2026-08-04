@@ -566,7 +566,8 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 		}
 	case ActionDownload:
 		if prepared.DestinationOrigin != "" || !elementRoleRegexp.MatchString(prepared.ElementRole) ||
-			prepared.Effect != EffectRead || prepared.ArtifactSHA256 != "" || prepared.ArtifactBytes != 0 ||
+			prepared.Effect != classifyClickEffect(DriverElement{Role: prepared.ElementRole}) ||
+			prepared.ArtifactSHA256 != "" || prepared.ArtifactBytes != 0 ||
 			prepared.ArtifactFilename != "" || prepared.ArtifactContentType != "" ||
 			prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared download", ErrInvalid)

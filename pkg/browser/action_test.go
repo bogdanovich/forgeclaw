@@ -123,7 +123,7 @@ func TestBrokerObservationScopesOpaqueReferencesToFreshGeneration(t *testing.T) 
 	}
 }
 
-func TestBrokerBindsUploadArtifactAndCommitsDownloadThroughSink(t *testing.T) {
+func TestBrokerBindsUploadArtifactAndRequiresApprovalForDownloadClick(t *testing.T) {
 	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
 	owner := testOwner()
 	worker.observation = driverObservationFixture(DriverElement{Target: "e2", Role: "button", Name: "Choose file"})
@@ -169,21 +169,8 @@ func TestBrokerBindsUploadArtifactAndCommitsDownloadThroughSink(t *testing.T) {
 		SnapshotID: downloadObservation.SnapshotID, SnapshotGeneration: downloadObservation.SnapshotGeneration,
 		Action: Action{Kind: ActionDownload, Ref: onlyVisibleRef(t, downloadObservation.Snapshot)},
 	})
-	if err != nil || download.RequiresApproval {
+	if err != nil || !download.RequiresApproval || download.Action.Effect != EffectUnknown {
 		t.Fatalf("PrepareAction(download) = %#v, %v", download, err)
-	}
-	invocation, err = broker.ExecuteActionWithDownloadSink(
-		context.Background(), owner, download.Action.ID, nil,
-		func(_ context.Context, prepared PreparedAction, captured DriverDownload) (json.RawMessage, error) {
-			if prepared.ID != download.Action.ID || captured != worker.download {
-				t.Fatalf("download sink = %#v, %#v", prepared, captured)
-			}
-			return json.RawMessage(`{"status":"completed","artifact":{"ref":"transfer-artifact://result"}}`), nil
-		},
-	)
-	if err != nil || invocation.State != InvocationSucceeded ||
-		!bytes.Contains(invocation.TerminalResult, []byte("transfer-artifact://result")) {
-		t.Fatalf("ExecuteAction(download) = %#v, %v", invocation, err)
 	}
 }
 

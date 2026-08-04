@@ -80,6 +80,42 @@ func (broker *Broker) PreparedAction(ctx context.Context, owner Owner, id string
 	return prepared, nil
 }
 
+func (broker *Broker) RecoverableDownloadPreparation(
+	ctx context.Context, request PrepareActionRequest,
+) (Preparation, bool, error) {
+	if request.Owner.Validate() != nil || !validIdentifier(request.RequestID) ||
+		!validIdentifier(request.SessionID) || !validIdentifier(request.TabID) ||
+		!validIdentifier(request.SnapshotID) || request.SnapshotGeneration == 0 ||
+		request.Action.Kind != ActionDownload ||
+		request.Action.Validate(broker.config.Limits.Effective().TextInputBytes) != nil {
+		return Preparation{}, false, ErrInvalid
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	preparedID := derivedIdentifier("prepared", request.Owner, request.SessionID, request.RequestID)
+	prepared, err := broker.store.GetPreparedAction(ctx, preparedID)
+	if errors.Is(err, ErrNotFound) {
+		return Preparation{}, false, nil
+	}
+	if err != nil {
+		return Preparation{}, false, err
+	}
+	if prepared.Owner != request.Owner || prepared.SessionID != request.SessionID ||
+		prepared.TabID != request.TabID || prepared.SnapshotID != request.SnapshotID ||
+		prepared.SnapshotGeneration != request.SnapshotGeneration || prepared.Action != request.Action {
+		return Preparation{}, false, ErrConflict
+	}
+	invocationID := derivedIdentifier("invocation", request.Owner, request.SessionID, request.RequestID)
+	invocation, err := broker.store.GetInvocation(ctx, invocationID)
+	if err != nil {
+		return Preparation{}, false, err
+	}
+	if invocation.State != InvocationAccepted && invocation.State != InvocationSucceeded {
+		return Preparation{}, false, nil
+	}
+	return preparationView(prepared), true, nil
+}
+
 func (broker *Broker) RecoverAcceptedDownload(
 	ctx context.Context, owner Owner, preparedID string, terminal json.RawMessage,
 ) (Invocation, error) {
@@ -551,7 +587,8 @@ func (broker *Broker) Sweep(ctx context.Context) error {
 
 // Recover reconciles state after a gateway restart. B1 workers are
 // in-process, so continuity cannot be proven: live sessions become lost and
-// every accepted unterminated invocation becomes unknown without dispatch.
+// accepted operations become unknown without dispatch, except typed downloads
+// whose exact committed P2 artifact can still complete without replay.
 func (broker *Broker) Recover(ctx context.Context) error {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -563,7 +600,7 @@ func (broker *Broker) Recover(ctx context.Context) error {
 		if session.State.Terminal() {
 			continue
 		}
-		if err = broker.terminateInvocationsLocked(ctx, session.ID, "gateway_restarted"); err != nil {
+		if err = broker.terminateInvocationsForRestartLocked(ctx, session.ID); err != nil {
 			return err
 		}
 		now := timestampAtLeast(broker.now().UTC().UnixNano(), session.UpdatedAt)
@@ -574,6 +611,41 @@ func (broker *Broker) Recover(ctx context.Context) error {
 		session.UpdatedAt = now
 		session.LastActivityAt = now
 		if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (broker *Broker) terminateInvocationsForRestartLocked(ctx context.Context, sessionID string) error {
+	invocations, err := broker.store.ListInvocations(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, invocation := range invocations {
+		if invocation.State.Terminal() {
+			continue
+		}
+		if invocation.State == InvocationAccepted {
+			prepared, preparedErr := broker.store.GetPreparedAction(ctx, invocation.PreparedActionID)
+			if preparedErr == nil && prepared.Action.Kind == ActionDownload {
+				continue
+			}
+			if preparedErr != nil && !errors.Is(preparedErr, ErrNotFound) {
+				return preparedErr
+			}
+		}
+		now := timestampAtLeast(broker.now().UTC().UnixNano(), invocation.UpdatedAt)
+		if invocation.State == InvocationPrepared {
+			invocation.State = InvocationCanceled
+		} else {
+			invocation.State = InvocationUnknown
+		}
+		invocation.SafeFailure = "gateway_restarted"
+		invocation.Revision++
+		invocation.UpdatedAt = now
+		invocation.CompletedAt = now
+		if err = broker.store.UpdateInvocation(ctx, invocation.Revision-1, invocation); err != nil {
 			return err
 		}
 	}

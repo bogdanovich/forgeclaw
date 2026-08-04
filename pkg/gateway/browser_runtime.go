@@ -297,6 +297,32 @@ func (source *gatewayBrowserToolSource) PrepareAction(
 	ctx context.Context,
 	request browser.PrepareActionRequest,
 ) (browser.Preparation, error) {
+	if request.Action.Kind == browser.ActionDownload {
+		recovered, recoverErr := withGatewayBrowserBroker(
+			ctx, source,
+			func(ctx context.Context, broker *browser.Broker) (browser.Preparation, error) {
+				preparation, found, err := broker.RecoverableDownloadPreparation(ctx, request)
+				if err != nil || !found {
+					return browser.Preparation{}, err
+				}
+				return preparation, nil
+			},
+		)
+		if recoverErr == nil && recovered.Action.ID != "" {
+			_, artifactFound, artifactErr := source.lookupBrowserDownload(
+				ctx, request.Owner, request.RequestID, request.SessionID, request.Action.Deliver,
+			)
+			if artifactErr != nil {
+				return browser.Preparation{}, artifactErr
+			}
+			if artifactFound {
+				return recovered, nil
+			}
+		}
+		if recoverErr != nil && !errors.Is(recoverErr, browser.ErrNotFound) {
+			return browser.Preparation{}, recoverErr
+		}
+	}
 	if request.Action.Kind == browser.ActionUpload {
 		binding, err := source.resolveBrowserUpload(ctx, request)
 		if err != nil {

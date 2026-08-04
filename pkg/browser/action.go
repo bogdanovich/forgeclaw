@@ -399,7 +399,7 @@ func (broker *Broker) resolvePreparedActionLocked(
 			prepared.ArtifactContentType = request.Upload.ContentType
 			prepared.Effect = EffectLocalEdit
 		} else if request.Action.Kind == ActionDownload {
-			prepared.Effect = EffectRead
+			prepared.Effect = classifyClickEffect(element)
 		} else if request.Action.Kind == ActionFill {
 			if !editableElementRole(element.Role) {
 				return PreparedAction{}, ErrDenied

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +169,162 @@ func TestGatewayBrowserDownloadRoundTripsIntoAuthorizedUpload(t *testing.T) {
 		t.Fatalf("ClaimDownloadDelivery() error = %v", err)
 	}
 }
+
+func TestGatewayBrowserDownloadRecoversAcrossActualBrokerRestart(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := gatewayBrowserConfig(workspace)
+	policyRevision, err := cfg.Tools.Browser.PolicyRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(workspace, "state", "browser", "browser.json")
+	store, err := browser.NewFileStore(statePath, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &gatewayArtifactRecoveryWorker{}
+	broker, err := browser.NewBroker(cfg, store, &gatewayArtifactRecoveryFactory{worker: worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := browser.Owner{
+		ActorID: "actor_1", AgentID: browser.OpaqueAgentID("browser"),
+		SessionKey: "route_1", ExecutionID: "execution_1",
+	}
+	session, err := broker.Open(context.Background(), browser.OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`\[ref=([^]]+)\]`).FindStringSubmatch(observation.Snapshot)
+	if len(match) != 2 {
+		t.Fatalf("observation snapshot = %q", observation.Snapshot)
+	}
+	request := browser.PrepareActionRequest{
+		Owner: owner, RequestID: "request_restart_download", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
+		Action: browser.Action{Kind: browser.ActionDownload, Ref: match[1]},
+	}
+	preparation, err := broker.PrepareAction(context.Background(), request)
+	if err != nil || !preparation.RequiresApproval {
+		t.Fatalf("PrepareAction() = %#v, %v", preparation, err)
+	}
+	invocations, err := store.ListInvocations(context.Background(), session.ID)
+	if err != nil || len(invocations) != 1 {
+		t.Fatalf("ListInvocations() = %#v, %v", invocations, err)
+	}
+	accepted := invocations[0]
+	accepted.State = browser.InvocationAccepted
+	accepted.Revision++
+	accepted.AcceptedAt = accepted.CreatedAt + 1
+	accepted.UpdatedAt = accepted.AcceptedAt
+	if err = store.UpdateInvocation(context.Background(), accepted.Revision-1, accepted); err != nil {
+		t.Fatal(err)
+	}
+
+	mediaStore, err := media.NewFileMediaStoreWithPersistentIndex(
+		filepath.Join(workspace, "state", "media", "index.json"), media.MediaCleanerConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeRuntime := &nodeAdmissionRuntime{}
+	t.Cleanup(func() {
+		if nodeRuntime.transferSpool != nil {
+			_ = nodeRuntime.transferSpool.Close()
+		}
+	})
+	servicesOwner := &services{NodeAdmission: nodeRuntime, MediaStore: mediaStore}
+	source := &gatewayBrowserToolSource{
+		services: servicesOwner, policyRevision: policyRevision, workspace: workspace,
+		screenshotRetention: time.Hour, limits: cfg.Tools.Browser.Limits.Effective(),
+	}
+	payload := []byte("restart download fixture")
+	path := filepath.Join(t.TempDir(), "restart.txt")
+	if err = os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	ctx := gatewayBrowserArtifactContext(workspace)
+	retained, err := source.retainBrowserDownload(ctx, preparation.Action, browser.DriverDownload{
+		Path: path, Filename: "restart.txt", ContentType: "text/plain",
+		SHA256: hex.EncodeToString(digest[:]), Size: int64(len(payload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	reopened, err := browser.NewFileStore(statePath, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reopened.Close)
+	recoveredBroker, err := browser.NewBroker(
+		cfg, reopened, &gatewayArtifactRecoveryFactory{worker: &gatewayArtifactRecoveryWorker{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = recoveredBroker.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	servicesOwner.Browser = &browserRuntime{broker: recoveredBroker, policyRevision: policyRevision}
+	recoveredPreparation, err := source.PrepareAction(ctx, request)
+	if err != nil || recoveredPreparation.Action.ID != preparation.Action.ID {
+		t.Fatalf("PrepareAction() after restart = %#v, %v", recoveredPreparation, err)
+	}
+	result, err := source.ExecuteAction(ctx, owner, preparation.Action.ID, &preparation.Approval)
+	if err != nil || result.State != browser.InvocationSucceeded || result.Download == nil ||
+		result.Download.Ref != retained.Ref || worker.executeCalls != 0 {
+		t.Fatalf("ExecuteAction() after restart = %#v, %v; driver calls = %d", result, err, worker.executeCalls)
+	}
+	storedSession, err := recoveredBroker.Status(context.Background(), owner, session.ID)
+	if err != nil || storedSession.State != browser.SessionLost || storedSession.SnapshotID != "" {
+		t.Fatalf("recovered browser session = %#v, %v", storedSession, err)
+	}
+}
+
+type gatewayArtifactRecoveryFactory struct {
+	worker *gatewayArtifactRecoveryWorker
+}
+
+func (factory *gatewayArtifactRecoveryFactory) Open(
+	context.Context, browser.WorkerOpenRequest,
+) (browser.WorkerOpenResult, error) {
+	return browser.WorkerOpenResult{Owner: factory.worker}, nil
+}
+
+type gatewayArtifactRecoveryWorker struct{ executeCalls int }
+
+func (*gatewayArtifactRecoveryWorker) Status(context.Context) (browser.WorkerStatus, error) {
+	return browser.WorkerReady, nil
+}
+func (*gatewayArtifactRecoveryWorker) Close(context.Context) error { return nil }
+func (*gatewayArtifactRecoveryWorker) Observe(context.Context) (browser.DriverObservation, error) {
+	return browser.DriverObservation{
+		URL: "https://example.com/download", Origin: "https://example.com", Title: "Fixture",
+		Snapshot: "- link \"Download\" [ref=e1]",
+		Elements: []browser.DriverElement{{Target: "e1", Role: "link", Name: "Download"}},
+	}, nil
+}
+
+func (*gatewayArtifactRecoveryWorker) Resolve(
+	context.Context, string,
+) (browser.DriverElement, string, error) {
+	return browser.DriverElement{Target: "e1", Role: "link", Name: "Download"}, "https://example.com", nil
+}
+
+func (worker *gatewayArtifactRecoveryWorker) Execute(context.Context, browser.DriverAction) error {
+	worker.executeCalls++
+	return nil
+}
+func (*gatewayArtifactRecoveryWorker) CatalogRevision() string { return strings.Repeat("c", 64) }
 
 func TestGatewayOutboundRecoveryUsesGatewayWorkspaceBeforePublication(t *testing.T) {
 	workspace := t.TempDir()

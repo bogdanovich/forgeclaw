@@ -355,14 +355,14 @@ func (factory *PlaywrightWorkerFactory) Open(
 		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	server, outputRoot := playwrightOutputRoot(server)
+	outputDir := ""
 	if outputRoot == "" {
-		outputRoot = filepath.Join(os.TempDir(), "mintclaw-browser-output")
+		outputDir, err = os.MkdirTemp("", "mintclaw-browser-"+request.SessionID+"-")
+	} else if !filepath.IsAbs(outputRoot) || validatePrivateBrowserOutputRoot(outputRoot) != nil {
+		err = ErrWorkerUnavailable
+	} else {
+		outputDir, err = os.MkdirTemp(outputRoot, request.SessionID+"-")
 	}
-	if !filepath.IsAbs(outputRoot) || os.MkdirAll(outputRoot, 0o700) != nil {
-		_ = networkProxy.Close()
-		return WorkerOpenResult{}, ErrWorkerUnavailable
-	}
-	outputDir, err := os.MkdirTemp(outputRoot, request.SessionID+"-")
 	if err != nil {
 		_ = networkProxy.Close()
 		return WorkerOpenResult{}, ErrWorkerUnavailable
@@ -629,9 +629,25 @@ func (worker *playwrightWorker) Download(
 	if err != nil {
 		return DriverDownload{}, ErrWorkerUnavailable
 	}
-	if _, err = worker.callRawText(ctx, "browser_click", map[string]any{
-		"target": action.Target, "element": action.Element, "doubleClick": false, "button": "left",
-	}); err != nil {
+	clickCtx, cancelClick := context.WithCancel(ctx)
+	defer cancelClick()
+	clickResult := make(chan playwrightRawOutcome, 1)
+	denialsBefore := uint64(0)
+	if worker.networkProxy != nil {
+		denialsBefore = worker.networkProxy.Denials()
+	}
+	go func() {
+		result, clickErr := worker.client.CallTool(clickCtx, "browser_click", map[string]any{
+			"target": action.Target, "element": action.Element, "doubleClick": false, "button": "left",
+		})
+		clickResult <- playwrightRawOutcome{result: result, err: clickErr, denialsBefore: denialsBefore}
+	}()
+	outcome, err := worker.monitorDownloadWrite(clickCtx, cancelClick, clickResult, before, maximumBytes)
+	if err != nil {
+		return DriverDownload{}, err
+	}
+	if _, err = worker.consumeRawOutcome(outcome); err != nil {
+		worker.rejectDownloadCapture(before)
 		return DriverDownload{}, err
 	}
 	var path string
@@ -647,12 +663,14 @@ func (worker *playwrightWorker) Download(
 			}
 		}
 		if len(created) > 1 {
+			worker.rejectDownloadCapture(before)
 			return DriverDownload{}, ErrDriverIncompatible
 		}
 		if len(created) == 1 {
 			candidate := created[0]
 			firstInfo, statErr := os.Lstat(candidate)
 			if statErr != nil || !firstInfo.Mode().IsRegular() {
+				worker.rejectDownloadCapture(before)
 				return DriverDownload{}, ErrDriverIncompatible
 			}
 			select {
@@ -673,6 +691,7 @@ func (worker *playwrightWorker) Download(
 			secondInfo, statErr := os.Lstat(candidate)
 			if statErr != nil || newCount != 1 || !secondInfo.Mode().IsRegular() ||
 				firstInfo.Size() != secondInfo.Size() || secondInfo.Size() < 1 || secondInfo.Size() > maximumBytes {
+				worker.rejectDownloadCapture(before)
 				return DriverDownload{}, ErrDriverIncompatible
 			}
 			path = candidate
@@ -704,6 +723,106 @@ func (worker *playwrightWorker) Download(
 	}, nil
 }
 
+func (worker *playwrightWorker) monitorDownloadWrite(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	result <-chan playwrightRawOutcome,
+	before map[string]struct{},
+	maximumBytes int64,
+) (playwrightRawOutcome, error) {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case outcome := <-result:
+			return outcome, nil
+		case <-ctx.Done():
+			return playwrightRawOutcome{}, ctx.Err()
+		case <-ticker.C:
+			files, err := regularFiles(worker.outputDir)
+			if err != nil {
+				cancel()
+				if worker.cancelLifetime != nil {
+					worker.cancelLifetime()
+				}
+				select {
+				case <-result:
+				case <-time.After(time.Second):
+				}
+				worker.rejectDownloadCapture(before)
+				return playwrightRawOutcome{}, ErrDriverIncompatible
+			}
+			created := make([]string, 0, len(files))
+			for path := range files {
+				if _, existed := before[path]; !existed {
+					created = append(created, path)
+				}
+			}
+			violation := len(created) > 1
+			for _, path := range created {
+				info, statErr := os.Lstat(path)
+				if statErr != nil || !info.Mode().IsRegular() || info.Size() > maximumBytes {
+					violation = true
+				}
+			}
+			if violation {
+				cancel()
+				if worker.cancelLifetime != nil {
+					worker.cancelLifetime()
+				}
+				select {
+				case <-result:
+				case <-time.After(time.Second):
+				}
+				worker.rejectDownloadCapture(before)
+				return playwrightRawOutcome{}, ErrDriverIncompatible
+			}
+		}
+	}
+}
+
+type playwrightRawOutcome struct {
+	result        *sdkmcp.CallToolResult
+	err           error
+	denialsBefore uint64
+}
+
+func (worker *playwrightWorker) consumeRawOutcome(outcome playwrightRawOutcome) (string, error) {
+	if worker.networkProxy != nil && worker.networkProxy.Denials() > outcome.denialsBefore {
+		return "", ErrDenied
+	}
+	if outcome.err != nil || outcome.result == nil {
+		worker.lost = true
+		return "", ErrWorkerUnavailable
+	}
+	text, err := boundedPlaywrightText(outcome.result, playwrightDriverResponseBytes)
+	if err != nil {
+		worker.lost = true
+		return "", err
+	}
+	if outcome.result.IsError {
+		return text, ErrDriverRejected
+	}
+	return text, nil
+}
+
+func (worker *playwrightWorker) rejectDownloadCapture(before map[string]struct{}) {
+	worker.lost = true
+	if worker.cancelLifetime != nil {
+		worker.cancelLifetime()
+	}
+	entries, err := os.ReadDir(worker.outputDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(worker.outputDir, entry.Name())
+		if _, existed := before[path]; !existed {
+			_ = os.RemoveAll(path)
+		}
+	}
+}
+
 func regularFiles(directory string) (map[string]struct{}, error) {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -715,9 +834,10 @@ func regularFiles(directory string) (map[string]struct{}, error) {
 		if infoErr != nil {
 			return nil, infoErr
 		}
-		if info.Mode().IsRegular() {
-			files[filepath.Join(directory, entry.Name())] = struct{}{}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("browser output contains a non-regular entry")
 		}
+		files[filepath.Join(directory, entry.Name())] = struct{}{}
 	}
 	return files, nil
 }

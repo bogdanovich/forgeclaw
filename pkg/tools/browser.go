@@ -25,6 +25,7 @@ import (
 type BrowserToolSource interface {
 	Available() bool
 	ScreenshotAvailable() bool
+	ArtifactTransferAvailable() bool
 	ProfileAvailability(context.Context, string, string) (browser.ProfileAvailability, error)
 	Open(context.Context, browser.OpenRequest) (browser.Session, error)
 	Status(context.Context, browser.Owner, string) (browser.Session, error)
@@ -206,17 +207,21 @@ func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *
 				break
 			}
 		}
+		actions := []browser.ActionKind{
+			browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
+			browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
+		}
+		transferAvailable := runtimeAvailable && tool.runtime.source.ArtifactTransferAvailable()
+		if transferAvailable {
+			actions = append(actions, browser.ActionUpload, browser.ActionDownload)
+		}
 		views = append(views, browserTargetView{
 			Target: name, Status: targetStatus, Reason: targetReason, Profiles: profiles,
-			Actions: []browser.ActionKind{
-				browser.ActionNavigate, browser.ActionClick, browser.ActionFill,
-				browser.ActionSelect, browser.ActionPress, browser.ActionScroll, browser.ActionDialog,
-				browser.ActionUpload, browser.ActionDownload,
-			},
+			Actions: actions,
 			Features: browserFeatureView{
 				Screenshot: tool.runtime.source.ScreenshotAvailable(),
-				Upload:     runtimeAvailable,
-				Download:   runtimeAvailable,
+				Upload:     transferAvailable,
+				Download:   transferAvailable,
 			},
 			Limits: browserLimitsView{
 				Sessions: limits.Sessions, Tabs: limits.Tabs, SnapshotBytes: limits.SnapshotBytes,
@@ -713,6 +718,10 @@ func (tool *BrowserActTool) prepare(ctx context.Context, args map[string]any) (b
 	}
 	if action.Kind == browser.ActionDownload && action.Deliver && !ToolRecoverableOutbound(ctx) {
 		return browser.Preparation{}, browser.ErrDenied
+	}
+	if (action.Kind == browser.ActionUpload || action.Kind == browser.ActionDownload) &&
+		!tool.runtime.source.ArtifactTransferAvailable() {
+		return browser.Preparation{}, browser.ErrDriverIncompatible
 	}
 	sessionID, sessionOK := args["browser_session_id"].(string)
 	tabID, tabOK := args["tab_id"].(string)
