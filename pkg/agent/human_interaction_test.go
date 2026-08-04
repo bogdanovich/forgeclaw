@@ -1080,6 +1080,212 @@ func TestHumanInteractionDefiniteNotSentPromptRetries(t *testing.T) {
 	}
 }
 
+func TestRecoveryFailsInteractionAfterFinalDeliveryRetryBudget(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	workspace := agent.Workspace
+	registry := al.interactionRegistryForWorkspace(workspace)
+	request := testToolSuspensionRequest(workspace)
+	request.Route.AgentID = agent.ID
+	request.Origin.TaskID = "task-final-delivery-budget"
+	const interactionID = "interaction_final_budget"
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: request.Origin.TaskID, Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending, InteractionID: interactionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   interactionID,
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, PromptSummary: request.Prompt.PromptSummary,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		interactions.Answer{Text: "continue", ReceivedAt: time.Now().UnixMilli()},
+		interactions.OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tasks.CompleteInteractionTask(
+		request.Origin.TaskID,
+		record.ID,
+		"task result that could not be delivered",
+		taskregistry.DeliveryPending,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for range interactions.MaxDeliveryAttempts {
+		record, err = registry.RecordFinalDeliveryAttempt(
+			record.ID,
+			record.Revision,
+			false,
+			"definitely not sent",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	stateDir := filepath.Dir(taskregistry.WorkspaceStorePath(workspace))
+	if err = os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 0 {
+		t.Fatalf("recovery with unwritable task store = %d, want 0", recovered)
+	}
+	nonterminal, ok := registry.Get(record.ID)
+	if !ok || nonterminal.Status != interactions.StatusResuming {
+		t.Fatalf("interaction after failed task projection = %#v, found=%t", nonterminal, ok)
+	}
+	unprojectedTask, ok := tasks.Get(request.Origin.TaskID)
+	if !ok || unprojectedTask.Status != taskregistry.StatusSucceeded {
+		t.Fatalf("task after failed projection = %#v, found=%t", unprojectedTask, ok)
+	}
+	if err = os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	al.taskRegistries.Delete(workspace)
+	al.interactionRegistries.Delete(workspace)
+	tasks = al.taskRegistryForWorkspace(workspace)
+	registry = al.interactionRegistryForWorkspace(workspace)
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	failed, ok := registry.Get(record.ID)
+	if !ok || failed.Status != interactions.StatusFailed ||
+		failed.FailureCode != "final_delivery_exhausted" {
+		t.Fatalf("interaction after exhausted recovery = %#v, found=%t", failed, ok)
+	}
+	reloadedInteractions := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	if err = reloadedInteractions.LastLoadError(); err != nil {
+		t.Fatalf("reload interactions: %v", err)
+	}
+	reloadedInteraction, ok := reloadedInteractions.Get(record.ID)
+	if !ok || reloadedInteraction.Status != interactions.StatusFailed {
+		t.Fatalf("reloaded interaction = %#v, found=%t", reloadedInteraction, ok)
+	}
+	reloadedTasks := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	if err = reloadedTasks.LastLoadError(); err != nil {
+		t.Fatalf("reload tasks: %v", err)
+	}
+	reloadedTask, ok := reloadedTasks.Get(request.Origin.TaskID)
+	if !ok || reloadedTask.Status != taskregistry.StatusFailed ||
+		reloadedTask.DeliveryStatus != taskregistry.DeliveryFailed {
+		t.Fatalf("reloaded task = %#v, found=%t", reloadedTask, ok)
+	}
+}
+
+func TestRecoveryFailsInteractionAfterPromptDeliveryRetryBudget(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	workspace := agent.Workspace
+	registry := al.interactionRegistryForWorkspace(workspace)
+	request := testToolSuspensionRequest(workspace)
+	request.Route.AgentID = agent.ID
+	request.Origin.TaskID = "task-prompt-delivery-budget"
+	const interactionID = "interaction_prompt_budget"
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: request.Origin.TaskID, Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending, InteractionID: interactionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent.Sessions.AddFullMessage(request.Route.SessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: request.Origin.ToolCallID, Name: request.Origin.ToolName,
+		}},
+	})
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   interactionID,
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, PromptSummary: request.Prompt.PromptSummary,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range interactions.MaxDeliveryAttempts {
+		record, err = registry.RecordDeliveryAttempt(
+			record.ID,
+			record.Revision,
+			false,
+			"definitely not sent",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	stateDir := filepath.Dir(taskregistry.WorkspaceStorePath(workspace))
+	if err = os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 0 {
+		t.Fatalf("recovery with unwritable task store = %d, want 0", recovered)
+	}
+	nonterminal, ok := registry.Get(record.ID)
+	if !ok || nonterminal.Status != interactions.StatusCreated {
+		t.Fatalf("interaction after failed task projection = %#v, found=%t", nonterminal, ok)
+	}
+	unprojectedTask, ok := tasks.Get(request.Origin.TaskID)
+	if !ok || unprojectedTask.Status != taskregistry.StatusWaitingForInput {
+		t.Fatalf("task after failed projection = %#v, found=%t", unprojectedTask, ok)
+	}
+	if err = os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	al.taskRegistries.Delete(workspace)
+	al.interactionRegistries.Delete(workspace)
+	_ = al.taskRegistryForWorkspace(workspace)
+	registry = al.interactionRegistryForWorkspace(workspace)
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	failed, ok := registry.Get(record.ID)
+	if !ok || failed.Status != interactions.StatusFailed ||
+		failed.FailureCode != "prompt_delivery_exhausted" {
+		t.Fatalf("interaction after exhausted recovery = %#v, found=%t", failed, ok)
+	}
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 0 {
+		t.Fatalf("second RecoverHumanInteractions() = %d, want 0", recovered)
+	}
+	history := agent.Sessions.GetHistory(request.Route.SessionKey)
+	if got := countInteractionToolResults(history, request.Origin.ToolCallID); got != 1 {
+		t.Fatalf("terminal prompt tool results = %d, want exactly 1", got)
+	}
+	reloaded := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	if err = reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload interaction: %v", err)
+	}
+	reloadedRecord, ok := reloaded.Get(record.ID)
+	if !ok || reloadedRecord.Status != interactions.StatusFailed ||
+		reloadedRecord.FailureCode != "prompt_delivery_exhausted" {
+		t.Fatalf("reloaded prompt interaction = %#v, found=%t", reloadedRecord, ok)
+	}
+}
+
 func TestRecoveryDoesNotResendPromptAfterAmbiguousCrashWindow(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()

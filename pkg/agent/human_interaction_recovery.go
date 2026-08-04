@@ -11,6 +11,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/session"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func (al *AgentLoop) scheduleHumanInteractionRecovery(ctx context.Context) {
@@ -74,18 +75,45 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 					if err == nil && al.recoverClaimedInteraction(ctx, workspace, claimed) {
 						recovered++
 					}
+				} else if record.DeliveryTries >= interactions.MaxDeliveryAttempts {
+					if al.recoverPromptDeliveryExhaustion(
+						ctx,
+						workspace,
+						registry,
+						record,
+					) {
+						recovered++
+					}
 				} else if al.retryInteractionPrompt(ctx, registry, record) {
 					recovered++
 				}
 			case interactions.StatusResuming:
 				if record.FinalDeliveryState == interactions.DeliveryStateSending ||
 					record.FinalDeliveryState == interactions.DeliveryStateAmbiguous {
-					if _, err := registry.Fail(
-						record.ID,
-						record.Revision,
+					if al.failRecoveredInteraction(
+						workspace,
+						registry,
+						record,
 						"final_delivery_ambiguous",
 						"final response delivery could not be confirmed and was not retried",
-					); err == nil {
+					) {
+						recovered++
+						_ = al.drainDeferredInteractionIngress(
+							ctx,
+							workspace,
+							record.Route,
+							inboundContextForInteraction(record.Route),
+						)
+					}
+				} else if !record.FinalDelivered &&
+					record.FinalDeliveryTries >= interactions.MaxDeliveryAttempts {
+					if al.failRecoveredInteraction(
+						workspace,
+						registry,
+						record,
+						"final_delivery_exhausted",
+						"final delivery exhausted its bounded retry budget",
+					) {
 						recovered++
 						_ = al.drainDeferredInteractionIngress(
 							ctx,
@@ -128,6 +156,100 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 		return true
 	})
 	return recovered
+}
+
+func (al *AgentLoop) recoverPromptDeliveryExhaustion(
+	ctx context.Context,
+	workspace string,
+	registry *interactions.Registry,
+	record interactions.Record,
+) bool {
+	agentRegistry := al.GetRegistry()
+	if agentRegistry == nil {
+		return false
+	}
+	agent, ok := agentRegistry.GetAgent(record.Route.AgentID)
+	if !ok || agent == nil || (record.Origin.TaskID == "" &&
+		strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace)) {
+		return false
+	}
+	routeSessionKey := record.Route.RouteSessionKey
+	if routeSessionKey == "" {
+		routeSessionKey = record.Route.SessionKey
+	}
+	target := &inboundDispatchTarget{
+		Agent:         agent,
+		RouteClaimKey: runtimeRouteClaimKey(routeSessionKey, ""),
+		Allocation: session.Allocation{
+			RouteScopeKey: routeSessionKey,
+			SessionKey:    record.Route.SessionKey,
+		},
+		SessionKey: record.Route.SessionKey,
+	}
+	claim, _, claimed := al.claimRuntimeRouteSession(
+		target,
+		fmt.Sprintf("pending-interaction-prompt-exhaustion-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+	)
+	if !claimed {
+		return false
+	}
+	defer claim.releaseIfOwned()
+	const failureCode = "prompt_delivery_exhausted"
+	if err := al.ensureInteractionCancellationToolResult(
+		ctx,
+		al.interactionContinuationAgent(record, agent),
+		record,
+		failureCode,
+	); err != nil {
+		return false
+	}
+	if !al.failRecoveredInteraction(
+		workspace,
+		registry,
+		record,
+		failureCode,
+		"prompt delivery exhausted its bounded retry budget",
+	) {
+		return false
+	}
+	_ = al.drainDeferredInteractionIngress(
+		ctx,
+		workspace,
+		record.Route,
+		inboundContextForInteraction(record.Route),
+	)
+	return true
+}
+
+func (al *AgentLoop) failRecoveredInteraction(
+	workspace string,
+	registry *interactions.Registry,
+	record interactions.Record,
+	code string,
+	detail string,
+) bool {
+	if taskID := strings.TrimSpace(record.Origin.TaskID); taskID != "" {
+		tasks := al.taskRegistryForWorkspace(workspace)
+		if tasks == nil {
+			return false
+		}
+		if err := tasks.FinishInteraction(
+			taskID,
+			record.ID,
+			taskregistry.StatusFailed,
+			detail,
+		); err != nil {
+			logger.WarnCF("agent", "Failed to persist recovered interaction task failure", map[string]any{
+				"workspace": workspace, "task_id": taskID,
+				"interaction_id": record.ID, "error": err.Error(),
+			})
+			return false
+		}
+	}
+	if _, err := registry.Fail(record.ID, record.Revision, code, detail); err != nil {
+		return false
+	}
+	return true
 }
 
 func (al *AgentLoop) loadCatalogedInteractionRegistries() {

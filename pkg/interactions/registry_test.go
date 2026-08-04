@@ -3,6 +3,7 @@ package interactions
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -839,6 +840,120 @@ func TestRegistrySnapshotBudgetFailureRollsBackMemoryAndEvents(t *testing.T) {
 			len(registry.List()),
 			len(registry.ListEvents("")),
 		)
+	}
+}
+
+func TestRegistryCompactsOldestEventsBeforeSnapshotBudgetIsExhausted(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)}
+	path := WorkspaceStorePath(t.TempDir())
+	const maximumBytes = 14 * 1024
+	registry := NewRegistryWithOptions(path, Options{
+		Now: clock.Now, MaxEvents: 1000, MaxSnapshotBytes: maximumBytes,
+	})
+	for index := range 3 {
+		id := fmt.Sprintf("interaction_%08daaaaaaaa", index+20)
+		record := makeWaiting(t, registry, clock, id, fmt.Sprintf("session-%d", index))
+		var err error
+		record, err = registry.ClaimAnswer(
+			record.ID,
+			record.Revision,
+			Answer{Text: "continue"},
+			OutcomeAnswered,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err = registry.MarkResuming(record.ID, record.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = registry.Resolve(record.ID, record.Revision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats := registry.Stats()
+	if stats.SnapshotBytes > maximumBytes || stats.EventCount >= 18 || stats.EventCount == 0 {
+		t.Fatalf("compacted registry stats = %#v", stats)
+	}
+	reloaded := NewRegistryWithOptions(path, Options{
+		Now: clock.Now, MaxEvents: 1000, MaxSnapshotBytes: maximumBytes,
+	})
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload compacted snapshot: %v", err)
+	}
+	if reloaded.Stats().RecordCount != 3 {
+		t.Fatalf("compaction removed authoritative records: %#v", reloaded.Stats())
+	}
+}
+
+func TestRegistryBoundsDefiniteDeliveryAttempts(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	prompt, err := registry.Create(validCreate(
+		clock,
+		"interaction_17171717aaaaaaaa",
+		"session-prompt-budget",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range MaxDeliveryAttempts {
+		prompt, err = registry.RecordDeliveryAttempt(
+			prompt.ID,
+			prompt.Revision,
+			false,
+			"definitely not sent",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = registry.RecordDeliveryAttempt(
+		prompt.ID,
+		prompt.Revision,
+		false,
+		"definitely not sent",
+	); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("prompt attempt past budget error = %v", err)
+	}
+
+	final := makeWaiting(
+		t,
+		registry,
+		clock,
+		"interaction_18181818aaaaaaaa",
+		"session-final-budget",
+	)
+	final, err = registry.ClaimAnswer(
+		final.ID,
+		final.Revision,
+		Answer{Text: "continue"},
+		OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err = registry.MarkResuming(final.ID, final.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range MaxDeliveryAttempts {
+		final, err = registry.RecordFinalDeliveryAttempt(
+			final.ID,
+			final.Revision,
+			false,
+			"definitely not sent",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = registry.RecordFinalDeliveryAttempt(
+		final.ID,
+		final.Revision,
+		false,
+		"definitely not sent",
+	); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("final attempt past budget error = %v", err)
 	}
 }
 

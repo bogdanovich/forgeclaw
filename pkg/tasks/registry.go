@@ -566,7 +566,12 @@ func (r *Registry) FinishInteraction(
 				interactionID,
 			)
 		}
-		if isTerminalStatus(rec.Status) && rec.Status != StatusLost {
+		canFailUndeliveredResult := status == StatusFailed && rec.Status == StatusSucceeded &&
+			rec.DeliveryStatus != DeliveryDelivered &&
+			rec.DeliveryStatus != DeliverySessionQueued &&
+			rec.DeliveryStatus != DeliveryNotApplicable
+		if isTerminalStatus(rec.Status) && rec.Status != StatusLost &&
+			!canFailUndeliveredResult {
 			return false, nil
 		}
 		if rec.Status == StatusLost {
@@ -574,8 +579,13 @@ func (r *Registry) FinishInteraction(
 			rec.CleanupAfter = 0
 		}
 		rec.Status = status
-		rec.DeliveryStatus = DeliveryNotApplicable
-		rec.DeliveredAt = time.Now().UnixMilli()
+		if canFailUndeliveredResult {
+			rec.DeliveryStatus = DeliveryFailed
+			rec.DeliveredAt = 0
+		} else {
+			rec.DeliveryStatus = DeliveryNotApplicable
+			rec.DeliveredAt = time.Now().UnixMilli()
+		}
 		rec.InteractionShortID = ""
 		rec.InteractionSummary = ""
 		rec.ProgressSummary = ""

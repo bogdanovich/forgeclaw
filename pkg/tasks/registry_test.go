@@ -177,6 +177,9 @@ func TestRegistryPersistsAndReloadsRecords(t *testing.T) {
 	}
 
 	reloaded := NewRegistry(store)
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload task registry: %v", err)
+	}
 	rec, ok := reloaded.Get("subagent-7")
 	if !ok {
 		t.Fatal("expected persisted task after reload")
@@ -431,6 +434,31 @@ func TestRegistryProjectsDurableInteractionLifecycle(t *testing.T) {
 	if rec.Status != StatusTimedOut || rec.Error != "human input timed out" ||
 		rec.DeliveryStatus != DeliveryNotApplicable || registry.Stats().ProtectedTaskCount != 0 {
 		t.Fatalf("terminal record = %#v", rec)
+	}
+}
+
+func TestFinishInteractionFailsSucceededTaskWithUndeliveredResult(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "task-undelivered", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryPending, InteractionID: "interaction-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.FinishInteraction(
+		"task-undelivered",
+		"interaction-1",
+		StatusFailed,
+		"final delivery exhausted",
+	); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewRegistry(store)
+	record, ok := reloaded.Get("task-undelivered")
+	if !ok || record.Status != StatusFailed || record.DeliveryStatus != DeliveryFailed ||
+		record.Error != "final delivery exhausted" {
+		t.Fatalf("reloaded failed task = %#v, found=%t", record, ok)
 	}
 }
 
