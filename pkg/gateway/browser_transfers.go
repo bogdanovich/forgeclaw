@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/browser"
@@ -25,15 +26,11 @@ func (source *gatewayBrowserToolSource) resolveBrowserUpload(
 	if source == nil || source.services == nil || source.services.NodeAdmission == nil || source.workspace == "" {
 		return browser.UploadBinding{}, browser.ErrWorkerUnavailable
 	}
-	owner, err := tools.RoutedNodeFileArtifactOwner(ctx, request.RequestID)
-	if err != nil {
-		return browser.UploadBinding{}, browser.ErrDenied
-	}
 	spool, err := source.services.NodeAdmission.gatewayTransferSpool(nodes.GatewayTransferSpoolPath(source.workspace))
 	if err != nil {
 		return browser.UploadBinding{}, browser.ErrWorkerUnavailable
 	}
-	file, record, err := spool.ResolveRoutedDownload(owner, request.Action.ArtifactRef)
+	file, record, err := source.resolveBrowserUploadArtifact(ctx, spool, request)
 	if err != nil {
 		return browser.UploadBinding{}, browser.ErrDenied
 	}
@@ -47,6 +44,45 @@ func (source *gatewayBrowserToolSource) resolveBrowserUpload(
 		Filename:    safeNodeTransferFilename(record.Spec.Filename, "artifact.bin"),
 		ContentType: safeNodeTransferContentType(record.Spec.ContentType), Path: file.Name(),
 	}, nil
+}
+
+func (source *gatewayBrowserToolSource) resolveBrowserUploadArtifact(
+	ctx context.Context,
+	spool *nodes.GatewayTransferSpool,
+	request browser.PrepareActionRequest,
+) (*os.File, nodes.TransferArtifactRecord, error) {
+	nodeOwner, nodeOwnerErr := tools.RoutedNodeFileArtifactOwner(ctx, request.RequestID)
+	if nodeOwnerErr == nil {
+		file, record, err := spool.ResolveRoutedDownload(nodeOwner, request.Action.ArtifactRef)
+		if err == nil {
+			return file, record, nil
+		}
+	}
+
+	mediaOwner, err := browserScreenshotMediaOwner(ctx, source.workspace)
+	if err != nil {
+		return nil, nodes.TransferArtifactRecord{}, browser.ErrDenied
+	}
+	screenshotOwner := nodes.TransferArtifactOwner{
+		WorkspaceID: mediaOwner.WorkspaceID,
+		AgentID:     mediaOwner.AgentID,
+		ActorID:     mediaOwner.ActorID,
+		RouteID:     mediaOwner.RouteID,
+		SessionID:   request.SessionID,
+		ToolCallID:  request.RequestID,
+	}
+	file, record, err := spool.ResolveRoutedDownload(screenshotOwner, request.Action.ArtifactRef)
+	if err != nil {
+		return nil, nodes.TransferArtifactRecord{}, browser.ErrDenied
+	}
+	if !validBrowserScreenshotRecord(record) ||
+		record.Spec.SourceScope != request.TabID ||
+		record.Spec.SourceID != request.SnapshotID ||
+		record.Spec.SourceRevision != request.SnapshotGeneration {
+		_ = file.Close()
+		return nil, nodes.TransferArtifactRecord{}, browser.ErrDenied
+	}
+	return file, record, nil
 }
 
 func (source *gatewayBrowserToolSource) browserLimits() config.BrowserLimitsConfig {

@@ -87,6 +87,69 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 	if err = source.ClaimScreenshotDelivery(claimCtx, delivery); err != nil {
 		t.Fatalf("ClaimScreenshotDelivery() error = %v", err)
 	}
+	upload, err := source.resolveBrowserUpload(ctx, browser.PrepareActionRequest{
+		RequestID: "request_upload", SessionID: capture.SessionID, TabID: capture.TabID,
+		SnapshotID: capture.SnapshotID, SnapshotGeneration: capture.SnapshotGeneration,
+		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+	})
+	if err != nil || upload.Ref != artifact.Ref || upload.SHA256 != artifact.SHA256 ||
+		upload.Size != artifact.Size || upload.Filename != browserScreenshotFilename ||
+		upload.ContentType != "image/png" {
+		t.Fatalf("same-snapshot screenshot upload = %#v, %v", upload, err)
+	}
+	uploaded, err := os.ReadFile(upload.Path)
+	if err != nil || !bytes.Equal(uploaded, data) {
+		t.Fatalf("same-snapshot upload bytes = %d, %v", len(uploaded), err)
+	}
+	for name, request := range map[string]browser.PrepareActionRequest{
+		"session": {
+			RequestID: "wrong_session", SessionID: "session_2", TabID: capture.TabID,
+			SnapshotID: capture.SnapshotID, SnapshotGeneration: capture.SnapshotGeneration,
+			Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+		},
+		"tab": {
+			RequestID: "wrong_tab", SessionID: capture.SessionID, TabID: "tab_other",
+			SnapshotID: capture.SnapshotID, SnapshotGeneration: capture.SnapshotGeneration,
+			Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+		},
+		"snapshot": {
+			RequestID: "wrong_snapshot", SessionID: capture.SessionID, TabID: capture.TabID,
+			SnapshotID: "snapshot_other", SnapshotGeneration: capture.SnapshotGeneration,
+			Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+		},
+		"generation": {
+			RequestID: "wrong_generation", SessionID: capture.SessionID, TabID: capture.TabID,
+			SnapshotID: capture.SnapshotID, SnapshotGeneration: capture.SnapshotGeneration + 1,
+			Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+		},
+	} {
+		t.Run("upload rejects wrong "+name, func(t *testing.T) {
+			if _, resolveErr := source.resolveBrowserUpload(ctx, request); !errors.Is(resolveErr, browser.ErrDenied) {
+				t.Fatalf("resolveBrowserUpload() error = %v, want ErrDenied", resolveErr)
+			}
+		})
+	}
+	validUploadRequest := browser.PrepareActionRequest{
+		RequestID: "wrong_authority", SessionID: capture.SessionID, TabID: capture.TabID,
+		SnapshotID: capture.SnapshotID, SnapshotGeneration: capture.SnapshotGeneration,
+		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
+	}
+	wrongActor := tools.WithToolInboundMetadata(ctx, bus.InboundContext{
+		SenderID: "sender-2", ActorID: "actor-2",
+	})
+	for name, wrongContext := range map[string]context.Context{
+		"agent": tools.WithToolSessionContext(ctx, "main", "history-1", nil),
+		"actor": wrongActor,
+		"route": tools.WithToolRouteSessionKey(ctx, "route-2"),
+	} {
+		t.Run("upload rejects wrong "+name, func(t *testing.T) {
+			if _, resolveErr := source.resolveBrowserUpload(wrongContext, validUploadRequest); !errors.Is(
+				resolveErr, browser.ErrDenied,
+			) {
+				t.Fatalf("resolveBrowserUpload() error = %v, want ErrDenied", resolveErr)
+			}
+		})
+	}
 	replay, found, err = source.LookupScreenshot(ctx, owner, request.RequestID, capture.SessionID)
 	if err != nil || !found || replay.Ref != artifact.Ref || replay.MediaRef != artifact.MediaRef ||
 		replay.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed ||
