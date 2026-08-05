@@ -3,11 +3,12 @@
 ## Status
 
 Work derived from [`browser-capability.md`](browser-capability.md). B0, B1, N1,
-and N2 are merged and deployed. B2 is admitted in
-[Browser Capability B2 Admission](browser-capability-b2-admission.md), including
-a prerequisite repair for consecutive managed sessions. Later milestones
-remain proposals until an operator selects one and a separate admission fixes
-its exact scope, authority, completion evidence, and stop conditions.
+N2, and B2 are merged, deployed, and live-validated. B2 completion evidence is
+recorded in
+[Browser Capability B2 Deployment Evidence](../operations/browser-capability-b2-deployment-evidence.md).
+Later milestones remain proposals until an operator selects one and a separate
+admission fixes its exact scope, authority, completion evidence, and stop
+conditions.
 
 The roadmap is ordered by immediate risk reduction, operator value, and
 security dependencies rather than calendar dates. Browser milestone labels use

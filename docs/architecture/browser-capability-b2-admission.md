@@ -3,7 +3,9 @@
 ## Status And Decision
 
 Browser milestone B2, **Artifacts, Diagnostics, and Human Handoff**, is
-admitted as the dependency-ordered sequence in this document.
+admitted as the dependency-ordered sequence in this document. It is now merged,
+deployed, and complete; see
+[Browser Capability B2 Deployment Evidence](../operations/browser-capability-b2-deployment-evidence.md).
 
 B2 may add:
 

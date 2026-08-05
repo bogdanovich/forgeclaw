@@ -26,3 +26,6 @@ Operational docs for debugging, diagnosis, and production troubleshooting.
 - [Live gateway agent smoke test](live-agent-smoke.md): authenticated,
   bounded testing of the running gateway agent and its live node sessions
   without Telegram or a second agent runtime.
+- [Browser Capability B2 deployment evidence](browser-capability-b2-deployment-evidence.md):
+  merged revisions, live screenshot/upload/download proof, passive diagnostics,
+  human handoff and resume, privacy checks, cleanup, health, and rollback.
