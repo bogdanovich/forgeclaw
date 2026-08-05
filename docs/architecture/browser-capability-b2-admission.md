@@ -163,7 +163,10 @@ Both use the existing prepare, effect classification, approval, acceptance,
 terminal recovery, and no-blind-replay machinery. `upload` is not itself an
 external commit. `download` is read-only unless the broker cannot prove that
 classification, in which case policy treats it as unknown rather than
-silently weakening approval.
+silently weakening approval. An unknown-effect typed download still requires
+an exact bound approval. After that approval, the B2 one-download expectation
+may execute in the initial dry-run profile; dry-run continues to deny external
+commits and every other unknown action.
 
 ### `browser_targets`
 

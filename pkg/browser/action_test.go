@@ -341,6 +341,27 @@ func TestBrokerBindsUploadArtifactAndRequiresApprovalForDownloadClick(t *testing
 	if err != nil || !download.RequiresApproval || download.Action.Effect != EffectUnknown {
 		t.Fatalf("PrepareAction(download) = %#v, %v", download, err)
 	}
+	if _, err = broker.ExecuteActionWithDownloadSink(
+		context.Background(), owner, download.Action.ID, nil,
+		func(context.Context, PreparedAction, DriverDownload) (json.RawMessage, error) {
+			return json.RawMessage(`{"artifact":{"ref":"transfer-artifact://retained"}}`), nil
+		},
+	); !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("ExecuteAction(download without approval) error = %v, want ErrApprovalRequired", err)
+	}
+	invocation, err = broker.ExecuteActionWithDownloadSink(
+		context.Background(), owner, download.Action.ID, &download.Approval,
+		func(_ context.Context, prepared PreparedAction, retained DriverDownload) (json.RawMessage, error) {
+			if prepared.Action.Kind != ActionDownload || retained != worker.download {
+				t.Fatalf("download sink input = %#v, %#v", prepared, retained)
+			}
+			return json.RawMessage(`{"artifact":{"ref":"transfer-artifact://retained"}}`), nil
+		},
+	)
+	if err != nil || invocation.State != InvocationSucceeded || len(worker.actions) != 1 ||
+		worker.actions[0].Kind != DriverDownloadAction {
+		t.Fatalf("approved dry-run download = %#v, %v; actions = %#v", invocation, err, worker.actions)
+	}
 }
 
 func TestBrokerRecoversCommittedAcceptedDownloadWithoutDriverReplay(t *testing.T) {
