@@ -69,7 +69,10 @@ authenticated route owner, and retained-artifact owner.
 ### Upload
 
 1. The specialist observes a fresh file-input element.
-2. It selects one authorized, committed retained artifact.
+2. It selects one authorized, committed retained artifact. The gateway-local
+   slice may reuse a screenshot only from the same authenticated route,
+   browser session, tab, snapshot, and generation; node file artifacts retain
+   their existing routed P2 ownership checks.
 3. A typed upload action binds the artifact digest and the fresh element ref to
    the prepared invocation.
 4. The worker supplies those bytes to that exact input without exposing a host
