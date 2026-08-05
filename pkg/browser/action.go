@@ -263,7 +263,7 @@ func (broker *Broker) ExecuteActionWithDownloadSink(
 	if err = broker.revalidatePreparedLocked(ctx, session, slot, worker, prepared); err != nil {
 		return Invocation{}, err
 	}
-	if prepared.DryRun && requiresApproval {
+	if dryRunDeniesAction(prepared) {
 		denied, completeErr := broker.completeInvocationLocked(
 			ctx, currentInvocation, InvocationCanceled, nil, "dry_run_denied",
 		)
@@ -622,6 +622,21 @@ func approvalMatches(prepared PreparedAction, approval *ApprovalBinding) bool {
 
 func actionRequiresApproval(effect Effect) bool {
 	return effect == EffectExternalCommit || effect == EffectUnknown
+}
+
+func dryRunDeniesAction(prepared PreparedAction) bool {
+	if !prepared.DryRun {
+		return false
+	}
+	if prepared.Effect == EffectExternalCommit {
+		return true
+	}
+	// A B2 download remains approval-bound when the page element cannot prove
+	// read-only semantics. Unlike another unknown page action, however, the
+	// typed download path establishes a one-file expectation before dispatch
+	// and retains only the bounded result. Allow that exact approved operation
+	// without weakening dry-run for clicks, key presses, dialogs, or submits.
+	return prepared.Effect == EffectUnknown && prepared.Action.Kind != ActionDownload
 }
 
 func classifyClickEffect(element DriverElement) Effect {
