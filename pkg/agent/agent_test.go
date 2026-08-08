@@ -10184,6 +10184,77 @@ func TestProcessMessage_ContextOverflowRecovery(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_ContextOverflowRecoveryPreservesMediaBoundary(t *testing.T) {
+	al, _, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	store := media.NewFileMediaStore()
+	imageDir := t.TempDir()
+	storeImage := func(name string) (string, string) {
+		t.Helper()
+		path := filepath.Join(imageDir, name)
+		if err := os.WriteFile(path, []byte{
+			0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+			0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+		}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ref, err := store.Store(
+			path,
+			media.MediaMeta{Filename: name, ContentType: "image/png"},
+			"overflow-media-test",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ref, path
+	}
+	historicalRef, historicalPath := storeImage("historical-overflow.png")
+	currentRef, currentPath := storeImage("current-overflow.png")
+	al.SetMediaStore(store)
+
+	provider := &overflowProvider{}
+	al.registry = NewAgentRegistry(al.cfg, provider)
+	message := testInboundMessage(bus.InboundMessage{
+		Channel: "test",
+		ChatID:  "overflow-media-boundary",
+		Content: "[image]",
+		Media:   []string{currentRef},
+	})
+	al.contextManager = &staticContextManager{response: &AssembleResponse{History: []providers.Message{
+		{Role: "user", Content: "[image]", Media: []string{historicalRef}},
+		{Role: "assistant", Content: "historical answer"},
+	}}}
+
+	response, err := al.processMessage(t.Context(), message)
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response != "Recovered from overflow" {
+		t.Fatalf("response = %q, want recovered response", response)
+	}
+
+	var historicalMessage, currentMessage *providers.Message
+	for i := range provider.lastMessages {
+		message := &provider.lastMessages[i]
+		switch {
+		case strings.Contains(message.Content, historicalPath):
+			historicalMessage = message
+		case strings.Contains(message.Content, currentPath):
+			currentMessage = message
+		}
+	}
+	if historicalMessage == nil || len(historicalMessage.Media) != 0 {
+		t.Fatalf("historical image crossed the retry boundary: %#v", historicalMessage)
+	}
+	if currentMessage == nil || len(currentMessage.Media) != 1 ||
+		!strings.HasPrefix(currentMessage.Media[0], "data:image/png;base64,") {
+		t.Fatalf("current image was not preserved across the retry: %#v", currentMessage)
+	}
+}
+
 type toolOverflowProvider struct {
 	calls         int
 	retryMessages []providers.Message
