@@ -18,6 +18,22 @@ import (
 
 const contextOverflowCompactTimeout = 45 * time.Second
 
+type llmStageDisposition uint8
+
+const (
+	llmStageContinue llmStageDisposition = iota
+	llmStageComplete
+)
+
+type llmStageResult struct {
+	disposition llmStageDisposition
+	outcome     LLMCallOutcome
+}
+
+func completeLLMStage(outcome LLMCallOutcome) llmStageResult {
+	return llmStageResult{disposition: llmStageComplete, outcome: outcome}
+}
+
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.
 // It handles PreLLM setup, the actual LLM invocation with retry, and AfterLLM processing.
 // Returns an explicit outcome indicating what the coordinator should do next.
@@ -28,146 +44,25 @@ func (p *Pipeline) CallLLM(
 	exec *turnExecution,
 	llm *LLMIterationState,
 ) (LLMCallOutcome, error) {
+	stage, err := p.prepareLLMRequest(turnCtx, ts, exec, llm)
+	if err != nil || stage.disposition == llmStageComplete {
+		return stage.outcome, err
+	}
+	stage, err = p.invokeLLMWithRetry(ctx, turnCtx, ts, exec, llm)
+	if err != nil || stage.disposition == llmStageComplete {
+		return stage.outcome, err
+	}
+	return p.normalizeAndDispatchLLMResponse(turnCtx, ts, exec, llm)
+}
+
+func (p *Pipeline) invokeLLMWithRetry(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	llm *LLMIterationState,
+) (llmStageResult, error) {
 	iteration := llm.iteration
-	maxMediaSize := p.maxMediaSize()
-
-	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
-	if iteration > 1 {
-		exec.messages = resolveMediaRefs(exec.messages, p.Context.MediaResolver, maxMediaSize)
-		usedVisionOverride, err := p.Context.ModelExecution.maybeApplyVisionExecutionState(
-			ts.agent,
-			exec,
-		)
-		if err != nil {
-			return LLMCallOutcome{Control: ControlBreak}, err
-		}
-		if usedVisionOverride {
-			logger.InfoCF(
-				"agent",
-				"Switched turn to vision override model after media resolution",
-				map[string]any{
-					"agent_id":         ts.agent.ID,
-					"iteration":        iteration,
-					"vision_model":     exec.model.activeModel,
-					"vision_route":     exec.model.visionRoute,
-					"messages_count":   len(exec.messages),
-					"active_candidate": len(exec.model.activeCandidates),
-				},
-			)
-		}
-	}
-
-	// PreLLM: graceful terminal handling
-	llm.gracefulTerminal, _ = ts.gracefulInterruptRequested()
-	llm.providerToolDefs = ts.agent.Tools.ToProviderDefs()
-	llm.providerToolDefs = filterToolsByTurnProfile(llm.providerToolDefs, ts.profile)
-
-	// Native web search support
-	llm.useNativeSearch = p.nativeSearchEnabled(ts.profile, exec.model.activeProvider)
-	if llm.useNativeSearch {
-		filtered := make([]providers.ToolDefinition, 0, len(llm.providerToolDefs))
-		for _, td := range llm.providerToolDefs {
-			if td.Function.Name != "web_search" {
-				filtered = append(filtered, td)
-			}
-		}
-		llm.providerToolDefs = filtered
-	}
-
-	llm.callMessages = exec.messages
-	if llm.gracefulTerminal {
-		llm.callMessages = append(
-			append([]providers.Message(nil), exec.messages...),
-			ts.interruptHintMessage(),
-		)
-		llm.providerToolDefs = nil
-		ts.markGracefulTerminalUsed()
-	}
-
-	llm.llmOpts = map[string]any{
-		"max_tokens":       ts.agent.MaxTokens,
-		"temperature":      ts.agent.Temperature,
-		"prompt_cache_key": ts.agent.ID,
-	}
-	if llm.useNativeSearch {
-		llm.llmOpts["native_search"] = true
-	}
-	execution := ts.model.ExecutionState()
-	applyTurnThinkingOptions(exec, llm, execution, exec.model.activeProvider, true)
-
-	llm.llmModel = exec.model.activeModel
-
-	// BeforeLLM hook
-	if p.Interaction.Hooks != nil {
-		llmReq, decision := p.Interaction.Hooks.BeforeLLM(turnCtx, &LLMHookRequest{
-			Meta:             ts.eventMeta("runTurn", "turn.llm.request"),
-			Context:          cloneTurnContext(ts.turnCtx),
-			Model:            llm.llmModel,
-			Messages:         llm.callMessages,
-			Tools:            llm.providerToolDefs,
-			Options:          llm.llmOpts,
-			GracefulTerminal: llm.gracefulTerminal,
-		})
-		switch decision.normalizedAction() {
-		case HookActionContinue, HookActionModify:
-			if llmReq != nil {
-				prevModel := llm.llmModel
-				llm.llmModel = llmReq.Model
-				llm.callMessages = llmReq.Messages
-				llm.providerToolDefs = filterToolsByTurnProfile(llmReq.Tools, ts.profile)
-				llm.llmOpts = llmReq.Options
-				nativeSearchAllowed := llm.useNativeSearch &&
-					turnProfileToolAllowed(ts.profile, "web_search")
-				if !nativeSearchAllowed {
-					delete(llm.llmOpts, "native_search")
-				}
-				if strings.TrimSpace(llm.llmModel) != "" && llm.llmModel != prevModel {
-					p.applyBeforeLLMModelRewrite(ts, exec, llm)
-					applyTurnThinkingOptions(exec, llm, execution, exec.model.activeProvider, true)
-				}
-			}
-		case HookActionAbortTurn:
-			cancelConfiguredStreamingLLM(turnCtx, llm)
-			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHook}, nil
-		case HookActionHardAbort:
-			cancelConfiguredStreamingLLM(turnCtx, llm)
-			_ = ts.requestHardAbort()
-			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
-		}
-	}
-
-	p.emitEvent(
-		runtimeevents.KindAgentLLMRequest,
-		ts.eventMeta("runTurn", "turn.llm.request"),
-		LLMRequestPayload{
-			Provider:           primaryCandidateProvider(exec.model.activeCandidates),
-			Model:              llm.llmModel,
-			PromptHash:         safeJSONHash(traceCaptureSettingsFromConfig(p.Cfg), llm.callMessages),
-			MessagesCount:      len(llm.callMessages),
-			ToolsCount:         len(llm.providerToolDefs),
-			MaxTokens:          ts.agent.MaxTokens,
-			Temperature:        ts.agent.Temperature,
-			DiagnosticMessages: diagnosticMessagesPreview(p.Cfg, llm.callMessages),
-		},
-	)
-
-	logger.DebugCF("agent", "LLM request",
-		map[string]any{
-			"agent_id":          ts.agent.ID,
-			"iteration":         iteration,
-			"model":             llm.llmModel,
-			"messages_count":    len(llm.callMessages),
-			"tools_count":       len(llm.providerToolDefs),
-			"max_tokens":        ts.agent.MaxTokens,
-			"temperature":       ts.agent.Temperature,
-			"system_prompt_len": len(llm.callMessages[0].Content),
-		})
-	logger.DebugCF("agent", "Full LLM request",
-		map[string]any{
-			"iteration":     iteration,
-			"messages_json": formatMessagesForLog(llm.callMessages),
-			"tools_json":    formatToolsForLog(llm.providerToolDefs),
-		})
 
 	// LLM call closure with fallback support
 	callLLM := func(messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
@@ -293,7 +188,7 @@ func (p *Pipeline) CallLLM(
 		}
 		if ts.hardAbortRequested() && errors.Is(err, context.Canceled) {
 			_ = ts.requestHardAbort()
-			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
+			return completeLLMStage(LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}), nil
 		}
 		if isConfiguredStreamingVisibleError(err) {
 			break
@@ -367,7 +262,7 @@ func (p *Pipeline) CallLLM(
 			if sleepErr := p.sleepBeforeLLMRetry(turnCtx, backoff); sleepErr != nil {
 				if ts.hardAbortRequested() {
 					_ = ts.requestHardAbort()
-					return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
+					return completeLLMStage(LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}), nil
 				}
 				err = sleepErr
 				break
@@ -561,10 +456,19 @@ func (p *Pipeline) CallLLM(
 				"model":     llm.llmModel,
 				"error":     err.Error(),
 			})
-		return LLMCallOutcome{Control: ControlBreak}, fmt.Errorf("LLM call failed after retries: %w", err)
+		return llmStageResult{}, fmt.Errorf("LLM call failed after retries: %w", err)
 	}
+	return llmStageResult{}, nil
+}
 
-	// AfterLLM hook
+func (p *Pipeline) normalizeAndDispatchLLMResponse(
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	llm *LLMIterationState,
+) (LLMCallOutcome, error) {
+	iteration := llm.iteration
+
 	if p.Interaction.Hooks != nil {
 		llmResp, decision := p.Interaction.Hooks.AfterLLM(turnCtx, &LLMHookResponse{
 			Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
