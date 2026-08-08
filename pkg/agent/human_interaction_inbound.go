@@ -1086,11 +1086,12 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 	if exec.model.cleanup != nil {
 		defer exec.model.cleanup()
 	}
-	exec.response = &providers.LLMResponse{ToolCalls: []providers.ToolCall{toolCall}}
-	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
-	exec.allResponsesHandled = true
-	exec.assistantToolCallsPersisted = true
-	outcome := pipeline.ExecuteTools(ctx, ctx, ts, exec, 1)
+	llm := newLLMIterationState(1)
+	llm.response = &providers.LLMResponse{ToolCalls: []providers.ToolCall{toolCall}}
+	llm.normalizedToolCalls = []providers.ToolCall{toolCall}
+	llm.allResponsesHandled = true
+	llm.assistantToolCallsPersisted = true
+	outcome := pipeline.ExecuteTools(ctx, ctx, ts, exec, llm)
 	dismissCtx, dismissCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	pipeline.dismissToolFeedbackForTurn(dismissCtx, ts)
 	dismissCancel()

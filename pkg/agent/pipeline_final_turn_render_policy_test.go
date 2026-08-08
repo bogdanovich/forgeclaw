@@ -11,7 +11,7 @@ type testFinalTurnRenderPolicy struct {
 	result bool
 }
 
-func (p *testFinalTurnRenderPolicy) shouldFinalizeAfterToolLoop(*turnExecution) bool {
+func (p *testFinalTurnRenderPolicy) shouldFinalizeAfterToolLoop(*turnExecution, *LLMIterationState) bool {
 	p.called = true
 	return p.result
 }
@@ -20,7 +20,7 @@ func TestPipelineShouldFinalizeAfterToolLoop_UsesInjectedPolicy(t *testing.T) {
 	policy := &testFinalTurnRenderPolicy{result: true}
 	pipeline := &Pipeline{Config: PipelineConfigServices{FinalTurnRender: policy}}
 
-	if !pipeline.shouldFinalizeAfterToolLoop(&turnExecution{}) {
+	if !pipeline.shouldFinalizeAfterToolLoop(&turnExecution{}, newLLMIterationState(1)) {
 		t.Fatal("shouldFinalizeAfterToolLoop() = false, want injected policy result")
 	}
 	if !policy.called {
@@ -33,11 +33,10 @@ func TestPipelineShouldFinalizeAfterToolLoop_FallsBackToConfig(t *testing.T) {
 	cfg.Agents.Defaults.FinalTurnRenderMode = "llm"
 	pipeline := &Pipeline{Cfg: cfg}
 	exec := &turnExecution{
-		sawSteering:         true,
-		allResponsesHandled: false,
+		sawSteering: true,
 	}
 
-	if !pipeline.shouldFinalizeAfterToolLoop(exec) {
+	if !pipeline.shouldFinalizeAfterToolLoop(exec, newLLMIterationState(1)) {
 		t.Fatal("shouldFinalizeAfterToolLoop() = false, want true")
 	}
 }
@@ -45,11 +44,10 @@ func TestPipelineShouldFinalizeAfterToolLoop_FallsBackToConfig(t *testing.T) {
 func TestPipelineShouldFinalizeAfterToolLoop_DefaultsWhenConfigMissing(t *testing.T) {
 	pipeline := &Pipeline{}
 	exec := &turnExecution{
-		sawSteering:         true,
-		allResponsesHandled: false,
+		sawSteering: true,
 	}
 
-	if pipeline.shouldFinalizeAfterToolLoop(exec) {
+	if pipeline.shouldFinalizeAfterToolLoop(exec, newLLMIterationState(1)) {
 		t.Fatal("shouldFinalizeAfterToolLoop() = true, want false without config")
 	}
 }

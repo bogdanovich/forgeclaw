@@ -253,11 +253,12 @@ func TestPipelineToolResultJournalFailureLeavesDurableUnresolvedIntent(t *testin
 		t.Fatalf("persist tool intent: %v", err)
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	llm := newLLMIterationState(1)
 	exec.messages = []providers.Message{intent}
-	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
-	exec.assistantToolCallsPersisted = true
+	llm.normalizedToolCalls = []providers.ToolCall{toolCall}
+	llm.assistantToolCallsPersisted = true
 
-	outcome := (&Pipeline{}).ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	outcome := (&Pipeline{}).ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 
 	if tool.executions != 1 {
 		t.Fatalf("tool executions = %d, want 1", tool.executions)
@@ -325,8 +326,9 @@ func TestPipelineToolResultJournalFailurePreventsEveryDeliveryMode(t *testing.T)
 				t.Fatal(err)
 			}
 			exec := newTurnExecution(agent, ts.opts, nil, "", []providers.Message{intent})
-			exec.normalizedToolCalls = []providers.ToolCall{toolCall}
-			exec.assistantToolCallsPersisted = true
+			llm := newLLMIterationState(1)
+			llm.normalizedToolCalls = []providers.ToolCall{toolCall}
+			llm.assistantToolCallsPersisted = true
 			delivery := &recordingToolResultDelivery{}
 			pipeline := &Pipeline{
 				Runtime: PipelineRuntimeServices{Bus: delivery},
@@ -338,7 +340,7 @@ func TestPipelineToolResultJournalFailurePreventsEveryDeliveryMode(t *testing.T)
 				pipeline.Interaction.Hooks = &toolResultRespondHook{result: tc.result()}
 			}
 
-			outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+			outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 
 			if !errors.Is(outcome.JournalErr, journalErr) {
 				t.Fatalf("journal error = %v, want %v", outcome.JournalErr, journalErr)
@@ -403,8 +405,9 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", []providers.Message{intent})
-	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
-	exec.assistantToolCallsPersisted = true
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{toolCall}
+	llm.assistantToolCallsPersisted = true
 	deliveryCalls := 0
 	delivery := &syncToolResultDelivery{deliverToUser: func(
 		deliveryCtx context.Context,
@@ -429,7 +432,7 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 		return nil, toolResultDeliveryQueued, nil
 	}}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{SyncToolDelivery: delivery}}
-	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 
 	history := store.GetHistory(ts.sessionKey)
 	if deliveryCalls != 1 || commitCalls != 1 || len(history) != 2 ||
@@ -488,8 +491,9 @@ func TestPipelineSuppressedToolDeliveryRetainsHandledAndImmediateMedia(t *testin
 				t.Fatal(err)
 			}
 			exec := newTurnExecution(agent, ts.opts, nil, "", []providers.Message{intent})
-			exec.normalizedToolCalls = []providers.ToolCall{toolCall}
-			exec.assistantToolCallsPersisted = true
+			llm := newLLMIterationState(1)
+			llm.normalizedToolCalls = []providers.ToolCall{toolCall}
+			llm.assistantToolCallsPersisted = true
 			delivery := &recordingToolResultDelivery{}
 			pipeline := &Pipeline{
 				Runtime: PipelineRuntimeServices{Bus: delivery},
@@ -501,7 +505,7 @@ func TestPipelineSuppressedToolDeliveryRetainsHandledAndImmediateMedia(t *testin
 				pipeline.Interaction.Hooks = &toolResultRespondHook{result: result}
 			}
 
-			outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+			outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 
 			if outcome.JournalErr != nil {
 				t.Fatalf("journal error = %v", outcome.JournalErr)
@@ -532,16 +536,17 @@ func TestPipelineToolCallIntentJournalFailurePreventsExecution(t *testing.T) {
 	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
 	ts := &turnState{agent: agent, opts: processOptions{Dispatch: DispatchRequest{SessionKey: "intent-fail"}}}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-1", Name: tool.Name()}}
-	exec.assistantToolCallsWriteErr = errors.New("assistant intent rename failed")
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{{ID: "call-1", Name: tool.Name()}}
+	llm.assistantToolCallsWriteErr = errors.New("assistant intent rename failed")
 
-	outcome := (&Pipeline{}).ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	outcome := (&Pipeline{}).ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 
 	if tool.executions != 0 {
 		t.Fatalf("tool executions = %d, want 0", tool.executions)
 	}
-	if !errors.Is(outcome.JournalErr, exec.assistantToolCallsWriteErr) {
-		t.Fatalf("journal error = %v, want %v", outcome.JournalErr, exec.assistantToolCallsWriteErr)
+	if !errors.Is(outcome.JournalErr, llm.assistantToolCallsWriteErr) {
+		t.Fatalf("journal error = %v, want %v", outcome.JournalErr, llm.assistantToolCallsWriteErr)
 	}
 }
 
@@ -569,7 +574,8 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 		},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{{
 		ID: "call-allow-all", Name: tool.Name(), Arguments: map[string]any{},
 	}}
 	hook := &durableApprovalHook{actionSummary: "must not be requested"}
@@ -589,7 +595,7 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 		},
 	}
 
-	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 
 	if hook.calls != 0 {
 		t.Fatalf("approval hook calls = %d, want 0", hook.calls)
@@ -671,13 +677,14 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 		}},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{
 		{ID: "call-question", Name: requestTool.Name(), Arguments: map[string]any{
 			"questions": []any{map[string]any{"id": "mode", "question": "Which mode?"}},
 		}},
 		{ID: "call-deferred", Name: deferredTool.Name()},
 	}
-	exec.assistantToolCallsPersisted = true
+	llm.assistantToolCallsPersisted = true
 	manager := &fakeToolSuspensionManager{
 		disposition: ToolSuspensionDisposition{InteractionID: "interaction-1", Durable: true},
 	}
@@ -687,7 +694,7 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 		Interaction: PipelineInteractionServices{Suspension: manager},
 	}
 
-	control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 	if control.Control != ToolControlSuspend {
 		t.Fatalf("control = %v, want suspend", control.Control)
 	}
@@ -759,8 +766,9 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			}},
 		}
 		exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-		exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
-		exec.assistantToolCallsPersisted = true
+		llm := newLLMIterationState(1)
+		llm.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
+		llm.assistantToolCallsPersisted = true
 		manager := &fakeToolSuspensionManager{
 			disposition: ToolSuspensionDisposition{InteractionID: "interaction-domain", Durable: true},
 		}
@@ -772,7 +780,7 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			t.Context(),
 			ts,
 			exec,
-			1,
+			llm,
 		); outcome.Control != ToolControlSuspend {
 			t.Fatalf(
 				"control = %v, want suspend; requests=%#v messages=%#v",
@@ -807,14 +815,15 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-domain-fallback"}},
 		}
 		exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-		exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
+		llm := newLLMIterationState(1)
+		llm.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
 		pipeline := &Pipeline{}
 		if outcome := pipeline.ExecuteTools(
 			t.Context(),
 			t.Context(),
 			ts,
 			exec,
-			1,
+			llm,
 		); outcome.Control != ToolControlContinue {
 			t.Fatalf("control = %v, want continue", outcome.Control)
 		}
@@ -834,7 +843,8 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			opts:       processOptions{Dispatch: DispatchRequest{SessionKey: "session-domain-hook-drop"}},
 		}
 		exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-		exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
+		llm := newLLMIterationState(1)
+		llm.normalizedToolCalls = []providers.ToolCall{{ID: "call-domain", Name: tool.Name()}}
 		hooks := NewHookManager(nil)
 		if err := hooks.Mount(NamedHook("drop-suspension", &dropToolSuspensionHook{})); err != nil {
 			t.Fatal(err)
@@ -846,7 +856,7 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			t.Context(),
 			ts,
 			exec,
-			1,
+			llm,
 		); outcome.Control != ToolControlContinue {
 			t.Fatalf("control = %v, want continue", outcome.Control)
 		}
@@ -906,16 +916,17 @@ func TestPipelineBindsToolOriginatedApprovalSuspensionToTrustedArguments(t *test
 		opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-bound-approval"}},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{{
 		ID: "call-bound-approval", Name: tool.Name(), Arguments: map[string]any{"value": "model-authored"},
 	}}
-	exec.assistantToolCallsPersisted = true
+	llm.assistantToolCallsPersisted = true
 	manager := &fakeToolSuspensionManager{
 		disposition: ToolSuspensionDisposition{InteractionID: "interaction-bound", Durable: true},
 	}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
 
-	outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm)
 	if outcome.Control != ToolControlSuspend || outcome.SuspendedInteractionID != "interaction-bound" {
 		t.Fatalf("outcome = %+v, want bound approval suspension", outcome)
 	}
@@ -952,7 +963,8 @@ func TestPipelineBindsToolOriginatedApprovalSuspensionToTrustedArguments(t *test
 		},
 	}
 	resumeExec := newTurnExecution(agent, resumeState.opts, nil, "", nil)
-	resumeExec.normalizedToolCalls = []providers.ToolCall{{
+	resumeLLM := newLLMIterationState(1)
+	resumeLLM.normalizedToolCalls = []providers.ToolCall{{
 		ID: "call-bound-approval", Name: tool.Name(), Arguments: map[string]any{"value": "model-authored"},
 	}}
 	hooks := NewHookManager(nil)
@@ -963,7 +975,7 @@ func TestPipelineBindsToolOriginatedApprovalSuspensionToTrustedArguments(t *test
 		t.Fatal(err)
 	}
 	pipeline.Interaction.Hooks = hooks
-	resumeOutcome := pipeline.ExecuteTools(t.Context(), t.Context(), resumeState, resumeExec, 1)
+	resumeOutcome := pipeline.ExecuteTools(t.Context(), t.Context(), resumeState, resumeExec, resumeLLM)
 	if resumeOutcome.Control != ToolControlContinue || !tool.continued || len(manager.consumptions) != 1 {
 		t.Fatalf(
 			"resume outcome = %+v, continued = %t, consumptions = %#v, messages = %#v",
@@ -996,7 +1008,8 @@ func TestPipelineSuspensionFailureBecomesPairedToolError(t *testing.T) {
 		opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-no-persist"}},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{{
 		ID: "call-question", Name: requestTool.Name(), Arguments: map[string]any{
 			"questions": []any{map[string]any{"id": "mode", "question": "Which mode?"}},
 		},
@@ -1006,7 +1019,7 @@ func TestPipelineSuspensionFailureBecomesPairedToolError(t *testing.T) {
 	}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
 
-	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control.Control != ToolControlContinue {
+	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm); control.Control != ToolControlContinue {
 		t.Fatalf("control = %v, want continue with tool error", control.Control)
 	}
 	if len(manager.requests) != 0 {
@@ -1032,12 +1045,13 @@ func TestPipelineSteeringWinsBeforeSuspensionCommit(t *testing.T) {
 		opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-steer-suspend"}},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{{
 		ID: "call-question", Name: requestTool.Name(), Arguments: map[string]any{
 			"questions": []any{map[string]any{"id": "mode", "question": "Which mode?"}},
 		},
 	}}
-	exec.assistantToolCallsPersisted = true
+	llm.assistantToolCallsPersisted = true
 	manager := &fakeToolSuspensionManager{
 		disposition: ToolSuspensionDisposition{InteractionID: "must-not-run", Durable: true},
 	}
@@ -1048,7 +1062,7 @@ func TestPipelineSteeringWinsBeforeSuspensionCommit(t *testing.T) {
 		Interaction: PipelineInteractionServices{Suspension: manager},
 	}
 
-	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control.Control != ToolControlContinue {
+	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm); control.Control != ToolControlContinue {
 		t.Fatalf("control = %v, want continue", control.Control)
 	}
 	if len(manager.requests) != 0 || len(exec.pendingMessages) != 1 {
@@ -1192,29 +1206,31 @@ func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
 		sessionKey: "session-loop-guard", opts: processOptions{NoHistory: true},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	llm := newLLMIterationState(1)
 	emitter := &captureRuntimeEmitter{}
 	pipeline := &Pipeline{Runtime: PipelineRuntimeServices{Events: emitter}}
 
 	for i := 1; i <= 3; i++ {
-		exec.normalizedToolCalls = []providers.ToolCall{{
+		llm.iteration = i
+		llm.normalizedToolCalls = []providers.ToolCall{{
 			ID: fmt.Sprintf("call-%d", i), Name: tool.Name(),
 			Arguments: map[string]any{"value": "same"},
 		}}
 		if i == 3 {
-			exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.ToolCall{
+			llm.normalizedToolCalls = append(llm.normalizedToolCalls, providers.ToolCall{
 				ID: "call-3-skipped", Name: tool.Name(), Arguments: map[string]any{"value": "other"},
 			})
 			pipeline.Context.Steering = &delayedSteering{
 				messages: []providers.Message{{Role: "user", Content: "change course"}},
 			}
 		}
-		exec.allResponsesHandled = true
+		llm.allResponsesHandled = true
 		if got := pipeline.ExecuteTools(
 			context.Background(),
 			context.Background(),
 			ts,
 			exec,
-			i,
+			llm,
 		); got.Control != ToolControlContinue {
 			t.Fatalf("iteration %d control = %v", i, got.Control)
 		}
@@ -1305,15 +1321,17 @@ func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
 		sessionKey: "session-emergency-loop-guard", opts: processOptions{NoHistory: true},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	llm := newLLMIterationState(1)
 	emitter := &captureRuntimeEmitter{}
 	pipeline := &Pipeline{Runtime: PipelineRuntimeServices{Events: emitter}}
 
 	for i := 1; i <= config.IdenticalCallHalt; i++ {
-		exec.normalizedToolCalls = []providers.ToolCall{{
+		llm.iteration = i
+		llm.normalizedToolCalls = []providers.ToolCall{{
 			ID: fmt.Sprintf("call-%d", i), Name: tool.Name(), Arguments: map[string]any{},
 		}}
-		exec.allResponsesHandled = false
-		outcome := pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, i)
+		llm.allResponsesHandled = false
+		outcome := pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, llm)
 		if i < config.IdenticalCallHalt {
 			if outcome.Control != ToolControlContinue {
 				t.Fatalf("iteration %d outcome = %#v", i, outcome)
@@ -1408,6 +1426,7 @@ func TestPipelineLoopGuardUsesHookModifiedArgumentsAndResults(t *testing.T) {
 		opts:       processOptions{NoHistory: true},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	llm := newLLMIterationState(1)
 	hooks := NewHookManager(nil)
 	defer hooks.Close()
 	if err := hooks.Mount(NamedHook("rewrite", &toolRewriteHook{})); err != nil {
@@ -1416,11 +1435,12 @@ func TestPipelineLoopGuardUsesHookModifiedArgumentsAndResults(t *testing.T) {
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Hooks: hooks}}
 
 	for i, value := range []string{"original-one", "original-two"} {
-		exec.normalizedToolCalls = []providers.ToolCall{{
+		llm.iteration = i + 1
+		llm.normalizedToolCalls = []providers.ToolCall{{
 			ID: fmt.Sprintf("hook-%d", i), Name: tool.Name(), Arguments: map[string]any{"text": value},
 		}}
-		exec.allResponsesHandled = true
-		pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, i+1)
+		llm.allResponsesHandled = true
+		pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, llm)
 	}
 	if tool.executions != 2 {
 		t.Fatalf("executions = %d", tool.executions)
@@ -1454,6 +1474,7 @@ func TestPipelineLoopGuardDoesNotCountPolicyDenials(t *testing.T) {
 		opts:       processOptions{NoHistory: true},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	llm := newLLMIterationState(1)
 	hooks := NewHookManager(nil)
 	defer hooks.Close()
 	if err := hooks.Mount(NamedHook("deny", &denyToolHook{denyTools: map[string]bool{tool.Name(): true}})); err != nil {
@@ -1461,12 +1482,14 @@ func TestPipelineLoopGuardDoesNotCountPolicyDenials(t *testing.T) {
 	}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Hooks: hooks}}
 	call := providers.ToolCall{ID: "denied", Name: tool.Name(), Arguments: map[string]any{"value": "same"}}
-	exec.normalizedToolCalls = []providers.ToolCall{call}
-	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, 1)
+	llm.iteration = 1
+	llm.normalizedToolCalls = []providers.ToolCall{call}
+	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, llm)
 	hooks.Unmount("deny")
 	call.ID = "executed"
-	exec.normalizedToolCalls = []providers.ToolCall{call}
-	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, 2)
+	llm.iteration = 2
+	llm.normalizedToolCalls = []providers.ToolCall{call}
+	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, llm)
 	if tool.executions != 1 {
 		t.Fatalf("policy denial affected loop state; executions = %d", tool.executions)
 	}
@@ -1532,6 +1555,7 @@ func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 				},
 			}
 			exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+			llm := newLLMIterationState(1)
 			args := map[string]any{}
 			if test.blockLoop {
 				args["mutable"] = "same"
@@ -1539,10 +1563,10 @@ func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 					Tool: tool.Name(), Args: args, Failed: true,
 				})
 			}
-			exec.normalizedToolCalls = []providers.ToolCall{{
+			llm.normalizedToolCalls = []providers.ToolCall{{
 				ID: "call-blocked-approval", Name: tool.Name(), Arguments: args,
 			}}
-			exec.assistantToolCallsPersisted = true
+			llm.assistantToolCallsPersisted = true
 			hooks := NewHookManager(nil)
 			defer hooks.Close()
 			if err := hooks.Mount(NamedHook("approval", &durableApprovalHook{
@@ -1568,7 +1592,7 @@ func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 				t.Context(),
 				ts,
 				exec,
-				1,
+				llm,
 			); control.Control != ToolControlContinue {
 				t.Fatalf("control = %v, want continue", control.Control)
 			}
@@ -1770,7 +1794,8 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 		sessionKey: "session-steering-safety", opts: processOptions{NoHistory: true},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{
 		{ID: "call-read", Name: "read"},
 		{ID: "call-write", Name: "write"},
 		{ID: "call-commit", Name: "commit"},
@@ -1789,7 +1814,7 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 		context.Background(),
 		ts,
 		exec,
-		1,
+		llm,
 	); got.Control != ToolControlContinue {
 		t.Fatalf("control = %v, want continue", got.Control)
 	}
@@ -1802,7 +1827,7 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 	if len(exec.messages) != 4 {
 		t.Fatalf("tool results = %d, want one per call", len(exec.messages))
 	}
-	for i, call := range exec.normalizedToolCalls {
+	for i, call := range llm.normalizedToolCalls {
 		if exec.messages[i].Role != "tool" || exec.messages[i].ToolCallID != call.ID {
 			t.Fatalf("result[%d] = %#v, want source-ordered result for %s", i, exec.messages[i], call.ID)
 		}
@@ -1845,7 +1870,8 @@ func TestPipelineSteeringArrivingDuringBatchDoesNotCancelCompletedCall(t *testin
 		sessionKey: "session-delayed-steering", opts: processOptions{NoHistory: true},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-	exec.normalizedToolCalls = []providers.ToolCall{
+	llm := newLLMIterationState(1)
+	llm.normalizedToolCalls = []providers.ToolCall{
 		{ID: "call-first", Name: first.Name()},
 		{ID: "call-second", Name: second.Name()},
 	}
@@ -1853,7 +1879,7 @@ func TestPipelineSteeringArrivingDuringBatchDoesNotCancelCompletedCall(t *testin
 		messages: []providers.Message{{Role: "user", Content: "stop the second write"}},
 	}}}
 
-	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, 1)
+	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, llm)
 	if first.executions != 1 || second.executions != 0 {
 		t.Fatalf("executions = first:%d second:%d, want 1 and 0", first.executions, second.executions)
 	}

@@ -106,21 +106,6 @@ type ToolLoopOutcome struct {
 	JournalErr             error
 }
 
-// LLMPhase indicates which phase the turn is executing in.
-type LLMPhase int
-
-const (
-	LLMPhaseSetup LLMPhase = iota
-	LLMPhasePreLLM
-	LLMPhaseLLMCall
-	LLMPhaseProcessing
-	LLMPhaseToolLoop
-	LLMPhaseTools
-	LLMPhaseFinalizing
-	LLMPhaseCompleted
-	LLMPhaseAborted
-)
-
 // =============================================================================
 // turnResult - returned from runTurn
 // =============================================================================
@@ -178,38 +163,40 @@ type turnExecution struct {
 	sawSteering            bool
 	sawAdditionalUserInput bool
 
-	// Iteration tracking
-	iteration int
 	loopGuard *loopguard.Controller
 
-	// Per-iteration state set by Pipeline.PreLLM
+	// Model execution state can be rewritten and persists across iterations.
 	model turnExecutionModel
-
-	// LLM call per-iteration state
-	response            *providers.LLMResponse
-	normalizedToolCalls []providers.ToolCall
-	allResponsesHandled bool
-	streamingPublisher  *streamingChunkPublisher
-	streamingFallback   bool
-	suppressReasoning   bool
-	callMessages        []providers.Message
-	providerToolDefs    []providers.ToolDefinition
-	llmModel            string
-	llmOpts             map[string]any
-	gracefulTerminal    bool
-	useNativeSearch     bool
-
-	// Phase tracking
-	phase LLMPhase
 
 	// Continuation-injected steering is owned by the caller that supplied
 	// InitialSteeringMessages. The turn still persists/injects those messages,
 	// but turn-end cleanup must not ack/release their inbound spool entries
 	// again or it can race with continuation-level cleanup.
 	initialSteeringSpoolIDs map[string]struct{}
+}
 
+// LLMIterationState owns data that is valid only for one model call and its
+// immediately following tool or finalization phase.
+type LLMIterationState struct {
+	iteration                   int
+	response                    *providers.LLMResponse
+	normalizedToolCalls         []providers.ToolCall
+	allResponsesHandled         bool
+	streamingPublisher          *streamingChunkPublisher
+	streamingFallback           bool
+	suppressReasoning           bool
+	callMessages                []providers.Message
+	providerToolDefs            []providers.ToolDefinition
+	llmModel                    string
+	llmOpts                     map[string]any
+	gracefulTerminal            bool
+	useNativeSearch             bool
 	assistantToolCallsPersisted bool
 	assistantToolCallsWriteErr  error
+}
+
+func newLLMIterationState(iteration int) *LLMIterationState {
+	return &LLMIterationState{iteration: iteration}
 }
 
 type turnExecutionModel struct {
@@ -257,9 +244,7 @@ func newTurnExecution(
 		pendingMessages:         append([]providers.Message(nil), opts.InitialSteeringMessages...),
 		sawAdditionalUserInput:  len(opts.InitialSteeringMessages) > 0,
 		initialSteeringSpoolIDs: collectSteeringSpoolIDs(opts.InitialSteeringMessages),
-		iteration:               0,
 		loopGuard:               loopguard.New(agent.ToolLoopDetection),
-		phase:                   LLMPhaseSetup,
 	}
 }
 

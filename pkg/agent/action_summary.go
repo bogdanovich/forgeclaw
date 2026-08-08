@@ -402,14 +402,18 @@ func renderFinalTurnReply(
 	return strings.TrimSpace(fallback)
 }
 
-func shouldFinalizeAfterToolLoopWithRenderConfig(cfg *config.Config, exec *turnExecution) bool {
+func shouldFinalizeAfterToolLoopWithRenderConfig(
+	cfg *config.Config,
+	exec *turnExecution,
+	llm *LLMIterationState,
+) bool {
 	if !finalTurnRenderEligibleForConfig(cfg, exec) {
 		return false
 	}
-	if exec == nil {
+	if llm == nil {
 		return false
 	}
-	return !exec.allResponsesHandled
+	return !llm.allResponsesHandled
 }
 
 func minInt(a, b int) int {

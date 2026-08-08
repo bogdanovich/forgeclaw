@@ -531,9 +531,6 @@ func TestPipeline_SetupTurn_BasicInitialization(t *testing.T) {
 	if len(exec.messages) == 0 {
 		t.Error("expected messages to be populated")
 	}
-	if exec.iteration != 0 {
-		t.Errorf("expected iteration 0, got %d", exec.iteration)
-	}
 }
 
 func TestPipeline_SetupTurn_DoesNotAttachHistoricalImages(t *testing.T) {
@@ -816,21 +813,22 @@ func TestPipeline_CallLLM_SimpleResponse(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	llm := newLLMIterationState(1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, llm)
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
 	if ctrl.Control != ControlBreak {
 		t.Errorf("expected ControlBreak, got %v", ctrl.Control)
 	}
-	if exec.response == nil {
+	if llm.response == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if exec.response.Content == "" {
+	if llm.response.Content == "" {
 		t.Error("expected non-empty content")
 	}
-	if ctrl.FinalContent != exec.response.Content {
-		t.Fatalf("final content = %q, want %q", ctrl.FinalContent, exec.response.Content)
+	if ctrl.FinalContent != llm.response.Content {
+		t.Fatalf("final content = %q, want %q", ctrl.FinalContent, llm.response.Content)
 	}
 }
 
@@ -891,7 +889,8 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackIdentityAlias(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	llm := newLLMIterationState(1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, llm)
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
@@ -940,7 +939,8 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackDisplayNameWithoutAlias(t *testi
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	llm := newLLMIterationState(1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, llm)
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
@@ -1150,18 +1150,19 @@ func TestPipeline_CallLLM_WithToolCall(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	llm := newLLMIterationState(1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, llm)
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
 	if ctrl.Control != ControlToolLoop {
 		t.Errorf("expected ControlToolLoop, got %v", ctrl.Control)
 	}
-	if len(exec.normalizedToolCalls) == 0 {
+	if len(llm.normalizedToolCalls) == 0 {
 		t.Fatal("expected tool calls")
 	}
-	if exec.normalizedToolCalls[0].Name != "web_search" {
-		t.Errorf("expected tool name 'web_search', got %q", exec.normalizedToolCalls[0].Name)
+	if llm.normalizedToolCalls[0].Name != "web_search" {
+		t.Errorf("expected tool name 'web_search', got %q", llm.normalizedToolCalls[0].Name)
 	}
 }
 
@@ -1188,7 +1189,7 @@ func TestPipeline_CallLLM_UsesNativeSearchWithoutClientWebSearchTool(t *testing.
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
@@ -1225,7 +1226,7 @@ func TestPipeline_CallLLM_TimeoutRetry(t *testing.T) {
 	}
 
 	// Should retry and eventually fail after max retries
-	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 	if err == nil {
 		t.Error("expected error after retries")
 	}
@@ -1295,7 +1296,7 @@ func TestPipeline_CallLLM_HTTP5xxRetry(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 	if err != nil {
 		t.Fatalf("expected HTTP 500 retry to recover, got error: %v", err)
 	}
@@ -1330,7 +1331,7 @@ func TestPipeline_CallLLM_NetworkErrorRetry(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 	if err == nil {
 		t.Fatal("expected error after network error retries")
 	}
@@ -1401,7 +1402,7 @@ func TestPipeline_CallLLM_RetryConfigRespected(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 
 	if err == nil {
 		t.Error("expected error after retries")
@@ -1436,7 +1437,7 @@ func TestPipeline_CallLLM_RetrySleepCancellation(t *testing.T) {
 	turnCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = pipeline.CallLLM(context.Background(), turnCtx, ts, exec, 1)
+	_, err = pipeline.CallLLM(context.Background(), turnCtx, ts, exec, newLLMIterationState(1))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("CallLLM error = %v, want context canceled", err)
 	}
@@ -1467,7 +1468,7 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupTurn(first) failed: %v", err)
 	}
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), firstTS, firstExec, 1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), firstTS, firstExec, newLLMIterationState(1))
 	if err != nil {
 		t.Fatalf("CallLLM(first) failed: %v", err)
 	}
@@ -1492,7 +1493,7 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 		context.Background(),
 		secondTS,
 		secondExec,
-		1,
+		newLLMIterationState(1),
 	)
 	if err != nil {
 		t.Fatalf("CallLLM(second) failed: %v", err)
@@ -1579,7 +1580,7 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 		context.Background(),
 		firstTS,
 		firstExec,
-		1,
+		newLLMIterationState(1),
 	); callErr != nil {
 		t.Fatalf("CallLLM(first) failed: %v", callErr)
 	}
@@ -1612,7 +1613,7 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 		context.Background(),
 		lightTS,
 		lightExec,
-		1,
+		newLLMIterationState(1),
 	); callErr != nil {
 		t.Fatalf("CallLLM(light) failed: %v", callErr)
 	}
@@ -1635,7 +1636,7 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 	if got := thirdExec.model.activeCandidates[0].Model; got != "fallback-model" {
 		t.Fatalf("third active candidate model = %q, want %q", got, "fallback-model")
 	}
-	if _, err := pipeline.CallLLM(context.Background(), context.Background(), thirdTS, thirdExec, 1); err != nil {
+	if _, err := pipeline.CallLLM(context.Background(), context.Background(), thirdTS, thirdExec, newLLMIterationState(1)); err != nil {
 		t.Fatalf("CallLLM(third) failed: %v", err)
 	}
 
@@ -1685,7 +1686,7 @@ func TestPipeline_CallLLM_RetryCountLimit(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 	if err == nil {
 		t.Error("expected error after retries")
 	}
@@ -1745,7 +1746,7 @@ func TestPipeline_ExecuteTools_NoTools(t *testing.T) {
 	}
 
 	// First CallLLM returns ControlBreak (no tools)
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, newLLMIterationState(1))
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
@@ -1920,7 +1921,7 @@ func TestCallLLMMintClawToolInterimRequiresDurableIntent(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			outcome, err := pipeline.CallLLM(t.Context(), t.Context(), ts, exec, 1)
+			outcome, err := pipeline.CallLLM(t.Context(), t.Context(), ts, exec, newLLMIterationState(1))
 			if err != nil {
 				t.Fatal(err)
 			}

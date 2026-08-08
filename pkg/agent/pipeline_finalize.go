@@ -55,12 +55,13 @@ type FinalizationContext struct {
 func newFinalizationContext(
 	ts *turnState,
 	exec *turnExecution,
+	llm *LLMIterationState,
 	status TurnEndStatus,
 	content string,
 ) FinalizationContext {
 	_, inputTokens, outputTokens, totalTokens := ts.llmUsageTotals()
 	disposition := finalResponsePending
-	if exec.allResponsesHandled {
+	if llm.allResponsesHandled {
 		disposition = finalResponseAlreadyHandled
 	}
 
@@ -70,7 +71,7 @@ func newFinalizationContext(
 			Role:             "assistant",
 			Content:          content,
 			ModelName:        exec.model.llmModelName,
-			ReasoningContent: responseReasoningContent(exec.response),
+			ReasoningContent: responseReasoningContent(llm.response),
 		}
 		historyMessage = &message
 	}
@@ -90,9 +91,9 @@ func newFinalizationContext(
 		followUps:       append([]bus.InboundMessage(nil), ts.followUps...),
 		historyMessage:  historyMessage,
 		stream: finalizationStream{
-			publisher: exec.streamingPublisher,
-			fallback:  exec.streamingFallback,
-			modelName: exec.llmModel,
+			publisher: llm.streamingPublisher,
+			fallback:  llm.streamingFallback,
+			modelName: llm.llmModel,
 		},
 		delivery: finalizationDelivery{
 			sendResponse:                ts.opts.SendResponse,
@@ -107,10 +108,11 @@ func (p *Pipeline) finalizeTurn(
 	turnCtx context.Context,
 	ts *turnState,
 	exec *turnExecution,
+	llm *LLMIterationState,
 	status TurnEndStatus,
 	content string,
 ) (turnResult, error) {
-	finalization := newFinalizationContext(ts, exec, status, content)
+	finalization := newFinalizationContext(ts, exec, llm, status, content)
 	return p.Finalize(turnCtx, ts, finalization)
 }
 

@@ -26,8 +26,9 @@ func (p *Pipeline) CallLLM(
 	turnCtx context.Context,
 	ts *turnState,
 	exec *turnExecution,
-	iteration int,
+	llm *LLMIterationState,
 ) (LLMCallOutcome, error) {
+	iteration := llm.iteration
 	maxMediaSize := p.maxMediaSize()
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
@@ -57,79 +58,79 @@ func (p *Pipeline) CallLLM(
 	}
 
 	// PreLLM: graceful terminal handling
-	exec.gracefulTerminal, _ = ts.gracefulInterruptRequested()
-	exec.providerToolDefs = ts.agent.Tools.ToProviderDefs()
-	exec.providerToolDefs = filterToolsByTurnProfile(exec.providerToolDefs, ts.profile)
+	llm.gracefulTerminal, _ = ts.gracefulInterruptRequested()
+	llm.providerToolDefs = ts.agent.Tools.ToProviderDefs()
+	llm.providerToolDefs = filterToolsByTurnProfile(llm.providerToolDefs, ts.profile)
 
 	// Native web search support
-	exec.useNativeSearch = p.nativeSearchEnabled(ts.profile, exec.model.activeProvider)
-	if exec.useNativeSearch {
-		filtered := make([]providers.ToolDefinition, 0, len(exec.providerToolDefs))
-		for _, td := range exec.providerToolDefs {
+	llm.useNativeSearch = p.nativeSearchEnabled(ts.profile, exec.model.activeProvider)
+	if llm.useNativeSearch {
+		filtered := make([]providers.ToolDefinition, 0, len(llm.providerToolDefs))
+		for _, td := range llm.providerToolDefs {
 			if td.Function.Name != "web_search" {
 				filtered = append(filtered, td)
 			}
 		}
-		exec.providerToolDefs = filtered
+		llm.providerToolDefs = filtered
 	}
 
-	exec.callMessages = exec.messages
-	if exec.gracefulTerminal {
-		exec.callMessages = append(
+	llm.callMessages = exec.messages
+	if llm.gracefulTerminal {
+		llm.callMessages = append(
 			append([]providers.Message(nil), exec.messages...),
 			ts.interruptHintMessage(),
 		)
-		exec.providerToolDefs = nil
+		llm.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
 	}
 
-	exec.llmOpts = map[string]any{
+	llm.llmOpts = map[string]any{
 		"max_tokens":       ts.agent.MaxTokens,
 		"temperature":      ts.agent.Temperature,
 		"prompt_cache_key": ts.agent.ID,
 	}
-	if exec.useNativeSearch {
-		exec.llmOpts["native_search"] = true
+	if llm.useNativeSearch {
+		llm.llmOpts["native_search"] = true
 	}
 	execution := ts.model.ExecutionState()
-	applyTurnThinkingOptions(exec, execution, exec.model.activeProvider, true)
+	applyTurnThinkingOptions(exec, llm, execution, exec.model.activeProvider, true)
 
-	exec.llmModel = exec.model.activeModel
+	llm.llmModel = exec.model.activeModel
 
 	// BeforeLLM hook
 	if p.Interaction.Hooks != nil {
 		llmReq, decision := p.Interaction.Hooks.BeforeLLM(turnCtx, &LLMHookRequest{
 			Meta:             ts.eventMeta("runTurn", "turn.llm.request"),
 			Context:          cloneTurnContext(ts.turnCtx),
-			Model:            exec.llmModel,
-			Messages:         exec.callMessages,
-			Tools:            exec.providerToolDefs,
-			Options:          exec.llmOpts,
-			GracefulTerminal: exec.gracefulTerminal,
+			Model:            llm.llmModel,
+			Messages:         llm.callMessages,
+			Tools:            llm.providerToolDefs,
+			Options:          llm.llmOpts,
+			GracefulTerminal: llm.gracefulTerminal,
 		})
 		switch decision.normalizedAction() {
 		case HookActionContinue, HookActionModify:
 			if llmReq != nil {
-				prevModel := exec.llmModel
-				exec.llmModel = llmReq.Model
-				exec.callMessages = llmReq.Messages
-				exec.providerToolDefs = filterToolsByTurnProfile(llmReq.Tools, ts.profile)
-				exec.llmOpts = llmReq.Options
-				nativeSearchAllowed := exec.useNativeSearch &&
+				prevModel := llm.llmModel
+				llm.llmModel = llmReq.Model
+				llm.callMessages = llmReq.Messages
+				llm.providerToolDefs = filterToolsByTurnProfile(llmReq.Tools, ts.profile)
+				llm.llmOpts = llmReq.Options
+				nativeSearchAllowed := llm.useNativeSearch &&
 					turnProfileToolAllowed(ts.profile, "web_search")
 				if !nativeSearchAllowed {
-					delete(exec.llmOpts, "native_search")
+					delete(llm.llmOpts, "native_search")
 				}
-				if strings.TrimSpace(exec.llmModel) != "" && exec.llmModel != prevModel {
-					p.applyBeforeLLMModelRewrite(ts, exec)
-					applyTurnThinkingOptions(exec, execution, exec.model.activeProvider, true)
+				if strings.TrimSpace(llm.llmModel) != "" && llm.llmModel != prevModel {
+					p.applyBeforeLLMModelRewrite(ts, exec, llm)
+					applyTurnThinkingOptions(exec, llm, execution, exec.model.activeProvider, true)
 				}
 			}
 		case HookActionAbortTurn:
-			cancelConfiguredStreamingLLM(turnCtx, exec)
+			cancelConfiguredStreamingLLM(turnCtx, llm)
 			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHook}, nil
 		case HookActionHardAbort:
-			cancelConfiguredStreamingLLM(turnCtx, exec)
+			cancelConfiguredStreamingLLM(turnCtx, llm)
 			_ = ts.requestHardAbort()
 			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
 		}
@@ -140,13 +141,13 @@ func (p *Pipeline) CallLLM(
 		ts.eventMeta("runTurn", "turn.llm.request"),
 		LLMRequestPayload{
 			Provider:           primaryCandidateProvider(exec.model.activeCandidates),
-			Model:              exec.llmModel,
-			PromptHash:         safeJSONHash(traceCaptureSettingsFromConfig(p.Cfg), exec.callMessages),
-			MessagesCount:      len(exec.callMessages),
-			ToolsCount:         len(exec.providerToolDefs),
+			Model:              llm.llmModel,
+			PromptHash:         safeJSONHash(traceCaptureSettingsFromConfig(p.Cfg), llm.callMessages),
+			MessagesCount:      len(llm.callMessages),
+			ToolsCount:         len(llm.providerToolDefs),
 			MaxTokens:          ts.agent.MaxTokens,
 			Temperature:        ts.agent.Temperature,
-			DiagnosticMessages: diagnosticMessagesPreview(p.Cfg, exec.callMessages),
+			DiagnosticMessages: diagnosticMessagesPreview(p.Cfg, llm.callMessages),
 		},
 	)
 
@@ -154,18 +155,18 @@ func (p *Pipeline) CallLLM(
 		map[string]any{
 			"agent_id":          ts.agent.ID,
 			"iteration":         iteration,
-			"model":             exec.llmModel,
-			"messages_count":    len(exec.callMessages),
-			"tools_count":       len(exec.providerToolDefs),
+			"model":             llm.llmModel,
+			"messages_count":    len(llm.callMessages),
+			"tools_count":       len(llm.providerToolDefs),
 			"max_tokens":        ts.agent.MaxTokens,
 			"temperature":       ts.agent.Temperature,
-			"system_prompt_len": len(exec.callMessages[0].Content),
+			"system_prompt_len": len(llm.callMessages[0].Content),
 		})
 	logger.DebugCF("agent", "Full LLM request",
 		map[string]any{
 			"iteration":     iteration,
-			"messages_json": formatMessagesForLog(exec.callMessages),
-			"tools_json":    formatToolsForLog(exec.providerToolDefs),
+			"messages_json": formatMessagesForLog(llm.callMessages),
+			"tools_json":    formatToolsForLog(llm.providerToolDefs),
 		})
 
 	// LLM call closure with fallback support
@@ -183,6 +184,7 @@ func (p *Pipeline) CallLLM(
 			providerCtx,
 			ts,
 			exec,
+			llm,
 			messagesForCall,
 			toolDefsForCall,
 		); handled {
@@ -200,6 +202,7 @@ func (p *Pipeline) CallLLM(
 						ctx,
 						ts,
 						exec,
+						llm,
 						candidate,
 						messagesForCall,
 						toolDefsForCall,
@@ -260,8 +263,8 @@ func (p *Pipeline) CallLLM(
 			providerCtx,
 			messagesForCall,
 			toolDefsForCall,
-			exec.llmModel,
-			exec.llmOpts,
+			llm.llmModel,
+			llm.llmOpts,
 		)
 		if err == nil &&
 			exec.model.autoFallback &&
@@ -284,7 +287,7 @@ func (p *Pipeline) CallLLM(
 	var err error
 	maxRetries, backoffSecs := p.llmRetrySettings()
 	for retry := 0; retry <= maxRetries; retry++ {
-		exec.response, err = callLLM(exec.callMessages, exec.providerToolDefs)
+		llm.response, err = callLLM(llm.callMessages, llm.providerToolDefs)
 		if err == nil {
 			break
 		}
@@ -297,7 +300,7 @@ func (p *Pipeline) CallLLM(
 		}
 
 		// Retry without media if vision is unsupported
-		if hasMediaRefs(exec.callMessages) &&
+		if hasMediaRefs(llm.callMessages) &&
 			isVisionUnsupportedError(err) &&
 			retry < maxRetries &&
 			!turnIntroducedMedia(ts) {
@@ -316,7 +319,7 @@ func (p *Pipeline) CallLLM(
 				"error": err.Error(),
 				"retry": retry,
 			})
-			exec.callMessages = stripMessageMedia(exec.callMessages)
+			llm.callMessages = stripMessageMedia(llm.callMessages)
 			if !ts.opts.NoHistory {
 				exec.history = stripMessageMedia(exec.history)
 				ts.agent.Sessions.SetHistory(ts.sessionKey, exec.history)
@@ -408,7 +411,7 @@ func (p *Pipeline) CallLLM(
 			reserveTokens := p.estimateNonHistoryPromptReserve(
 				ts,
 				contextualSkills,
-				exec.providerToolDefs,
+				llm.providerToolDefs,
 				p.maxMediaSize(),
 			)
 			compactBudget := effectiveHistoryBudget(
@@ -487,7 +490,7 @@ func (p *Pipeline) CallLLM(
 				stableHistory,
 				func(trimmedHistory []providers.Message) []providers.Message {
 					rebuilt := buildMessages(trimmedHistory)
-					if exec.gracefulTerminal {
+					if llm.gracefulTerminal {
 						return append(
 							append([]providers.Message(nil), rebuilt...),
 							ts.interruptHintMessage(),
@@ -496,15 +499,15 @@ func (p *Pipeline) CallLLM(
 					return rebuilt
 				},
 				ts.agent.ContextWindow,
-				exec.providerToolDefs,
+				llm.providerToolDefs,
 				ts.agent.MaxTokens,
 			)
-			exec.callMessages = callMessages
+			llm.callMessages = callMessages
 			exec.history = append(trimmedStableHistory, protectedTurnTail...)
 			exec.messages = buildMessages(trimmedStableHistory)
-			if exec.gracefulTerminal {
+			if llm.gracefulTerminal {
 				msgs := append([]providers.Message(nil), exec.messages...)
-				exec.callMessages = append(msgs, ts.interruptHintMessage())
+				llm.callMessages = append(msgs, ts.interruptHintMessage())
 			}
 			if dropped := originalHistoryCount - len(exec.history); dropped > 0 {
 				logger.WarnCF(
@@ -555,7 +558,7 @@ func (p *Pipeline) CallLLM(
 			map[string]any{
 				"agent_id":  ts.agent.ID,
 				"iteration": iteration,
-				"model":     exec.llmModel,
+				"model":     llm.llmModel,
 				"error":     err.Error(),
 			})
 		return LLMCallOutcome{Control: ControlBreak}, fmt.Errorf("LLM call failed after retries: %w", err)
@@ -566,19 +569,19 @@ func (p *Pipeline) CallLLM(
 		llmResp, decision := p.Interaction.Hooks.AfterLLM(turnCtx, &LLMHookResponse{
 			Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
 			Context:  cloneTurnContext(ts.turnCtx),
-			Model:    exec.llmModel,
-			Response: exec.response,
+			Model:    llm.llmModel,
+			Response: llm.response,
 		})
 		switch decision.normalizedAction() {
 		case HookActionContinue, HookActionModify:
 			if llmResp != nil && llmResp.Response != nil {
-				exec.response = llmResp.Response
+				llm.response = llmResp.Response
 			}
 		case HookActionAbortTurn:
-			cancelConfiguredStreamingLLM(turnCtx, exec)
+			cancelConfiguredStreamingLLM(turnCtx, llm)
 			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHook}, nil
 		case HookActionHardAbort:
-			cancelConfiguredStreamingLLM(turnCtx, exec)
+			cancelConfiguredStreamingLLM(turnCtx, llm)
 			_ = ts.requestHardAbort()
 			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
 		}
@@ -589,24 +592,24 @@ func (p *Pipeline) CallLLM(
 	// context lookup: the raw ctx passed to CallLLM is not seeded with turn
 	// state, and the streaming publisher reads usage from ts at finalize.
 	if ts != nil {
-		ts.SetLastFinishReason(exec.response.FinishReason)
-		ts.SetLastUsage(exec.response.Usage)
-		ts.RecordLLMUsage(exec.response.Usage)
+		ts.SetLastFinishReason(llm.response.FinishReason)
+		ts.SetLastUsage(llm.response.Usage)
+		ts.RecordLLMUsage(llm.response.Usage)
 	}
 
-	if exec.suppressReasoning {
-		exec.response.Reasoning = ""
-		exec.response.ReasoningContent = ""
-		exec.response.ReasoningDetails = nil
+	if llm.suppressReasoning {
+		llm.response.Reasoning = ""
+		llm.response.ReasoningContent = ""
+		llm.response.ReasoningDetails = nil
 	}
-	reasoningContent := responseReasoningContent(exec.response)
-	shouldPublishMintClawToolCallInterim := ts.channel == "mintclaw" && len(exec.response.ToolCalls) > 0
+	reasoningContent := responseReasoningContent(llm.response)
+	shouldPublishMintClawToolCallInterim := ts.channel == "mintclaw" && len(llm.response.ToolCalls) > 0
 	if shouldPublishMintClawToolCallInterim {
 		// MintClaw tool-call turns publish their reasoning/content/tool summary as a
 		// structured sequence after the tool-call payload is normalized below.
 	} else if ts.channel == "mintclaw" {
-		if exec.streamingPublisher != nil && exec.streamingPublisher.ReasoningPublished() {
-			if err := exec.streamingPublisher.FinalizeReasoning(turnCtx, reasoningContent); err != nil {
+		if llm.streamingPublisher != nil && llm.streamingPublisher.ReasoningPublished() {
+			if err := llm.streamingPublisher.FinalizeReasoning(turnCtx, reasoningContent); err != nil {
 				logger.WarnCF("agent", "Failed to finalize streamed mintclaw reasoning", map[string]any{
 					"channel": ts.channel,
 					"chat_id": ts.chatID,
@@ -628,21 +631,21 @@ func (p *Pipeline) CallLLM(
 		)
 	}
 	diagnosticResponseContent, diagnosticResponseReasoning, sensitiveDiagnosticResponse := diagnosticLLMResponseContent(
-		exec.response,
-		exec.callMessages,
+		llm.response,
+		llm.callMessages,
 	)
 	p.emitEvent(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{
-			ResponseHash:     diagnosticSafeHash(p.Cfg, exec.response.Content),
-			ContentLen:       len(exec.response.Content),
-			ToolCalls:        len(exec.response.ToolCalls),
-			HasReasoning:     exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
-			HasProviderUsage: exec.response.Usage != nil,
-			PromptTokens:     usagePromptTokens(exec.response.Usage),
-			CompletionTokens: usageCompletionTokens(exec.response.Usage),
-			TotalTokens:      usageTotalTokens(exec.response.Usage),
+			ResponseHash:     diagnosticSafeHash(p.Cfg, llm.response.Content),
+			ContentLen:       len(llm.response.Content),
+			ToolCalls:        len(llm.response.ToolCalls),
+			HasReasoning:     llm.response.Reasoning != "" || llm.response.ReasoningContent != "",
+			HasProviderUsage: llm.response.Usage != nil,
+			PromptTokens:     usagePromptTokens(llm.response.Usage),
+			CompletionTokens: usageCompletionTokens(llm.response.Usage),
+			TotalTokens:      usageTotalTokens(llm.response.Usage),
 			DiagnosticContent: diagnosticTextPreview(
 				p.Cfg, diagnosticResponseContent, diagnosticModelResponseBytes,
 			),
@@ -653,7 +656,7 @@ func (p *Pipeline) CallLLM(
 			),
 			DiagnosticToolCalls: diagnosticToolCallsPreviewWithSensitivity(
 				p.Cfg,
-				exec.response.ToolCalls,
+				llm.response.ToolCalls,
 				sensitiveDiagnosticResponse,
 			),
 		},
@@ -662,28 +665,28 @@ func (p *Pipeline) CallLLM(
 	llmResponseFields := map[string]any{
 		"agent_id":       ts.agent.ID,
 		"iteration":      iteration,
-		"content_chars":  len(exec.response.Content),
-		"tool_calls":     len(exec.response.ToolCalls),
+		"content_chars":  len(llm.response.Content),
+		"tool_calls":     len(llm.response.ToolCalls),
 		"target_channel": p.targetReasoningChannelID(ts.channel),
 		"channel":        ts.channel,
 	}
 	if sensitiveDiagnosticResponse {
 		llmResponseFields["reasoning_redacted"] = true
 	} else {
-		llmResponseFields["reasoning"] = exec.response.Reasoning
+		llmResponseFields["reasoning"] = llm.response.Reasoning
 	}
-	if exec.response.Usage != nil {
-		llmResponseFields["prompt_tokens"] = exec.response.Usage.PromptTokens
-		llmResponseFields["completion_tokens"] = exec.response.Usage.CompletionTokens
-		llmResponseFields["total_tokens"] = exec.response.Usage.TotalTokens
+	if llm.response.Usage != nil {
+		llmResponseFields["prompt_tokens"] = llm.response.Usage.PromptTokens
+		llmResponseFields["completion_tokens"] = llm.response.Usage.CompletionTokens
+		llmResponseFields["total_tokens"] = llm.response.Usage.TotalTokens
 	}
 	logger.DebugCF("agent", "LLM response", llmResponseFields)
 
 	// No-tool-call path: steering check and direct response
-	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
-		responseContent := exec.response.Content
-		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "mintclaw" {
-			responseContent = exec.response.ReasoningContent
+	if len(llm.response.ToolCalls) == 0 || llm.gracefulTerminal {
+		responseContent := llm.response.Content
+		if responseContent == "" && llm.response.ReasoningContent != "" && ts.channel != "mintclaw" {
+			responseContent = llm.response.ReasoningContent
 		}
 		exec.actionLog = appendTurnActionRecord(
 			exec.actionLog,
@@ -697,7 +700,7 @@ func (p *Pipeline) CallLLM(
 			steerMsgs,
 		) > 0 {
 			exec.markSteeringObserved()
-			cancelConfiguredStreamingLLM(turnCtx, exec)
+			cancelConfiguredStreamingLLM(turnCtx, llm)
 			logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
 				map[string]any{
 					"agent_id":       ts.agent.ID,
@@ -716,37 +719,37 @@ func (p *Pipeline) CallLLM(
 			})
 		return LLMCallOutcome{Control: ControlBreak, FinalContent: responseContent}, nil
 	}
-	cancelConfiguredStreamingLLM(turnCtx, exec)
+	cancelConfiguredStreamingLLM(turnCtx, llm)
 
 	// Tool-call path: normalize and prepare for tool execution
-	exec.normalizedToolCalls = make([]providers.ToolCall, 0, len(exec.response.ToolCalls))
-	for _, tc := range exec.response.ToolCalls {
-		exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.NormalizeToolCall(tc))
+	llm.normalizedToolCalls = make([]providers.ToolCall, 0, len(llm.response.ToolCalls))
+	for _, tc := range llm.response.ToolCalls {
+		llm.normalizedToolCalls = append(llm.normalizedToolCalls, providers.NormalizeToolCall(tc))
 	}
 
-	toolNames := make([]string, 0, len(exec.normalizedToolCalls))
-	for _, tc := range exec.normalizedToolCalls {
+	toolNames := make([]string, 0, len(llm.normalizedToolCalls))
+	for _, tc := range llm.normalizedToolCalls {
 		toolNames = append(toolNames, tc.Name)
 	}
 	logger.InfoCF("agent", "LLM requested tool calls",
 		map[string]any{
 			"agent_id":  ts.agent.ID,
 			"tools":     toolNames,
-			"count":     len(exec.normalizedToolCalls),
+			"count":     len(llm.normalizedToolCalls),
 			"iteration": iteration,
 		})
 
-	exec.allResponsesHandled = len(exec.normalizedToolCalls) > 0
+	llm.allResponsesHandled = len(llm.normalizedToolCalls) > 0
 	assistantMsg := providers.Message{
 		Role:             "assistant",
-		Content:          exec.response.Content,
+		Content:          llm.response.Content,
 		ModelName:        exec.model.llmModelName,
 		ReasoningContent: reasoningContent,
 	}
-	for _, tc := range exec.normalizedToolCalls {
+	for _, tc := range llm.normalizedToolCalls {
 		argumentsJSON, _ := json.Marshal(tc.Arguments)
 		toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
-			exec.response,
+			llm.response,
 			tc,
 			exec.messages,
 		)
@@ -775,19 +778,19 @@ func (p *Pipeline) CallLLM(
 		})
 	}
 	exec.messages = append(exec.messages, assistantMsg)
-	exec.assistantToolCallsPersisted = false
-	exec.assistantToolCallsWriteErr = nil
+	llm.assistantToolCallsPersisted = false
+	llm.assistantToolCallsWriteErr = nil
 	if !ts.opts.NoHistory {
 		writeErr := persistFullSessionMessage(turnCtx, ts.agent.Sessions, ts.sessionKey, assistantMsg)
-		exec.assistantToolCallsWriteErr = writeErr
-		exec.assistantToolCallsPersisted = writeErr == nil
+		llm.assistantToolCallsWriteErr = writeErr
+		llm.assistantToolCallsPersisted = writeErr == nil
 		if writeErr == nil {
 			ts.recordPersistedMessage(assistantMsg)
 		}
 		p.ingestMessage(turnCtx, ts, assistantMsg, writeErr)
 	}
-	if shouldPublishMintClawToolCallInterim && (ts.opts.NoHistory || exec.assistantToolCallsPersisted) {
-		interimContent := exec.response.Content
+	if shouldPublishMintClawToolCallInterim && (ts.opts.NoHistory || llm.assistantToolCallsPersisted) {
+		interimContent := llm.response.Content
 		if p.shouldPublishToolFeedback(ts) {
 			interimContent = ""
 		}
@@ -814,11 +817,15 @@ func turnIntroducedMedia(ts *turnState) bool {
 	return hasMediaRefs(ts.persistedMessagesSnapshot())
 }
 
-func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution) {
-	if p == nil || ts == nil || ts.agent == nil || exec == nil {
+func (p *Pipeline) applyBeforeLLMModelRewrite(
+	ts *turnState,
+	exec *turnExecution,
+	llm *LLMIterationState,
+) {
+	if p == nil || ts == nil || ts.agent == nil || exec == nil || llm == nil {
 		return
 	}
-	rawModel := strings.TrimSpace(exec.llmModel)
+	rawModel := strings.TrimSpace(llm.llmModel)
 	if rawModel == "" {
 		return
 	}
@@ -842,7 +849,7 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 		exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), candidates...)
 		exec.model.activeCandidates = candidates
 		exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
-		exec.llmModel = exec.model.activeModel
+		llm.llmModel = exec.model.activeModel
 		exec.model.activeModelConfig = p.activeModelConfig(
 			ts.agent.Workspace,
 			candidates,
@@ -860,7 +867,7 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 	}
 	exec.model.activeCandidates = execution.Candidates
 	exec.model.activeModel = resolvedCandidateModel(execution.Candidates, rawModel)
-	exec.llmModel = exec.model.activeModel
+	llm.llmModel = exec.model.activeModel
 	exec.model.activeModelConfig = p.activeModelConfig(
 		ts.agent.Workspace,
 		execution.Candidates,

@@ -29,15 +29,17 @@ func TestNewFinalizationContextCapturesTerminalSnapshot(t *testing.T) {
 			llmModelName:     "fallback-model",
 			defaultModelName: "primary-model",
 		},
-		response:               &providers.LLMResponse{ReasoningContent: "reasoning"},
 		completionMedia:        []tools.CompletionMedia{{Ref: "media://result"}},
-		streamingPublisher:     publisher,
-		streamingFallback:      true,
-		llmModel:               "provider/fallback-model",
 		sawAdditionalUserInput: true,
 	}
+	llm := &LLMIterationState{
+		response:           &providers.LLMResponse{ReasoningContent: "reasoning"},
+		streamingPublisher: publisher,
+		streamingFallback:  true,
+		llmModel:           "provider/fallback-model",
+	}
 
-	finalization := newFinalizationContext(ts, exec, TurnEndStatusCompleted, "final answer")
+	finalization := newFinalizationContext(ts, exec, llm, TurnEndStatusCompleted, "final answer")
 
 	if finalization.disposition != finalResponsePending {
 		t.Fatalf("disposition = %v, want pending", finalization.disposition)
@@ -78,13 +80,13 @@ func TestFinalizationContextAlreadyHandledSkipsHistoryAndCompaction(t *testing.T
 		opts: processOptions{EnableSummary: true},
 	}
 	exec := &turnExecution{
-		allResponsesHandled: true,
 		model: turnExecutionModel{
 			llmModelName:     "active-model",
 			defaultModelName: "default-model",
 		},
 	}
-	finalization := newFinalizationContext(ts, exec, TurnEndStatusCompleted, "")
+	llm := &LLMIterationState{allResponsesHandled: true}
+	finalization := newFinalizationContext(ts, exec, llm, TurnEndStatusCompleted, "")
 	if finalization.disposition != finalResponseAlreadyHandled {
 		t.Fatalf("disposition = %v, want already handled", finalization.disposition)
 	}

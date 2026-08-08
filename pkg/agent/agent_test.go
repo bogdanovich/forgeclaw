@@ -1345,8 +1345,8 @@ func TestApplyBeforeLLMModelRewrite_RebuildsExecutionProviders(t *testing.T) {
 	}
 
 	originalProvider := exec.model.activeProvider
-	exec.llmModel = "hook-model"
-	pipeline.applyBeforeLLMModelRewrite(ts, exec)
+	llm := &LLMIterationState{llmModel: "hook-model"}
+	pipeline.applyBeforeLLMModelRewrite(ts, exec, llm)
 	defer func() {
 		if exec.model.cleanup != nil {
 			exec.model.cleanup()
@@ -1584,8 +1584,8 @@ func TestPipeline_CallLLM_BeforeLLMRewriteDoesNotMutateStickyAutoFallbackSelecti
 		t.Fatalf("SetupTurn() error = %v", err)
 	}
 
-	exec.llmModel = "fallback-model"
-	pipeline.applyBeforeLLMModelRewrite(ts, exec)
+	llm := &LLMIterationState{llmModel: "fallback-model"}
+	pipeline.applyBeforeLLMModelRewrite(ts, exec, llm)
 	defer func() {
 		if exec.model.cleanup != nil {
 			exec.model.cleanup()
@@ -1596,7 +1596,7 @@ func TestPipeline_CallLLM_BeforeLLMRewriteDoesNotMutateStickyAutoFallbackSelecti
 		t.Fatal("expected before_llm model rewrite to disable sticky auto-fallback updates")
 	}
 
-	control, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	control, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, llm)
 	if err != nil {
 		t.Fatalf("CallLLM() error = %v", err)
 	}

@@ -72,7 +72,8 @@ func TestPipelinePhaseOutcomesCarryAbortCause(t *testing.T) {
 				defer exec.model.cleanup()
 			}
 
-			llmOutcome, err := pipeline.CallLLM(t.Context(), t.Context(), ts, exec, 1)
+			llm := newLLMIterationState(1)
+			llmOutcome, err := pipeline.CallLLM(t.Context(), t.Context(), ts, exec, llm)
 			if err != nil {
 				t.Fatalf("CallLLM() error = %v", err)
 			}
@@ -85,8 +86,11 @@ func TestPipelinePhaseOutcomesCarryAbortCause(t *testing.T) {
 				context: newTurnContext(nil, nil, nil),
 			})
 			toolExec := newTurnExecution(agent, toolTS.opts, nil, "", nil)
-			toolExec.normalizedToolCalls = []providers.ToolCall{{ID: "call-1", Name: "unused"}}
-			toolOutcome := pipeline.ExecuteTools(t.Context(), t.Context(), toolTS, toolExec, 1)
+			toolLLM := &LLMIterationState{
+				iteration:           1,
+				normalizedToolCalls: []providers.ToolCall{{ID: "call-1", Name: "unused"}},
+			}
+			toolOutcome := pipeline.ExecuteTools(t.Context(), t.Context(), toolTS, toolExec, toolLLM)
 			if toolOutcome.Control != ToolControlBreak || toolOutcome.AbortCause != test.want {
 				t.Fatalf("tool outcome = %#v, want break with abort cause %v", toolOutcome, test.want)
 			}
