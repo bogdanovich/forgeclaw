@@ -1349,6 +1349,10 @@ func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
 			if outcome.Control != ToolControlContinue {
 				t.Fatalf("iteration %d outcome = %#v", i, outcome)
 			}
+			if i == config.IdenticalCallWarn &&
+				!strings.Contains(exec.messages[len(exec.messages)-1].Content, "identical_call_success_warning") {
+				t.Fatalf("iteration %d result missing recovery guidance: %#v", i, exec.messages)
+			}
 			continue
 		}
 		if outcome.Control != ToolControlHalt ||
@@ -1365,8 +1369,9 @@ func TestPipelineEmergencyHaltTerminatesUnknownSuccessfulLoop(t *testing.T) {
 			decisions = append(decisions, event.payload.(ToolLoopDecisionPayload))
 		}
 	}
-	if len(decisions) != 1 || decisions[0].Action != "halt" ||
-		decisions[0].Code != "identical_call_emergency_halt" {
+	if len(decisions) != 2 || decisions[0].Action != "warn" ||
+		decisions[0].Code != "identical_call_success_warning" || decisions[1].Action != "halt" ||
+		decisions[1].Code != "identical_call_emergency_halt" {
 		t.Fatalf("loop decisions = %#v", decisions)
 	}
 }
