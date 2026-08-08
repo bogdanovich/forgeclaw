@@ -20,6 +20,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
@@ -27,24 +28,6 @@ import (
 type headerTransport struct {
 	base    http.RoundTripper
 	headers map[string]string
-}
-
-func expandHomeCommandPath(command string) string {
-	if command == "" || command[0] != '~' {
-		return command
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return command
-	}
-	if command == "~" {
-		return home
-	}
-	if strings.HasPrefix(command, "~/") || strings.HasPrefix(command, "~\\") {
-		return filepath.Join(home, command[2:])
-	}
-	return command
 }
 
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -567,7 +550,7 @@ func connectServer(
 				"command": cfg.Command,
 			})
 		// Create command with context
-		cmd := exec.CommandContext(ctx, expandHomeCommandPath(cfg.Command), cfg.Args...)
+		cmd := exec.CommandContext(ctx, fileutil.ExpandHome(cfg.Command), cfg.Args...)
 
 		var envVars map[string]string
 		if cfg.EnvFile != "" {

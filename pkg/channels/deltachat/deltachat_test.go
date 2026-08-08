@@ -13,6 +13,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
@@ -150,7 +151,7 @@ func TestExpandHome(t *testing.T) {
 		{"relative", "relative"},
 	}
 	for _, tt := range tests {
-		if got := expandHome(tt.in); got != tt.want {
+		if got := fileutil.ExpandHome(tt.in); got != tt.want {
 			t.Errorf("expandHome(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}

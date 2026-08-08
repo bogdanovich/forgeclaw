@@ -1118,6 +1118,10 @@ func (c *OneBotChannel) isDuplicate(messageID string) bool {
 	return false
 }
 
+// truncate returns s truncated to the first n runes followed by "..." when
+// s exceeds n runes. The content threshold is exact (100-rune content, not
+// utils.Truncate's reserve-3 contract) and is not affected by the global
+// truncation flag.
 func truncate(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {

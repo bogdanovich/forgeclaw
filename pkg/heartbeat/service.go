@@ -18,6 +18,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/constants"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/identity"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/state"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
@@ -354,13 +355,12 @@ func (hs *HeartbeatService) parseLastChannel(lastChannel string) (platform, user
 	}
 
 	// Parse channel format: "platform:user_id" (e.g., "telegram:123456")
-	parts := strings.SplitN(lastChannel, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	var ok bool
+	platform, userID, ok = identity.ParseCanonicalID(lastChannel)
+	if !ok {
 		hs.logErrorf("Invalid last channel format: %s", lastChannel)
 		return "", ""
 	}
-
-	platform, userID = parts[0], parts[1]
 
 	// Skip internal channels
 	if constants.IsInternalChannel(platform) {
