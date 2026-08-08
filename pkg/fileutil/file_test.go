@@ -238,3 +238,26 @@ func TestWriteFileAtomic_InvalidPath(t *testing.T) {
 		t.Error("expected error for invalid path, got nil")
 	}
 }
+
+func TestExpandHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"/abs/path", "/abs/path"},
+		{"relative", "relative"},
+		{"~", home},
+		{"~/sub", filepath.Join(home, "sub")},
+		{"~user", "~user"}, // ~user forms are left unchanged
+	}
+	for _, tt := range tests {
+		if got := ExpandHome(tt.in); got != tt.want {
+			t.Errorf("ExpandHome(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

@@ -642,11 +642,18 @@ type AntigravityModelInfo struct {
 
 // --- Helpers ---
 
+// truncateString returns s truncated to at most maxLen runes with a trailing
+// "...". It is rune-safe (unlike byte slicing) and reserved 3 runes for the
+// ellipsis so the result never exceeds maxLen.
 func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if maxLen <= 3 {
 		return s
 	}
-	return s[:maxLen] + "..."
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func randomString(n int) string {

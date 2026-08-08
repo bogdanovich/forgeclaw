@@ -2,7 +2,6 @@ package devices
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/constants"
 	"github.com/bogdanovich/mintclaw/pkg/devices/events"
 	"github.com/bogdanovich/mintclaw/pkg/devices/sources"
+	"github.com/bogdanovich/mintclaw/pkg/identity"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/state"
 )
@@ -143,12 +143,9 @@ func (s *Service) sendNotification(ev *events.DeviceEvent) {
 }
 
 func parseLastChannel(lastChannel string) (platform, userID string) {
-	if lastChannel == "" {
+	platform, userID, ok := identity.ParseCanonicalID(lastChannel)
+	if !ok {
 		return "", ""
 	}
-	parts := strings.SplitN(lastChannel, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", ""
-	}
-	return parts[0], parts[1]
+	return platform, userID
 }

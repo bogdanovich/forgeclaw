@@ -24,6 +24,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/channels"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/identity"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/media"
@@ -1126,7 +1127,7 @@ func (c *DeltaChatChannel) applyProfileConfig(ctx context.Context, accountID int
 		cfgMap["displayname"] = accountConfigString(name)
 	}
 	if avatar := strings.TrimSpace(c.config.AvatarImage); avatar != "" {
-		avatar = expandHome(avatar)
+		avatar = fileutil.ExpandHome(avatar)
 		if !fileExists(avatar) {
 			logger.WarnCF("deltachat", "avatar_image not found; leaving current avatar unchanged", map[string]any{
 				"avatar_image": avatar,
@@ -1284,7 +1285,7 @@ func resolveServerPath(configured string) (string, error) {
 		}
 		return p, nil
 	}
-	p := expandHome(configured)
+	p := fileutil.ExpandHome(configured)
 	if !fileExists(p) {
 		return "", fmt.Errorf("deltachat: rpc_server_path %q not found", p)
 	}
@@ -1294,30 +1295,13 @@ func resolveServerPath(configured string) (string, error) {
 // resolveDataDir picks where the account database lives.
 func resolveDataDir(configured, channelName string) string {
 	if configured != "" {
-		return expandHome(configured)
+		return fileutil.ExpandHome(configured)
 	}
 	name := channelName
 	if name == "" {
 		name = config.ChannelDeltaChat
 	}
 	return filepath.Join(config.GetHome(), "deltachat", name)
-}
-
-func expandHome(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	if len(path) == 1 {
-		return home
-	}
-	if path[1] == '/' {
-		return filepath.Join(home, path[2:])
-	}
-	return path
 }
 
 func fileExists(p string) bool {

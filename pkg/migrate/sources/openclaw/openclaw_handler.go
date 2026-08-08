@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/migrate/internal"
 )
 
@@ -115,10 +116,10 @@ func (o *OpenclawHandler) ExecuteConfigMigration(srcConfigPath, dstConfigPath st
 
 func resolveSourceHome(override string) (string, error) {
 	if override != "" {
-		return internal.ExpandHome(override), nil
+		return fileutil.ExpandHome(override), nil
 	}
 	if envHome := os.Getenv(OpenclawHomeEnvVar); envHome != "" {
-		return internal.ExpandHome(envHome), nil
+		return fileutil.ExpandHome(envHome), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

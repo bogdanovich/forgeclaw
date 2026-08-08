@@ -1038,7 +1038,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 				"sender":       senderID,
 				"group":        groupIDStr,
 				"is_mentioned": isBotMentioned,
-				"content":      truncate(content, 100),
+				"content":      utils.Truncate(content, 103),
 			})
 			return
 		}
@@ -1058,7 +1058,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 		"chat_id":     chatID,
 		"message_id":  messageID,
 		"length":      len(content),
-		"content":     truncate(content, 100),
+		"content":     utils.Truncate(content, 103),
 		"media_count": len(parsed.Media),
 	})
 
@@ -1116,14 +1116,6 @@ func (c *OneBotChannel) isDuplicate(messageID string) bool {
 	c.dedupIdx = (c.dedupIdx + 1) % len(c.dedupRing)
 
 	return false
-}
-
-func truncate(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n]) + "..."
 }
 
 // VoiceCapabilities returns the voice capabilities of the channel.
