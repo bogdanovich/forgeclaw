@@ -536,6 +536,76 @@ func TestPipeline_SetupTurn_BasicInitialization(t *testing.T) {
 	}
 }
 
+func TestPipeline_SetupTurn_DoesNotAttachHistoricalImages(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	store := media.NewFileMediaStore()
+	imageDir := t.TempDir()
+	storeImage := func(name string) (string, string) {
+		t.Helper()
+		path := filepath.Join(imageDir, name)
+		if err := os.WriteFile(path, []byte{
+			0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+			0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+		}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ref, err := store.Store(
+			path,
+			media.MediaMeta{Filename: name, ContentType: "image/png"},
+			"setup-turn-test",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ref, path
+	}
+	historicalRef, historicalPath := storeImage("historical.png")
+	currentRef, currentPath := storeImage("current.png")
+	al.SetMediaStore(store)
+	al.contextManager = &blockingCompactContextManager{history: []providers.Message{
+		{Role: "user", Content: "[image]", Media: []string{historicalRef}},
+		{Role: "assistant", Content: "historical answer"},
+	}}
+
+	opts := makeTestProcessOpts("setup-turn-media-boundary")
+	opts.UserMessage = "[image]"
+	opts.Media = []string{currentRef}
+	opts = normalizeProcessOptions(opts)
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-media-boundary",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := NewPipeline(al).SetupTurn(t.Context(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn() error = %v", err)
+	}
+
+	var historicalMessage, currentMessage *providers.Message
+	for i := range exec.messages {
+		message := &exec.messages[i]
+		switch {
+		case strings.Contains(message.Content, historicalPath):
+			historicalMessage = message
+		case strings.Contains(message.Content, currentPath):
+			currentMessage = message
+		}
+	}
+	if historicalMessage == nil {
+		t.Fatal("historical image message was not preserved as a path-tagged message")
+	}
+	if len(historicalMessage.Media) != 0 {
+		t.Fatalf("historical image was attached to the current request: %#v", historicalMessage.Media)
+	}
+	if currentMessage == nil {
+		t.Fatal("current image message was not preserved")
+	}
+}
+
 func TestPipeline_SetupTurn_PropagatesContextAssemblyFailure(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()

@@ -43,6 +43,18 @@ func normalizeCurrentTurnStart(messages []providers.Message, currentTurnStart in
 	return currentTurnStart
 }
 
+func promptCurrentTurnStart(
+	messages []providers.Message,
+	currentMessage string,
+	currentMedia []string,
+) int {
+	start := len(messages)
+	if strings.TrimSpace(currentMessage) != "" || len(currentMedia) > 0 {
+		start--
+	}
+	return normalizeCurrentTurnStart(messages, start)
+}
+
 // resolveMediaRefs resolves media:// refs in messages.
 // For user messages: image-only messages in the current turn are attached to
 // the provider request. Other images get path tags ([image:/path]) so the LLM

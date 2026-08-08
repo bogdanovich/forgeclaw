@@ -55,7 +55,12 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		contextualSkills,
 	)
 
-	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
+	messages = resolveMediaRefs(
+		messages,
+		p.Context.MediaResolver,
+		maxMediaSize,
+		promptCurrentTurnStart(messages, ts.userMessage, ts.media),
+	)
 
 	if !ts.opts.NoHistory {
 		if budgetReport != nil && len(budgetReport.PressureReasons) > 0 {
@@ -104,7 +109,12 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 						ts.media,
 						contextualSkills,
 					)
-					return resolveMediaRefs(rebuilt, p.Context.MediaResolver, maxMediaSize)
+					return resolveMediaRefs(
+						rebuilt,
+						p.Context.MediaResolver,
+						maxMediaSize,
+						promptCurrentTurnStart(rebuilt, ts.userMessage, ts.media),
+					)
 				},
 				ts.agent.ContextWindow,
 				toolDefs,
@@ -313,7 +323,12 @@ func (p *Pipeline) estimateNonHistoryPromptReserve(
 		return EstimateToolDefsTokens(toolDefs)
 	}
 	messages := p.buildTurnMessages(ts, nil, "", ts.userMessage, ts.media, contextualSkills)
-	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
+	messages = resolveMediaRefs(
+		messages,
+		p.Context.MediaResolver,
+		maxMediaSize,
+		promptCurrentTurnStart(messages, ts.userMessage, ts.media),
+	)
 
 	tokens := EstimateToolDefsTokens(toolDefs)
 	for _, msg := range messages {
