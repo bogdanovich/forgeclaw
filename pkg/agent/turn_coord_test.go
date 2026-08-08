@@ -1468,7 +1468,13 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupTurn(first) failed: %v", err)
 	}
-	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), firstTS, firstExec, newLLMIterationState(1))
+	ctrl, err := pipeline.CallLLM(
+		context.Background(),
+		context.Background(),
+		firstTS,
+		firstExec,
+		newLLMIterationState(1),
+	)
 	if err != nil {
 		t.Fatalf("CallLLM(first) failed: %v", err)
 	}
@@ -1636,7 +1642,13 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 	if got := thirdExec.model.activeCandidates[0].Model; got != "fallback-model" {
 		t.Fatalf("third active candidate model = %q, want %q", got, "fallback-model")
 	}
-	if _, err := pipeline.CallLLM(context.Background(), context.Background(), thirdTS, thirdExec, newLLMIterationState(1)); err != nil {
+	if _, err := pipeline.CallLLM(
+		context.Background(),
+		context.Background(),
+		thirdTS,
+		thirdExec,
+		newLLMIterationState(1),
+	); err != nil {
 		t.Fatalf("CallLLM(third) failed: %v", err)
 	}
 

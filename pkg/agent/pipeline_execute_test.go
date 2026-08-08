@@ -1019,7 +1019,13 @@ func TestPipelineSuspensionFailureBecomesPairedToolError(t *testing.T) {
 	}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
 
-	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm); control.Control != ToolControlContinue {
+	if control := pipeline.ExecuteTools(
+		t.Context(),
+		t.Context(),
+		ts,
+		exec,
+		llm,
+	); control.Control != ToolControlContinue {
 		t.Fatalf("control = %v, want continue with tool error", control.Control)
 	}
 	if len(manager.requests) != 0 {
@@ -1062,7 +1068,13 @@ func TestPipelineSteeringWinsBeforeSuspensionCommit(t *testing.T) {
 		Interaction: PipelineInteractionServices{Suspension: manager},
 	}
 
-	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, llm); control.Control != ToolControlContinue {
+	if control := pipeline.ExecuteTools(
+		t.Context(),
+		t.Context(),
+		ts,
+		exec,
+		llm,
+	); control.Control != ToolControlContinue {
 		t.Fatalf("control = %v, want continue", control.Control)
 	}
 	if len(manager.requests) != 0 || len(exec.pendingMessages) != 1 {
