@@ -101,7 +101,7 @@ func (limits BrowserLimits) Effective() BrowserLimits {
 }
 
 func effectiveBrowserLimit(value, fallback int) int {
-	if value <= 0 {
+	if value == 0 {
 		return fallback
 	}
 	return value
@@ -363,7 +363,7 @@ func BrowserCommandOutputSchema(command string) json.RawMessage {
 				"state":                map[string]any{"enum": []string{"accepted", "succeeded", "failed", "unknown"}},
 				"reason":               safeReason,
 				"observation":          rawSchema(browserObservationSchema()),
-				"artifact":             browserArtifactSchema(),
+				"artifact":             browserArtifactSchema(MaxBrowserDownloadBytes),
 			},
 		})
 	default:
@@ -476,19 +476,19 @@ func browserObservationSchema() json.RawMessage {
 					},
 				},
 			},
-			"screenshot": browserArtifactSchema(),
+			"screenshot": browserArtifactSchema(MaxBrowserScreenshotBytes),
 		},
 	})
 }
 
-func browserArtifactSchema() map[string]any {
+func browserArtifactSchema(maximumBytes int) map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
 		"required": []string{"transfer_id", "sha256", "size", "content_type"},
 		"properties": map[string]any{
 			"transfer_id":  map[string]any{"type": "string", "minLength": 1, "maxLength": MaxIDLength},
 			"sha256":       map[string]any{"type": "string", "pattern": "^[a-f0-9]{64}$"},
-			"size":         map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserDownloadBytes},
+			"size":         map[string]any{"type": "integer", "minimum": 1, "maximum": maximumBytes},
 			"content_type": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
 		},
 	}

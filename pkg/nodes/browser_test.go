@@ -124,6 +124,59 @@ func TestBrowserDescriptorRejectsProfileOrSchemaBroadening(t *testing.T) {
 	}
 }
 
+func TestBrowserArtifactSchemasUseCapabilitySpecificCeilings(t *testing.T) {
+	descriptors, err := BrowserCommandDescriptors([]BrowserProfileDescriptor{
+		browserProfileDescriptorFixture(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := func(size int) map[string]any {
+		return map[string]any{
+			"transfer_id": "transfer_1", "sha256": strings.Repeat("a", 64),
+			"size": size, "content_type": "image/png",
+		}
+	}
+	observation := map[string]any{
+		"session_id": "session_1", "tab_id": "tab_1", "snapshot_generation": 1,
+		"url": "", "origin": "", "snapshot": "", "elements": []any{}, "truncated": false,
+		"screenshot": artifact(MaxBrowserScreenshotBytes),
+	}
+	assertBrowserOutputValid(t, descriptors[2], observation)
+	observation["screenshot"] = artifact(MaxBrowserScreenshotBytes + 1)
+	assertBrowserOutputInvalid(t, descriptors[2], observation)
+
+	action := map[string]any{
+		"action_invocation_id": "action_1", "state": "succeeded",
+		"artifact": artifact(MaxBrowserDownloadBytes),
+	}
+	assertBrowserOutputValid(t, descriptors[3], action)
+	action["artifact"] = artifact(MaxBrowserDownloadBytes + 1)
+	assertBrowserOutputInvalid(t, descriptors[3], action)
+}
+
+func assertBrowserOutputValid(t *testing.T, descriptor CommandDescriptor, value map[string]any) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ValidateInvocationOutput(descriptor, encoded, MaxInvocationOutput); err != nil {
+		t.Fatalf("ValidateInvocationOutput() error = %v", err)
+	}
+}
+
+func assertBrowserOutputInvalid(t *testing.T, descriptor CommandDescriptor, value map[string]any) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ValidateInvocationOutput(descriptor, encoded, MaxInvocationOutput); err == nil {
+		t.Fatal("ValidateInvocationOutput() accepted an oversized artifact")
+	}
+}
+
 func browserProfileDescriptorFixture() BrowserProfileDescriptor {
 	return BrowserProfileDescriptor{
 		Alias: "managed", Revision: "managed-v1", Driver: "playwright_mcp",

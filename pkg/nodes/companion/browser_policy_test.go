@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 )
 
 func TestConfigNormalizesCompanionBrowserProfileWithoutProjectingHostDetails(t *testing.T) {
+	requireBrowserProfileIdentitySupport(t)
 	baseDir := t.TempDir()
 	profile := companionBrowserProfileFixture(t, baseDir)
 	originalAgents := append([]string(nil), profile.AllowedAgents...)
@@ -65,6 +67,7 @@ func TestConfigNormalizesCompanionBrowserProfileWithoutProjectingHostDetails(t *
 }
 
 func TestConfigRejectsUnsafeCompanionBrowserProfiles(t *testing.T) {
+	requireBrowserProfileIdentitySupport(t)
 	tests := []struct {
 		name   string
 		mutate func(*BrowserProfilePolicy, string)
@@ -115,6 +118,13 @@ func TestConfigRejectsUnsafeCompanionBrowserProfiles(t *testing.T) {
 			want: "outside the public network policy",
 		},
 		{
+			name: "negative limit",
+			mutate: func(profile *BrowserProfilePolicy, _ string) {
+				profile.Limits.DownloadBytes = -1
+			},
+			want: "malformed browser limits",
+		},
+		{
 			name: "limit expansion",
 			mutate: func(profile *BrowserProfilePolicy, _ string) {
 				profile.Limits.DownloadBytes = nodes.MaxBrowserDownloadBytes + 1
@@ -135,6 +145,22 @@ func TestConfigRejectsUnsafeCompanionBrowserProfiles(t *testing.T) {
 				t.Fatalf("Normalize() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestConfigRejectsPermissiveCompanionBrowserProfileDirectory(t *testing.T) {
+	requireBrowserProfileIdentitySupport(t)
+	baseDir := t.TempDir()
+	profile := companionBrowserProfileFixture(t, baseDir)
+	if err := os.Chmod(profile.ProfileDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (Config{
+		GatewayURL:      "wss://gateway.example",
+		BrowserProfiles: map[string]BrowserProfilePolicy{"managed": profile},
+	}).Normalize(baseDir)
+	if err == nil || !strings.Contains(err.Error(), "must not grant group or world access") {
+		t.Fatalf("Normalize() permissive directory error = %v", err)
 	}
 }
 
@@ -182,5 +208,12 @@ func companionBrowserProfileFixture(t *testing.T, baseDir string) BrowserProfile
 		ProfileDirectory: profileDir, LockFile: filepath.Join(baseDir, "browser.lock"),
 		Mode: nodes.BrowserProfileManaged, NetworkMode: nodes.BrowserNetworkAnyHTTP,
 		DryRun: true, AllowedActions: []string{"navigate", "download"}, Headed: true,
+	}
+}
+
+func requireBrowserProfileIdentitySupport(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("browser profile identity validation is admitted for Darwin and Linux companions")
 	}
 }

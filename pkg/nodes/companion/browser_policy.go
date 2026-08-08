@@ -271,6 +271,9 @@ func resolveExistingBrowserDirectory(baseDir, configured string) (string, error)
 	if err != nil || !info.IsDir() {
 		return "", errors.New("path must be an existing directory")
 	}
+	if err = validateBrowserProfileDirectory(info); err != nil {
+		return "", err
+	}
 	return filepath.Clean(realPath), nil
 }
 
