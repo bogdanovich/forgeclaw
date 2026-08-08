@@ -114,6 +114,72 @@
           "action_approval": {"enum": ["required", "operator_bypass_configured"]}
         }
       }
+    },
+    "browser_profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "alias", "revision", "driver", "mode", "network_mode",
+          "dry_run", "headed", "actions", "limits"
+        ],
+        "properties": {
+          "alias": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9][a-z0-9_-]*$"
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "driver": {"const": "playwright_mcp"},
+          "mode": {"const": "managed"},
+          "network_mode": {"enum": ["exact_origins", "public_web", "any_http"]},
+          "dry_run": {"const": true},
+          "headed": {"type": "boolean"},
+          "actions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {"enum": ["download", "navigate"]}
+          },
+          "limits": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sessions", "tabs", "session_seconds", "idle_seconds",
+              "prepared_seconds", "action_seconds", "snapshot_bytes",
+              "screenshot_bytes", "upload_bytes", "download_bytes",
+              "snapshot_refs", "text_input_bytes", "tool_result_bytes",
+              "retention_seconds"
+            ],
+            "properties": {
+              "sessions": {"const": 1},
+              "tabs": {"type": "integer", "minimum": 1, "maximum": 4},
+              "session_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+              "idle_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
+              "prepared_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+	              "action_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+	              "snapshot_bytes": {"type": "integer", "minimum": 1, "maximum": 262144},
+	              "screenshot_bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
+	              "upload_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+	              "download_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+	              "snapshot_refs": {"type": "integer", "minimum": 1, "maximum": 500},
+	              "text_input_bytes": {"type": "integer", "minimum": 1, "maximum": 16384},
+	              "tool_result_bytes": {"type": "integer", "minimum": 65536, "maximum": 327680},
+	              "retention_seconds": {"type": "integer", "minimum": 1, "maximum": 604800}
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -7,15 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
-	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/bogdanovich/mintclaw/pkg/browserpolicy"
 )
 
 const (
 	BrowserDriverPlaywrightMCP = "playwright_mcp"
+	BrowserPlacementGateway    = "gateway"
+	BrowserPlacementNode       = "node"
 	BrowserProfileManaged      = "managed"
 	BrowserNetworkExactOrigins = "exact_origins"
 	BrowserNetworkPublicWeb    = "public_web"
@@ -45,43 +46,7 @@ const (
 // browser_act wrapper. Snapshot content is budgeted separately.
 const BrowserToolResultEnvelopeBytes = 64 * 1024
 
-var (
-	browserAliasPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-	browserHostnamePattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
-)
-
-var browserSpecialPurposePrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("168.63.129.16/32"),
-	netip.MustParsePrefix("169.254.0.0/16"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("192.31.196.0/24"),
-	netip.MustParsePrefix("192.52.193.0/24"),
-	netip.MustParsePrefix("192.88.99.0/24"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("192.175.48.0/24"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("64:ff9b:1::/48"),
-	netip.MustParsePrefix("100::/64"),
-	netip.MustParsePrefix("100:0:0:1::/64"),
-	netip.MustParsePrefix("2001::/23"),
-	netip.MustParsePrefix("2001:db8::/32"),
-	netip.MustParsePrefix("2002::/16"),
-	netip.MustParsePrefix("2620:4f:8000::/48"),
-	netip.MustParsePrefix("3fff::/20"),
-	netip.MustParsePrefix("5f00::/16"),
-	netip.MustParsePrefix("fc00::/7"),
-	netip.MustParsePrefix("fe80::/10"),
-}
+var browserAliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 type BrowserToolsConfig struct {
 	Enabled bool                           `json:"enabled"           yaml:"-"`
@@ -92,9 +57,18 @@ type BrowserToolsConfig struct {
 
 type BrowserTargetConfig struct {
 	Enabled      bool                            `json:"enabled"                 yaml:"-"`
+	Placement    string                          `json:"placement,omitempty"     yaml:"-"`
+	NodeTarget   string                          `json:"node_target,omitempty"   yaml:"-"`
 	Driver       string                          `json:"driver,omitempty"        yaml:"-"`
 	DriverServer string                          `json:"driver_server,omitempty" yaml:"-"`
 	Profiles     map[string]BrowserProfileConfig `json:"profiles,omitempty"      yaml:"-"`
+}
+
+func (target BrowserTargetConfig) EffectivePlacement() string {
+	if target.Placement == "" {
+		return BrowserPlacementGateway
+	}
+	return target.Placement
 }
 
 type BrowserProfileConfig struct {
@@ -228,8 +202,47 @@ func (cfg *Config) validateBrowserTarget(name string, target BrowserTargetConfig
 			return err
 		}
 	}
+	placement := target.EffectivePlacement()
+	switch placement {
+	case BrowserPlacementGateway:
+		if target.NodeTarget != "" {
+			return fmt.Errorf(
+				"browser target %q cannot combine gateway placement with node_target",
+				name,
+			)
+		}
+	case BrowserPlacementNode:
+		if target.Driver != "" || target.DriverServer != "" {
+			return fmt.Errorf(
+				"browser target %q cannot combine node placement with a local driver",
+				name,
+			)
+		}
+		if !validExecutionTargetName(target.NodeTarget) {
+			return fmt.Errorf("browser target %q requires a valid node_target", name)
+		}
+		executionTarget, exists := cfg.Execution.Targets[target.NodeTarget]
+		if !exists || executionTarget.Type != "node" {
+			return fmt.Errorf(
+				"browser target %q references unknown node execution target %q",
+				name,
+				target.NodeTarget,
+			)
+		}
+	default:
+		return fmt.Errorf("browser target %q has unsupported placement %q", name, target.Placement)
+	}
 	if !target.Enabled {
 		return nil
+	}
+	if placement == BrowserPlacementNode {
+		if !cfg.Nodes.Enabled {
+			return fmt.Errorf("enabled node browser target %q requires nodes.enabled", name)
+		}
+		return fmt.Errorf(
+			"enabled node browser target %q is unavailable until the companion browser host is installed",
+			name,
+		)
 	}
 	if name != BrowserDefaultTarget {
 		return fmt.Errorf("B1 supports only the %q browser target", BrowserDefaultTarget)
@@ -316,7 +329,7 @@ func validateBrowserProfile(targetName, name string, profile BrowserProfileConfi
 }
 
 func NormalizeBrowserOrigin(raw string) (string, error) {
-	return normalizeBrowserOrigin(raw, true)
+	return browserpolicy.NormalizePublicOrigin(raw)
 }
 
 // NormalizeBrowserHTTPOrigin canonicalizes an HTTP or HTTPS origin without
@@ -324,197 +337,14 @@ func NormalizeBrowserOrigin(raw string) (string, error) {
 // explicitly selected the high-risk any_http mode, and for validating durable
 // browser state whose network authority is checked separately.
 func NormalizeBrowserHTTPOrigin(raw string) (string, error) {
-	return normalizeBrowserOrigin(raw, false)
-}
-
-func normalizeBrowserOrigin(raw string, publicOnly bool) (string, error) {
-	if strings.TrimSpace(raw) != raw || raw == "" || len(raw) > 2048 {
-		return "", errors.New("origin must be non-empty, trimmed, and at most 2048 bytes")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", errors.New("origin must be an absolute URL origin")
-	}
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return "", errors.New("origin scheme must be http or https")
-	}
-	if parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") ||
-		parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("origin must not contain user information, path, query, or fragment")
-	}
-	host := parsed.Hostname()
-	if host == "" || strings.Contains(host, "*") {
-		return "", errors.New("origin host must be exact")
-	}
-	trimmedHost := strings.TrimSuffix(host, ".")
-	lowerHost := strings.ToLower(trimmedHost)
-	if publicOnly && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") ||
-		lowerHost == "metadata.google.internal") {
-		return "", errors.New("origin host is outside the public network policy")
-	}
-	// Parse the untouched host before applying DNS-only trailing-dot
-	// canonicalization. A trailing dot can be part of an IPv6 zone name and
-	// therefore affects the interface selected for a scoped destination.
-	address, addressErr := netip.ParseAddr(host)
-	if addressErr != nil && trimmedHost != host {
-		// Browsers accept a DNS root dot after a canonical dotted-quad IPv4
-		// literal. Preserve that compatibility without admitting shorthand or
-		// other ambiguous numeric forms such as 127.1.
-		if trimmedAddress, trimmedErr := netip.ParseAddr(trimmedHost); trimmedErr == nil && trimmedAddress.Is4() {
-			address, addressErr = trimmedAddress, nil
-		}
-	}
-	if addressErr == nil {
-		if publicOnly && !IsPublicBrowserIP(net.IP(address.AsSlice())) {
-			return "", errors.New("origin IP is outside the public network policy")
-		}
-		lowerHost = address.String()
-	} else if legacyIP, recognized := parseBrowserIPv4(lowerHost); recognized {
-		if !publicOnly {
-			return "", errors.New("origin host is an ambiguous numeric IPv4 address")
-		}
-		if !IsPublicBrowserIP(legacyIP) {
-			return "", errors.New("origin IP is outside the public network policy")
-		}
-		lowerHost = legacyIP.String()
-	} else {
-		if browserIPv4Candidate(lowerHost) {
-			return "", errors.New("origin host is an invalid numeric IPv4 address")
-		}
-		dnsError := "origin host must be an exact DNS name"
-		if publicOnly {
-			dnsError = "origin host must be an exact public DNS name"
-		}
-		if !browserHostnamePattern.MatchString(host) || (publicOnly && !strings.Contains(lowerHost, ".")) ||
-			strings.HasPrefix(lowerHost, ".") || strings.HasSuffix(lowerHost, ".") ||
-			strings.Contains(lowerHost, "..") {
-			return "", errors.New(dnsError)
-		}
-		for _, label := range strings.Split(lowerHost, ".") {
-			if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-				return "", errors.New(dnsError)
-			}
-		}
-	}
-	port := parsed.Port()
-	if strings.HasSuffix(parsed.Host, ":") && port == "" {
-		return "", errors.New("origin port must be between 1 and 65535")
-	}
-	if port != "" {
-		portNumber, portErr := strconv.Atoi(port)
-		if portErr != nil || portNumber < 1 || portNumber > 65535 {
-			return "", errors.New("origin port must be between 1 and 65535")
-		}
-	}
-	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
-		port = ""
-	}
-	normalizedHost := lowerHost
-	if port != "" {
-		normalizedHost = net.JoinHostPort(normalizedHost, port)
-	} else if strings.Contains(lowerHost, ":") {
-		normalizedHost = "[" + normalizedHost + "]"
-	}
-	// URL.String applies RFC 6874 escaping to the complete decoded IPv6 zone.
-	// Escaping only '%' would leave other valid percent-decoded characters,
-	// such as spaces, as invalid URL text.
-	return (&url.URL{Scheme: scheme, Host: normalizedHost}).String(), nil
-}
-
-// browserIPv4Candidate mirrors the WHATWG "ends in a number" discriminator.
-// Browsers route such hosts through IPv4 parsing rather than DNS, so a failed
-// parse must be rejected instead of falling through to the DNS policy.
-func browserIPv4Candidate(host string) bool {
-	parts := strings.Split(host, ".")
-	if len(parts) == 0 {
-		return false
-	}
-	last := parts[len(parts)-1]
-	if last == "" {
-		return false
-	}
-	allDecimalDigits := true
-	for _, char := range last {
-		if char < '0' || char > '9' {
-			allDecimalDigits = false
-			break
-		}
-	}
-	if allDecimalDigits {
-		return true
-	}
-	_, recognized := parseBrowserIPv4Number(last)
-	return recognized
-}
-
-func parseBrowserIPv4(host string) (net.IP, bool) {
-	parts := strings.Split(host, ".")
-	if len(parts) == 0 || len(parts) > 4 {
-		return nil, false
-	}
-	numbers := make([]uint64, len(parts))
-	for index, part := range parts {
-		value, ok := parseBrowserIPv4Number(part)
-		if !ok {
-			return nil, false
-		}
-		numbers[index] = value
-	}
-	for _, value := range numbers[:len(numbers)-1] {
-		if value > 255 {
-			return nil, false
-		}
-	}
-	lastLimit := uint64(1) << (8 * (5 - len(numbers)))
-	if numbers[len(numbers)-1] >= lastLimit {
-		return nil, false
-	}
-	value := numbers[len(numbers)-1]
-	for index, part := range numbers[:len(numbers)-1] {
-		value += part << (8 * (3 - index))
-	}
-	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value)), true
-}
-
-func parseBrowserIPv4Number(part string) (uint64, bool) {
-	if part == "" {
-		return 0, false
-	}
-	base := 10
-	digits := part
-	if strings.HasPrefix(digits, "0x") {
-		base = 16
-		digits = digits[2:]
-	} else if len(digits) > 1 && digits[0] == '0' {
-		base = 8
-		digits = digits[1:]
-	}
-	if digits == "" {
-		return 0, true
-	}
-	value, err := strconv.ParseUint(digits, base, 32)
-	return value, err == nil
+	return browserpolicy.NormalizeHTTPOrigin(raw)
 }
 
 // IsPublicBrowserIP applies the browser network boundary to a resolved
 // address. It denies every block in IANA's IPv4 and IPv6 special-purpose
 // registries, cloud-provider metadata endpoints, and non-unicast addresses.
 func IsPublicBrowserIP(ip net.IP) bool {
-	address, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return false
-	}
-	address = address.Unmap()
-	if !address.IsGlobalUnicast() {
-		return false
-	}
-	for _, prefix := range browserSpecialPurposePrefixes {
-		if prefix.Contains(address) {
-			return false
-		}
-	}
-	return true
+	return browserpolicy.IsPublicIP(ip)
 }
 
 func validateBrowserLimits(limits BrowserLimitsConfig) error {

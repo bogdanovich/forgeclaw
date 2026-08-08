@@ -430,6 +430,9 @@ func projectDescriptorForTarget(
 	fileProfile string,
 	serviceProfile string,
 ) (nodes.CommandDescriptor, bool) {
+	if nodes.IsBrowserCommand(descriptor.Name) {
+		return nodes.CommandDescriptor{}, false
+	}
 	projected, available := projectFileDescriptorForTarget(descriptor, fileProfile)
 	if !available {
 		return nodes.CommandDescriptor{}, false
