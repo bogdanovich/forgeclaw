@@ -333,7 +333,10 @@ func recoverBrowserDownloadDelivery(
 		return err
 	}
 	record, found, err := spool.LookupTransfer(owner, owner.ToolCallID)
-	if err != nil || !found || record.Ref != recovery.ArtifactRef || !validBrowserDownloadRecord(record) {
+	if err != nil {
+		return err
+	}
+	if !found || record.Ref != recovery.ArtifactRef || !validBrowserDownloadRecord(record) {
 		return nodes.ErrTransferArtifactNotFound
 	}
 	claimedRecord, claimed, claimErr := spool.ClaimDelivery(

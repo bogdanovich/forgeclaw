@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
 )
 
@@ -204,6 +206,135 @@ func TestGatewayOutboundReconcilerShutdownReleasesDelayedAdmission(t *testing.T)
 	}
 	if len(recovered) != 1 || recovered[0].Intent.ID != admission.Intent.ID {
 		t.Fatalf("Recover() after shutdown = %#v", recovered)
+	}
+}
+
+func TestGatewayOutboundReconcilerTerminalizesMissingBrowserArtifact(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	first := openGatewayRecoveryCoordinator(t, root)
+	recovery := &bus.OutboundRecovery{
+		Kind: bus.OutboundRecoveryBrowserScreenshot, ArtifactRef: "transfer-artifact://missing",
+		MediaRef: "media://missing", WorkspaceID: "workspace_1", AgentID: "browser",
+		ActorID: "actor_1", RouteID: "route_1", SessionID: "session_1", ToolCallID: "call_1",
+	}
+	admission, err := first.AdmitMedia(
+		"/agents/browser",
+		gatewayRecoveryIdentity("missing-browser-artifact", 0),
+		bus.OutboundMediaMessage{
+			Parts:    []bus.MediaPart{{Type: "image", Ref: recovery.MediaRef}},
+			Recovery: recovery,
+		},
+	)
+	if err != nil {
+		t.Fatalf("AdmitMedia() error = %v", err)
+	}
+	commitGatewayRecoveryAdmission(t, first, admission)
+	if err = first.BeginAttempt(admission.Intent.ID); err != nil {
+		t.Fatalf("BeginAttempt() error = %v", err)
+	}
+	if err = first.MarkDefinitelyFailed(
+		admission.Intent.ID,
+		outbox.Outcome{Error: "media adapter rejected delivery"},
+	); err != nil {
+		t.Fatalf("MarkDefinitelyFailed() error = %v", err)
+	}
+	closeGatewayRecoveryCoordinator(t, first)
+
+	second := openGatewayRecoveryCoordinator(t, root)
+	runtime := &nodeAdmissionRuntime{}
+	t.Cleanup(func() {
+		_ = second.Close()
+		if runtime.transferSpool != nil {
+			_ = runtime.transferSpool.Close()
+		}
+	})
+	admissions, err := second.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	msgBus := bus.NewMessageBus()
+	t.Cleanup(msgBus.Close)
+	reconciler, err := startGatewayOutboundReconciler(
+		t.Context(), second, msgBus, admissions, runtime, workspace,
+	)
+	if err != nil {
+		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
+	}
+	reconciler.stop()
+	intent, err := second.Get(admission.Intent.ID)
+	if err != nil || intent.Status != outbox.StatusAmbiguous ||
+		intent.LastError != missingRecoveredBrowserArtifactError || intent.Attempts != 1 {
+		t.Fatalf("terminal intent = %+v, %v", intent, err)
+	}
+	select {
+	case media := <-msgBus.OutboundMediaChan():
+		t.Fatalf("published media without its artifact: %#v", media)
+	default:
+	}
+	closeGatewayRecoveryCoordinator(t, second)
+
+	third := openGatewayRecoveryCoordinator(t, root)
+	t.Cleanup(func() { _ = third.Close() })
+	recovered, err := third.Recover()
+	if err != nil || len(recovered) != 0 {
+		t.Fatalf("Recover() after terminalization = %#v, %v", recovered, err)
+	}
+}
+
+func TestGatewayOutboundReconcilerPreservesDownloadSpoolFailure(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	first := openGatewayRecoveryCoordinator(t, root)
+	recovery := &bus.OutboundRecovery{
+		Kind: bus.OutboundRecoveryBrowserDownload, ArtifactRef: "transfer-artifact://retained",
+		MediaRef: "media://retained", WorkspaceID: "workspace_1", AgentID: "browser",
+		ActorID: "actor_1", RouteID: "route_1", SessionID: "session_1", ToolCallID: "call_1",
+	}
+	admission, err := first.AdmitMedia(
+		"/agents/browser",
+		gatewayRecoveryIdentity("download-spool-failure", 0),
+		bus.OutboundMediaMessage{
+			Parts:    []bus.MediaPart{{Type: "file", Ref: recovery.MediaRef}},
+			Recovery: recovery,
+		},
+	)
+	if err != nil {
+		t.Fatalf("AdmitMedia() error = %v", err)
+	}
+	closeGatewayRecoveryCoordinator(t, first)
+
+	second := openGatewayRecoveryCoordinator(t, root)
+	runtime := &nodeAdmissionRuntime{}
+	spool, err := runtime.gatewayTransferSpool(nodes.GatewayTransferSpoolPath(workspace))
+	if err != nil {
+		t.Fatalf("gatewayTransferSpool() error = %v", err)
+	}
+	if err = spool.Close(); err != nil {
+		t.Fatalf("Close() spool error = %v", err)
+	}
+	admissions, err := second.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	msgBus := bus.NewMessageBus()
+	if _, err = startGatewayOutboundReconciler(
+		t.Context(), second, msgBus, admissions, runtime, workspace,
+	); !errors.Is(err, nodes.ErrTransferSpoolClosed) {
+		t.Fatalf("startGatewayOutboundReconciler() error = %v, want closed spool", err)
+	}
+	msgBus.Close()
+	intent, err := second.Get(admission.Intent.ID)
+	if err != nil || intent.Status != outbox.StatusPending {
+		t.Fatalf("retryable intent = %+v, %v", intent, err)
+	}
+	closeGatewayRecoveryCoordinator(t, second)
+
+	third := openGatewayRecoveryCoordinator(t, root)
+	t.Cleanup(func() { _ = third.Close() })
+	recovered, err := third.Recover()
+	if err != nil || len(recovered) != 1 || recovered[0].Intent.ID != admission.Intent.ID {
+		t.Fatalf("Recover() after spool failure = %#v, %v", recovered, err)
 	}
 }
 

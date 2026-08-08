@@ -192,6 +192,29 @@ func TestDefinitelyFailedIntentCanBeginRetry(t *testing.T) {
 	}
 }
 
+func TestUnrecoverableIntentIsTerminalAcrossRecovery(t *testing.T) {
+	store := openTestStore(t)
+	intent := createTestIntent(t, store, "missing prerequisite")
+	terminal, err := store.MarkUnrecoverable(intent.ID, Outcome{Error: "artifact unavailable"})
+	if err != nil {
+		t.Fatalf("MarkUnrecoverable() error = %v", err)
+	}
+	if terminal.Status != StatusAmbiguous || terminal.LastError != "artifact unavailable" ||
+		terminal.Attempts != 0 {
+		t.Fatalf("MarkUnrecoverable() = %#v", terminal)
+	}
+	if _, err = store.BeginAttempt(intent.ID); err == nil {
+		t.Fatal("BeginAttempt() retried an unrecoverable intent")
+	}
+	recovered, err := store.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	if len(recovered) != 0 {
+		t.Fatalf("Recover() = %#v, want no terminal intent", recovered)
+	}
+}
+
 func TestCreateKeepsCanonicalIntentAcrossReplayChanges(t *testing.T) {
 	store := openTestStore(t)
 	intent := newTestIntent(t, "response", 0)

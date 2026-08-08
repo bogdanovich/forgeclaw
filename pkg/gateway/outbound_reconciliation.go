@@ -10,8 +10,11 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
 )
+
+const missingRecoveredBrowserArtifactError = "retained browser artifact is unavailable"
 
 type gatewayOutboundReconciler struct {
 	cancel context.CancelFunc
@@ -138,6 +141,19 @@ func publishRecoveredAdmission(
 	if err := restoreRecoveredOutboundPrerequisite(
 		nodeRuntime, artifactWorkspace, admission.Intent,
 	); err != nil {
+		if errors.Is(err, nodes.ErrTransferArtifactNotFound) {
+			if terminalErr := coordinator.MarkAdmissionUnrecoverable(
+				admission.Lease,
+				outbox.Outcome{Error: missingRecoveredBrowserArtifactError},
+			); terminalErr != nil {
+				return errors.Join(err, terminalErr)
+			}
+			logger.WarnCF("gateway", "Skipped unrecoverable outbound browser artifact", map[string]any{
+				"delivery_id": admission.Intent.ID,
+				"reason":      missingRecoveredBrowserArtifactError,
+			})
+			return nil
+		}
 		return errors.Join(err, coordinator.ReleaseAdmission(admission.Lease))
 	}
 	if err := coordinator.PrepareAdmission(admission.Lease); err != nil {

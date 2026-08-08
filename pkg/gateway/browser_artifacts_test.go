@@ -571,7 +571,7 @@ func TestGatewayOutboundRecoveryUsesGatewayWorkspaceBeforePublication(t *testing
 	}
 }
 
-func TestGatewayOutboundRecoveryReleasesAdmissionWhenScreenshotClaimFails(t *testing.T) {
+func TestGatewayOutboundRecoveryTerminalizesMissingScreenshot(t *testing.T) {
 	workspace := t.TempDir()
 	first, err := outbox.OpenCoordinator(workspace)
 	if err != nil {
@@ -612,10 +612,17 @@ func TestGatewayOutboundRecoveryReleasesAdmissionWhenScreenshotClaimFails(t *tes
 	}
 	runtime := &nodeAdmissionRuntime{}
 	msgBus := bus.NewMessageBus()
-	if _, err = startGatewayOutboundReconciler(
+	reconciler, err := startGatewayOutboundReconciler(
 		t.Context(), second, msgBus, admissions, runtime, workspace,
-	); err == nil {
-		t.Fatal("startGatewayOutboundReconciler() succeeded without the screenshot artifact")
+	)
+	if err != nil {
+		t.Fatalf("startGatewayOutboundReconciler() error = %v", err)
+	}
+	reconciler.stop()
+	terminal, err := second.Get(admission.Intent.ID)
+	if err != nil || terminal.Status != outbox.StatusAmbiguous ||
+		terminal.LastError != missingRecoveredBrowserArtifactError {
+		t.Fatalf("terminal intent = %+v, %v", terminal, err)
 	}
 	msgBus.Close()
 	if runtime.transferSpool != nil {
@@ -634,8 +641,8 @@ func TestGatewayOutboundRecoveryReleasesAdmissionWhenScreenshotClaimFails(t *tes
 	if err != nil {
 		t.Fatalf("Recover() after prerequisite failure error = %v", err)
 	}
-	if len(recovered) != 1 || recovered[0].Intent.ID != admission.Intent.ID {
-		t.Fatalf("Recover() after prerequisite failure = %#v", recovered)
+	if len(recovered) != 0 {
+		t.Fatalf("Recover() after terminal prerequisite failure = %#v", recovered)
 	}
 }
 
