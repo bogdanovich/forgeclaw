@@ -15,7 +15,7 @@ optimize for reliable deployed behavior.
 
 Prerequisites:
 
-- Go 1.25 or later
+- Go 1.26 or later
 - the golangci-lint version recorded in `.golangci-lint-version`
 - `make`
 - Node.js 22+ and pnpm 10.33.0+ for launcher/frontend changes

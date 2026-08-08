@@ -7,7 +7,7 @@
 Keep work moving across chat turns, restarts, subagents, and paired machines.
 
 <p>
-  <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go 1.25+">
+  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go 1.26+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-35c98a" alt="MIT License"></a>
 </p>
 
@@ -68,7 +68,7 @@ relationship, the intentional divergence, and the trade-offs behind it.
 
 ### Build the CLI
 
-Prerequisites: Go 1.25+. Node.js 22+ and pnpm 10.33.0+ are needed only for the
+Prerequisites: Go 1.26+. Node.js 22+ and pnpm 10.33.0+ are needed only for the
 Web launcher.
 
 ```bash
