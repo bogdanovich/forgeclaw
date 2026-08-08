@@ -1374,11 +1374,6 @@ func taskEventFingerprint(evt TaskEvent) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func taskEventFingerprintValid(event TaskEvent) bool {
-	return event.Fingerprint != "" &&
-		event.Fingerprint == taskEventFingerprint(event)
-}
-
 func normalizeDeliverablePayload(payload *DeliverablePayload, generatedAt int64) *DeliverablePayload {
 	if payload == nil {
 		return nil

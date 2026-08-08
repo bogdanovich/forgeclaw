@@ -769,31 +769,6 @@ func (worker *playwrightWorker) Download(
 	return worker.captureDownload(ctx, action, maximumBytes)
 }
 
-type playwrightRawOutcome struct {
-	result        *sdkmcp.CallToolResult
-	err           error
-	denialsBefore uint64
-}
-
-func (worker *playwrightWorker) consumeRawOutcome(outcome playwrightRawOutcome) (string, error) {
-	if worker.networkProxy != nil && worker.networkProxy.Denials() > outcome.denialsBefore {
-		return "", ErrDenied
-	}
-	if outcome.err != nil || outcome.result == nil {
-		worker.lost = true
-		return "", ErrWorkerUnavailable
-	}
-	text, err := boundedPlaywrightText(outcome.result, playwrightDriverResponseBytes)
-	if err != nil {
-		worker.lost = true
-		return "", err
-	}
-	if outcome.result.IsError {
-		return text, ErrDriverRejected
-	}
-	return text, nil
-}
-
 func (worker *playwrightWorker) callRawText(
 	ctx context.Context,
 	tool string,

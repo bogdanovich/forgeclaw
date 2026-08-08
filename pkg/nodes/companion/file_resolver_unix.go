@@ -506,15 +506,6 @@ func (parent *resolvedParent) stageMatches(
 	return true, nil
 }
 
-func (parent *resolvedParent) finalIdentity() (fileIdentity, os.FileInfo, error) {
-	file, err := parent.openFinalRegular()
-	if err != nil {
-		return fileIdentity{}, nil, err
-	}
-	defer file.file.Close()
-	return file.identity, file.info, nil
-}
-
 func (parent *resolvedParent) openFinalRegular() (*resolvedFile, error) {
 	descriptor, err := unix.Openat(
 		int(parent.file.Fd()),

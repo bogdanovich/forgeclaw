@@ -1,7 +1,6 @@
 package companion
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -645,21 +644,6 @@ func cloneFileTransferRecords(
 		cloned[id] = cloneFileTransferRecord(record)
 	}
 	return cloned
-}
-
-func decodeFileTransferLedgerDocument(
-	data []byte,
-) (fileTransferLedgerDocument, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var document fileTransferLedgerDocument
-	if err := decoder.Decode(&document); err != nil {
-		return fileTransferLedgerDocument{}, err
-	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return fileTransferLedgerDocument{}, errors.New("file transfer ledger has trailing data")
-	}
-	return document, nil
 }
 
 func maxTransferChunks(total uint64) uint64 {
