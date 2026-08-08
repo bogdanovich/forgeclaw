@@ -30,7 +30,10 @@ const (
 	StatusAttempting       Status = "attempting"
 	StatusDelivered        Status = "delivered"
 	StatusDefinitelyFailed Status = "definitely_failed"
-	StatusAmbiguous        Status = "ambiguous"
+	// StatusAmbiguous is terminal and never retried automatically. It covers an
+	// uncertain remote outcome and an irrecoverable pre-dispatch prerequisite;
+	// LastError preserves which condition occurred.
+	StatusAmbiguous Status = "ambiguous"
 )
 
 // Kind identifies the transport payload stored by an intent.
@@ -261,6 +264,21 @@ func (s *Store) BeginAttempt(id string) (Intent, error) {
 // MarkDispatchRejected records a failure before any transport call was made.
 func (s *Store) MarkDispatchRejected(id string, outcome Outcome) (Intent, error) {
 	return s.transition(id, StatusDefinitelyFailed, outcome, true, StatusPending, StatusDefinitelyFailed)
+}
+
+// MarkUnrecoverable records a terminal pre-dispatch failure whose prerequisite
+// cannot be reconstructed. The existing non-retryable status preserves record
+// compatibility with older binaries while LastError distinguishes this from an
+// uncertain transport outcome.
+func (s *Store) MarkUnrecoverable(id string, outcome Outcome) (Intent, error) {
+	return s.transition(
+		id,
+		StatusAmbiguous,
+		outcome,
+		false,
+		StatusPending,
+		StatusDefinitelyFailed,
+	)
 }
 
 // MarkDelivered records confirmed remote acceptance and platform message IDs.

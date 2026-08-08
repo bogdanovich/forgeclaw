@@ -205,6 +205,42 @@ func TestCoordinatorDefinitelyFailedOutcomeCanBeReadmitted(t *testing.T) {
 	}
 }
 
+func TestCoordinatorMarksExactUnpublishedAdmissionUnrecoverable(t *testing.T) {
+	coordinator, err := OpenCoordinator(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCoordinator() error = %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	admission, err := coordinator.AdmitMessage(
+		"/agents/main",
+		testIdentity(),
+		bus.OutboundMessage{Content: "missing prerequisite"},
+	)
+	if err != nil || !admission.Dispatch {
+		t.Fatalf("AdmitMessage() = %+v, %v", admission, err)
+	}
+	if err = coordinator.MarkAdmissionUnrecoverable(
+		admission.Lease,
+		Outcome{Error: "artifact unavailable"},
+	); err != nil {
+		t.Fatalf("MarkAdmissionUnrecoverable() error = %v", err)
+	}
+	intent, err := coordinator.Get(admission.Intent.ID)
+	if err != nil || intent.Status != StatusAmbiguous || intent.LastError != "artifact unavailable" {
+		t.Fatalf("terminal intent = %+v, %v", intent, err)
+	}
+	if err = coordinator.MarkAdmissionUnrecoverable(
+		admission.Lease,
+		Outcome{Error: "duplicate"},
+	); err == nil {
+		t.Fatal("MarkAdmissionUnrecoverable() accepted a consumed lease")
+	}
+	recovered, err := coordinator.Recover()
+	if err != nil || len(recovered) != 0 {
+		t.Fatalf("Recover() = %+v, %v", recovered, err)
+	}
+}
+
 func TestCoordinatorDispatchRejectionDoesNotCountTransportAttempt(t *testing.T) {
 	coordinator, err := OpenCoordinator(t.TempDir())
 	if err != nil {

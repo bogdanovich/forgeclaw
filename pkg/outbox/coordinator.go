@@ -350,6 +350,34 @@ func (c *Coordinator) ReleaseAdmission(lease DispatchLease) error {
 	return nil
 }
 
+// MarkAdmissionUnrecoverable consumes an exact, unpublished dispatch lease and
+// records a terminal failure before the intent reaches the delivery bus.
+func (c *Coordinator) MarkAdmissionUnrecoverable(lease DispatchLease, outcome Outcome) error {
+	if c == nil || c.store == nil {
+		return errors.New("outbox coordinator is unavailable")
+	}
+	if lease.deliveryID == "" || lease.generation == 0 {
+		return errors.New("dispatch lease is required")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.validateOpenLocked(); err != nil {
+		return err
+	}
+	if c.leases[lease.deliveryID] != lease.generation {
+		return fmt.Errorf("dispatch lease for %q is stale", lease.deliveryID)
+	}
+	if c.publishing[lease.deliveryID] != 0 || c.published[lease.deliveryID] || c.attempting[lease.deliveryID] {
+		return fmt.Errorf("outbox intent %q already reached publication", lease.deliveryID)
+	}
+	if _, err := c.store.MarkUnrecoverable(lease.deliveryID, outcome); err != nil {
+		return err
+	}
+	delete(c.leases, lease.deliveryID)
+	return nil
+}
+
 func (c *Coordinator) admit(candidate Intent) (Admission, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
