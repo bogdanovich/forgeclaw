@@ -681,7 +681,7 @@ func TestInteractionResolutionCallbackRunsOnceForTerminalHumanOutcome(t *testing
 	}{
 		{name: "answered", event: interactions.EventAnswerClaimed, outcome: interactions.OutcomeAnswered},
 		{name: "timed out", event: interactions.EventAnswerClaimed, outcome: interactions.OutcomeTimedOut},
-		{name: "cancelled", event: interactions.EventCancelled, outcome: interactions.OutcomeCanceled},
+		{name: "canceled", event: interactions.EventCancelled, outcome: interactions.OutcomeCanceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			al := &AgentLoop{cfg: config.DefaultConfig()}
@@ -1166,7 +1166,6 @@ func TestRecoveryFailsInteractionAfterFinalDeliveryRetryBudget(t *testing.T) {
 	}
 	al.taskRegistries.Delete(workspace)
 	al.interactionRegistries.Delete(workspace)
-	tasks = al.taskRegistryForWorkspace(workspace)
 	registry = al.interactionRegistryForWorkspace(workspace)
 	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)

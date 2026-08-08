@@ -1389,7 +1389,10 @@ func TestPipelineFinalizeUsesAccumulatedTurnUsage(t *testing.T) {
 				llmModelName:     "fallback-model",
 				defaultModelName: "primary-model",
 			},
-		}, TurnEndStatusCompleted, "final answer",
+		},
+		newLLMIterationState(1),
+		TurnEndStatusCompleted,
+		"final answer",
 	)
 	if err != nil {
 		t.Fatalf("Finalize() error = %v", err)

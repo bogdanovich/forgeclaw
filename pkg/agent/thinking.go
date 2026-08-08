@@ -111,22 +111,23 @@ func applyThinkingOption(
 
 func applyTurnThinkingOptions(
 	exec *turnExecution,
+	llm *LLMIterationState,
 	execution effectiveExecutionState,
 	provider providers.LLMProvider,
 	warnUnsupported bool,
 ) {
-	if exec == nil || exec.llmOpts == nil {
+	if exec == nil || llm == nil || llm.llmOpts == nil {
 		return
 	}
-	delete(exec.llmOpts, "thinking_level")
+	delete(llm.llmOpts, "thinking_level")
 	settings := activeThinkingSettings(
 		exec.model.activeModelConfig,
 		execution.ThinkingLevel,
 		execution.ThinkingLevelConfigured,
 	)
 	agentID := execution.AgentID
-	applyThinkingOption(exec.llmOpts, provider, settings, warnUnsupported, agentID)
-	exec.suppressReasoning = shouldSuppressReasoningFor(settings)
+	applyThinkingOption(llm.llmOpts, provider, settings, warnUnsupported, agentID)
+	llm.suppressReasoning = shouldSuppressReasoningFor(settings)
 }
 
 func shouldSuppressReasoningFor(settings thinkingSettings) bool {

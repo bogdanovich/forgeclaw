@@ -250,7 +250,7 @@ type toolLoopRunner struct {
 	turnCtx   context.Context
 	ts        *turnState
 	exec      *turnExecution
-	iteration int
+	llm       *LLMIterationState
 	toolCalls []providers.ToolCall
 
 	messages                    []providers.Message
@@ -275,22 +275,23 @@ func (p *Pipeline) ExecuteTools(
 	turnCtx context.Context,
 	ts *turnState,
 	exec *turnExecution,
-	iteration int,
+	llm *LLMIterationState,
 ) (outcome ToolLoopOutcome) {
-	normalizedToolCalls := exec.normalizedToolCalls
+	iteration := llm.iteration
+	normalizedToolCalls := llm.normalizedToolCalls
 	runner := &toolLoopRunner{
 		p:         p,
 		turnCtx:   turnCtx,
 		ts:        ts,
 		exec:      exec,
-		iteration: iteration,
+		llm:       llm,
 		toolCalls: normalizedToolCalls,
 		messages:  exec.messages,
 	}
-	if exec.assistantToolCallsWriteErr != nil {
+	if llm.assistantToolCallsWriteErr != nil {
 		return ToolLoopOutcome{
 			Control:    ToolControlBreak,
-			JournalErr: fmt.Errorf("persist assistant tool-call intent: %w", exec.assistantToolCallsWriteErr),
+			JournalErr: fmt.Errorf("persist assistant tool-call intent: %w", llm.assistantToolCallsWriteErr),
 		}
 	}
 	defer func() {
@@ -323,7 +324,7 @@ toolLoop:
 			if turnProfileToolAllowed(ts.profile, toolName) {
 				return false
 			}
-			exec.allResponsesHandled = false
+			llm.allResponsesHandled = false
 			denyContent := fmt.Sprintf("Tool %q is not allowed by the active turn profile.", toolName)
 			p.emitEvent(
 				runtimeevents.KindAgentToolExecSkipped,
@@ -386,7 +387,7 @@ toolLoop:
 						},
 					)
 
-					p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, runner.messages)
+					p.publishToolFeedbackForCall(turnCtx, ts, llm.response, tc, toolName, toolArgs, runner.messages)
 
 					toolDuration := time.Duration(0)
 
@@ -440,7 +441,7 @@ toolLoop:
 					}
 
 					if !hookResult.ResponseHandled {
-						exec.allResponsesHandled = false
+						llm.allResponsesHandled = false
 					}
 
 					p.emitEvent(
@@ -490,7 +491,7 @@ toolLoop:
 						"action":   "respond",
 					})
 			case HookActionDenyTool:
-				exec.allResponsesHandled = false
+				llm.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by hook", decision.Reason)
 				p.emitEvent(
 					runtimeevents.KindAgentToolExecSkipped,
@@ -535,7 +536,7 @@ toolLoop:
 			runner.appendToolMessage(providers.Message{
 				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
 			}, toolMessagePersistAndIngest)
-			exec.allResponsesHandled = false
+			llm.allResponsesHandled = false
 			runner.captureAfterToolSteering(false)
 			if loopDecision.Action == loopguard.ActionHalt {
 				runner.appendSkippedToolMessages(
@@ -621,7 +622,7 @@ toolLoop:
 			}
 			if denial, safe := tools.SafeApprovalDenialResult(approvalArgsErr); safe {
 				ts.opts.ApprovalGrant = nil
-				exec.allResponsesHandled = false
+				llm.allResponsesHandled = false
 				denyContent := denial.ContentForLLM()
 				p.emitEvent(
 					runtimeevents.KindAgentToolExecSkipped,
@@ -724,7 +725,7 @@ toolLoop:
 						}
 					}
 				}
-				exec.allResponsesHandled = false
+				llm.allResponsesHandled = false
 				denyContent := hookDeniedToolContent(
 					"Tool execution denied because human approval could not be requested",
 					errString(hashErr),
@@ -740,7 +741,7 @@ toolLoop:
 				continue
 			}
 			if !approval.Approved {
-				exec.allResponsesHandled = false
+				llm.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
 				p.emitEvent(
 					runtimeevents.KindAgentToolExecSkipped,
@@ -779,7 +780,7 @@ toolLoop:
 			},
 		)
 
-		p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, runner.messages)
+		p.publishToolFeedbackForCall(turnCtx, ts, llm.response, tc, toolName, toolArgs, runner.messages)
 
 		toolCallID := tc.ID
 		asyncToolName := toolName
@@ -1000,7 +1001,7 @@ toolLoop:
 		runner.handledAttachments = append(runner.handledAttachments, attachments...)
 
 		if !toolResult.ResponseHandled {
-			exec.allResponsesHandled = false
+			llm.allResponsesHandled = false
 		}
 
 		shouldSendForUser := !toolResult.ResponseHandled &&
@@ -1053,7 +1054,7 @@ toolLoop:
 							"error":      errSummary,
 							"session_id": ts.sessionKey,
 						})
-					exec.allResponsesHandled = false
+					llm.allResponsesHandled = false
 					exec.messages = runner.messages
 					return ToolLoopOutcome{
 						Control:      ToolControlBreak,
@@ -1073,7 +1074,7 @@ toolLoop:
 							"streak":     streak,
 							"session_id": ts.sessionKey,
 						})
-					exec.allResponsesHandled = false
+					llm.allResponsesHandled = false
 					exec.messages = runner.messages
 					return ToolLoopOutcome{
 						Control:      ToolControlBreak,
@@ -1108,9 +1109,9 @@ toolLoop:
 			map[string]any{
 				"agent_id":            ts.agent.ID,
 				"pending_count":       len(exec.pendingMessages),
-				"allResponsesHandled": exec.allResponsesHandled,
+				"allResponsesHandled": llm.allResponsesHandled,
 			})
-		exec.allResponsesHandled = false
+		llm.allResponsesHandled = false
 		return ToolLoopOutcome{Control: ToolControlContinue}
 	}
 
@@ -1125,12 +1126,12 @@ toolLoop:
 				"steering_count": len(steerMsgs),
 			})
 		exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
-		exec.allResponsesHandled = false
+		llm.allResponsesHandled = false
 		return ToolLoopOutcome{Control: ToolControlContinue}
 	}
 
 	// No pending steering: finalize or break depending on allResponsesHandled
-	if p.shouldFinalizeAfterToolLoop(exec) {
+	if p.shouldFinalizeAfterToolLoop(exec, llm) {
 		logger.InfoCF(
 			"agent",
 			"Tool loop completed; rendering terminal reply from accumulated turn context",
@@ -1143,7 +1144,7 @@ toolLoop:
 		return ToolLoopOutcome{Control: ToolControlFinalize}
 	}
 
-	if exec.allResponsesHandled {
+	if llm.allResponsesHandled {
 		summaryMsg := providers.Message{
 			Role:        "assistant",
 			Content:     handledToolResponseSummary,
@@ -1427,7 +1428,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 			queuedSteeringDeferredToolResult,
 		)
 		r.exec.messages = r.messages
-		r.exec.allResponsesHandled = false
+		r.llm.allResponsesHandled = false
 		return ToolControlContinue, true, nil
 	}
 
@@ -1438,10 +1439,10 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	if r.ts == nil || r.ts.opts.NoHistory {
 		return fallback("request_user_input requires durable session history")
 	}
-	if !r.exec.assistantToolCallsPersisted {
+	if !r.llm.assistantToolCallsPersisted {
 		message := "cannot suspend because the originating assistant tool call was not persisted"
-		if r.exec.assistantToolCallsWriteErr != nil {
-			message += ": " + r.exec.assistantToolCallsWriteErr.Error()
+		if r.llm.assistantToolCallsWriteErr != nil {
+			message += ": " + r.llm.assistantToolCallsWriteErr.Error()
 		}
 		return fallback(message)
 	}

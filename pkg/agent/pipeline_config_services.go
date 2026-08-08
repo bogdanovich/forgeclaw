@@ -153,18 +153,21 @@ func newConfigFinalTurnRenderPolicy(cfg *config.Config) finalTurnRenderPolicy {
 	return configFinalTurnRenderPolicy{cfg: cfg}
 }
 
-func (p configFinalTurnRenderPolicy) shouldFinalizeAfterToolLoop(exec *turnExecution) bool {
-	return shouldFinalizeAfterToolLoopWithRenderConfig(p.cfg, exec)
+func (p configFinalTurnRenderPolicy) shouldFinalizeAfterToolLoop(
+	exec *turnExecution,
+	llm *LLMIterationState,
+) bool {
+	return shouldFinalizeAfterToolLoopWithRenderConfig(p.cfg, exec, llm)
 }
 
-func (p *Pipeline) shouldFinalizeAfterToolLoop(exec *turnExecution) bool {
+func (p *Pipeline) shouldFinalizeAfterToolLoop(exec *turnExecution, llm *LLMIterationState) bool {
 	if p == nil {
 		return false
 	}
 	if p.Config.FinalTurnRender == nil {
-		return newConfigFinalTurnRenderPolicy(p.Cfg).shouldFinalizeAfterToolLoop(exec)
+		return newConfigFinalTurnRenderPolicy(p.Cfg).shouldFinalizeAfterToolLoop(exec, llm)
 	}
-	return p.Config.FinalTurnRender.shouldFinalizeAfterToolLoop(exec)
+	return p.Config.FinalTurnRender.shouldFinalizeAfterToolLoop(exec, llm)
 }
 
 type configToolContentFilter struct {

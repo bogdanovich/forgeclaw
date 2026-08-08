@@ -1,11 +1,50 @@
 package agent
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
+
+func TestNewLLMIterationStateDoesNotRetainPriorCallState(t *testing.T) {
+	first := newLLMIterationState(1)
+	first.response = &providers.LLMResponse{Content: "stale response"}
+	first.normalizedToolCalls = []providers.ToolCall{{ID: "stale-tool"}}
+	first.allResponsesHandled = true
+	first.streamingPublisher = &streamingChunkPublisher{}
+	first.streamingFallback = true
+	first.suppressReasoning = true
+	first.callMessages = []providers.Message{{Role: "user", Content: "stale request"}}
+	first.providerToolDefs = []providers.ToolDefinition{{}}
+	first.llmModel = "stale-model"
+	first.llmOpts = map[string]any{"stale": true}
+	first.gracefulTerminal = true
+	first.useNativeSearch = true
+	first.assistantToolCallsPersisted = true
+	first.assistantToolCallsWriteErr = errors.New("stale journal error")
+
+	second := newLLMIterationState(2)
+
+	if second.iteration != 2 {
+		t.Fatalf("iteration = %d, want 2", second.iteration)
+	}
+	if second.response != nil || len(second.normalizedToolCalls) != 0 || second.allResponsesHandled {
+		t.Fatalf("response state leaked into next iteration: %+v", second)
+	}
+	if second.streamingPublisher != nil || second.streamingFallback || second.suppressReasoning {
+		t.Fatalf("streaming state leaked into next iteration: %+v", second)
+	}
+	if len(second.callMessages) != 0 || len(second.providerToolDefs) != 0 ||
+		second.llmModel != "" || second.llmOpts != nil {
+		t.Fatalf("request state leaked into next iteration: %+v", second)
+	}
+	if second.gracefulTerminal || second.useNativeSearch ||
+		second.assistantToolCallsPersisted || second.assistantToolCallsWriteErr != nil {
+		t.Fatalf("terminal or journal state leaked into next iteration: %+v", second)
+	}
+}
 
 func TestMatchingTurnMessageTail_IgnoresInternalRuntimeFields(t *testing.T) {
 	history := []providers.Message{

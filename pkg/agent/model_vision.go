@@ -143,6 +143,7 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 	ctx context.Context,
 	ts *turnState,
 	exec *turnExecution,
+	llm *LLMIterationState,
 	candidate providers.FallbackCandidate,
 	messages []providers.Message,
 	toolDefs []providers.ToolDefinition,
@@ -151,6 +152,7 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 		ctx,
 		ts,
 		exec,
+		llm,
 		candidate,
 		exec.model.candidateProviders,
 		exec.model.activeProvider,
@@ -164,6 +166,7 @@ func (p *Pipeline) callCandidateWithCapabilities(
 	ctx context.Context,
 	ts *turnState,
 	exec *turnExecution,
+	llm *LLMIterationState,
 	candidate providers.FallbackCandidate,
 	candidateProviders map[string]providers.LLMProvider,
 	activeProvider providers.LLMProvider,
@@ -189,6 +192,7 @@ func (p *Pipeline) callCandidateWithCapabilities(
 			ctx,
 			ts,
 			exec,
+			llm,
 			candidate,
 			candidateProviders,
 			activeProvider,
@@ -226,6 +230,7 @@ func (p *Pipeline) callCandidateWithCapabilities(
 			callCtx,
 			ts,
 			exec,
+			llm,
 			visionCandidate,
 			visionExecution.CandidateProviders,
 			visionExecution.Provider,
@@ -263,6 +268,7 @@ func (p *Pipeline) callResolvedFallbackCandidate(
 	ctx context.Context,
 	ts *turnState,
 	exec *turnExecution,
+	llm *LLMIterationState,
 	candidate providers.FallbackCandidate,
 	candidateProviders map[string]providers.LLMProvider,
 	activeProvider providers.LLMProvider,
@@ -278,7 +284,7 @@ func (p *Pipeline) callResolvedFallbackCandidate(
 	if err != nil {
 		return nil, err
 	}
-	callOpts := shallowCloneLLMOptions(exec.llmOpts)
+	callOpts := shallowCloneLLMOptions(llm.llmOpts)
 	delete(callOpts, "thinking_level")
 	candidateConfig := p.activeModelConfig(
 		ts.agent.Workspace,
@@ -293,7 +299,7 @@ func (p *Pipeline) callResolvedFallbackCandidate(
 		true,
 		ts.agent.ID,
 	)
-	exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
+	llm.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
 	return candidateProvider.Chat(
 		ctx,
 		messages,
