@@ -772,6 +772,12 @@ helper is present.
 
 ## P7: Interactive Application Capabilities
 
+The browser capability slice is admitted jointly with browser milestone B3 in
+[Browser Capability B3 And Node P7 Admission](browser-capability-b3-p7-admission.md).
+The admission selects one paired Darwin companion and one managed dry-run
+profile. Other P7 capability families remain proposals and require independent
+threat models and admissions.
+
 Admit capabilities independently, each with its own policy and threat model:
 
 - browser navigation, snapshot, screenshot, and download commands;

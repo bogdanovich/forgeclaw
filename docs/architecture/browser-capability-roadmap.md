@@ -3,8 +3,10 @@
 ## Status
 
 Work derived from [`browser-capability.md`](browser-capability.md). B0, B1, N1,
-N2, and B2 are merged, deployed, and live-validated. B2 completion evidence is
-recorded in
+N2, and B2 are merged, deployed, and live-validated. B3 and the browser slice
+of node P7 are admitted for one companion-hosted vertical slice in
+[Browser Capability B3 And Node P7 Admission](browser-capability-b3-p7-admission.md).
+B2 completion evidence is recorded in
 [Browser Capability B2 Deployment Evidence](../operations/browser-capability-b2-deployment-evidence.md).
 Later milestones remain proposals until an operator selects one and a separate
 admission fixes its exact scope, authority, completion evidence, and stop
@@ -518,6 +520,12 @@ Stop B2 if:
 - takeover cannot enforce one exclusive controller.
 
 ## B3: Companion-Hosted Browser
+
+Implementation is admitted for the concrete `ab-local-test` companion and one
+managed dry-run profile in
+[Browser Capability B3 And Node P7 Admission](browser-capability-b3-p7-admission.md).
+That admission fixes the typed command schemas, authority intersection,
+disconnect semantics, artifact path, deployment canary, and stop conditions.
 
 ### Current limitation
 
