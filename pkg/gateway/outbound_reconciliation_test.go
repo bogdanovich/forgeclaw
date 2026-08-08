@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
 )
 
@@ -277,6 +279,62 @@ func TestGatewayOutboundReconcilerTerminalizesMissingBrowserArtifact(t *testing.
 	recovered, err := third.Recover()
 	if err != nil || len(recovered) != 0 {
 		t.Fatalf("Recover() after terminalization = %#v, %v", recovered, err)
+	}
+}
+
+func TestGatewayOutboundReconcilerPreservesDownloadSpoolFailure(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	first := openGatewayRecoveryCoordinator(t, root)
+	recovery := &bus.OutboundRecovery{
+		Kind: bus.OutboundRecoveryBrowserDownload, ArtifactRef: "transfer-artifact://retained",
+		MediaRef: "media://retained", WorkspaceID: "workspace_1", AgentID: "browser",
+		ActorID: "actor_1", RouteID: "route_1", SessionID: "session_1", ToolCallID: "call_1",
+	}
+	admission, err := first.AdmitMedia(
+		"/agents/browser",
+		gatewayRecoveryIdentity("download-spool-failure", 0),
+		bus.OutboundMediaMessage{
+			Parts:    []bus.MediaPart{{Type: "file", Ref: recovery.MediaRef}},
+			Recovery: recovery,
+		},
+	)
+	if err != nil {
+		t.Fatalf("AdmitMedia() error = %v", err)
+	}
+	closeGatewayRecoveryCoordinator(t, first)
+
+	second := openGatewayRecoveryCoordinator(t, root)
+	runtime := &nodeAdmissionRuntime{}
+	spool, err := runtime.gatewayTransferSpool(nodes.GatewayTransferSpoolPath(workspace))
+	if err != nil {
+		t.Fatalf("gatewayTransferSpool() error = %v", err)
+	}
+	if err = spool.Close(); err != nil {
+		t.Fatalf("Close() spool error = %v", err)
+	}
+	admissions, err := second.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	msgBus := bus.NewMessageBus()
+	if _, err = startGatewayOutboundReconciler(
+		t.Context(), second, msgBus, admissions, runtime, workspace,
+	); !errors.Is(err, nodes.ErrTransferSpoolClosed) {
+		t.Fatalf("startGatewayOutboundReconciler() error = %v, want closed spool", err)
+	}
+	msgBus.Close()
+	intent, err := second.Get(admission.Intent.ID)
+	if err != nil || intent.Status != outbox.StatusPending {
+		t.Fatalf("retryable intent = %+v, %v", intent, err)
+	}
+	closeGatewayRecoveryCoordinator(t, second)
+
+	third := openGatewayRecoveryCoordinator(t, root)
+	t.Cleanup(func() { _ = third.Close() })
+	recovered, err := third.Recover()
+	if err != nil || len(recovered) != 1 || recovered[0].Intent.ID != admission.Intent.ID {
+		t.Fatalf("Recover() after spool failure = %#v, %v", recovered, err)
 	}
 }
 
