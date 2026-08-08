@@ -9,6 +9,7 @@ permissions:
 jobs:
   nightly:
     name: Nightly Build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -44,6 +45,10 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      - name: Build trusted node release signer
+        shell: bash
+        run: go build -o "${RUNNER_TEMP}/mintclaw-node-release" ./cmd/mintclaw-node-release
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -91,6 +96,24 @@ jobs:
           INCLUDE_ANDROID_BUNDLE: "true"
           NIGHTLY_BUILD: "true"
 
+      - name: Sign node release manifest
+        shell: bash
+        env:
+          MINTCLAW_NODE_RELEASE_SIGNING_KEY: ${{ secrets.MINTCLAW_NODE_RELEASE_SIGNING_KEY }}
+          MINTCLAW_NODE_RELEASE: ${{ steps.version.outputs.version }}
+          MINTCLAW_NODE_RELEASE_CHANNEL: nightly
+          MINTCLAW_NODE_MIN_COORDINATOR_VERSION: v1.0.0
+          MINTCLAW_NODE_RELEASE_ARTIFACTS: >-
+            linux/amd64/dist/mintclaw-node_Linux_x86_64.tar.gz
+            linux/arm64/dist/mintclaw-node_Linux_arm64.tar.gz
+            darwin/amd64/dist/mintclaw-node_Darwin_x86_64.tar.gz
+            darwin/arm64/dist/mintclaw-node_Darwin_arm64.tar.gz
+          MINTCLAW_NODE_MANIFEST_PATH: dist/mintclaw-node-manifest.json
+          MINTCLAW_NODE_SIGNATURE_PATH: dist/mintclaw-node-manifest.sig
+        run: |
+          export MINTCLAW_NODE_RELEASE_PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:00Z)"
+          "${RUNNER_TEMP}/mintclaw-node-release" sign
+
       - name: Update nightly release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -117,7 +140,9 @@ jobs:
 
           # Collect release artifacts from goreleaser dist/
           ASSETS=()
-          for f in dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/*checksums.txt build/mintclaw-android-universal.zip; do
+          for f in dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/*checksums.txt \
+            dist/mintclaw-node-manifest.json dist/mintclaw-node-manifest.sig \
+            build/mintclaw-android-universal.zip; do
             [ -f "$f" ] && ASSETS+=("$f")
           done
 

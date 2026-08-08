@@ -21,6 +21,7 @@ on:
 jobs:
   release:
     name: GoReleaser Release
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,11 +43,31 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag }}
 
+      - name: Verify release tag ancestry
+        shell: bash
+        run: |
+          if ! git merge-base --is-ancestor HEAD "${GITHUB_SHA}"; then
+            echo "::error::Release tag must be an ancestor of the dispatched main revision."
+            exit 1
+          fi
+
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release-trust
+
       - name: Setup Go from go.mod
         id: setup-go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      - name: Build trusted node release signer
+        shell: bash
+        run: |
+          cd .release-trust
+          go build -o "${RUNNER_TEMP}/mintclaw-node-release" ./cmd/mintclaw-node-release
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -82,12 +103,39 @@ jobs:
         with:
           distribution: goreleaser
           version: ~> v2
-          args: release --clean
+          args: release --clean --draft
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           GOVERSION: ${{ steps.setup-go.outputs.go-version }}
           INCLUDE_ANDROID_BUNDLE: "true"
+
+      - name: Sign node release manifest
+        shell: bash
+        env:
+          MINTCLAW_NODE_RELEASE_SIGNING_KEY: ${{ secrets.MINTCLAW_NODE_RELEASE_SIGNING_KEY }}
+          MINTCLAW_NODE_RELEASE: ${{ inputs.tag }}
+          MINTCLAW_NODE_MIN_COORDINATOR_VERSION: v1.0.0
+          MINTCLAW_NODE_RELEASE_ARTIFACTS: >-
+            linux/amd64/dist/mintclaw-node_Linux_x86_64.tar.gz
+            linux/arm64/dist/mintclaw-node_Linux_arm64.tar.gz
+            darwin/amd64/dist/mintclaw-node_Darwin_x86_64.tar.gz
+            darwin/arm64/dist/mintclaw-node_Darwin_arm64.tar.gz
+          MINTCLAW_NODE_MANIFEST_PATH: dist/mintclaw-node-manifest.json
+          MINTCLAW_NODE_SIGNATURE_PATH: dist/mintclaw-node-manifest.sig
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CHANNEL=stable
+          if [[ "${MINTCLAW_NODE_RELEASE}" == *-* ]]; then
+            CHANNEL=nightly
+          fi
+          export MINTCLAW_NODE_RELEASE_CHANNEL="${CHANNEL}"
+          export MINTCLAW_NODE_RELEASE_PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:00Z)"
+          "${RUNNER_TEMP}/mintclaw-node-release" sign
+          gh release upload "${MINTCLAW_NODE_RELEASE}" \
+            dist/mintclaw-node-manifest.json \
+            dist/mintclaw-node-manifest.sig \
+            --clobber
 
       - name: Apply release flags
         shell: bash

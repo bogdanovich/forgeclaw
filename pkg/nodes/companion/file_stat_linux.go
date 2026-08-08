@@ -9,19 +9,19 @@ import (
 )
 
 func fileStatDevice(stat *unix.Stat_t) uint64 {
-	return stat.Dev
+	return uint64(stat.Dev)
 }
 
 func fileStatLinks(stat *unix.Stat_t) uint64 {
-	return stat.Nlink
+	return uint64(stat.Nlink)
 }
 
 func syscallStatDevice(stat *syscall.Stat_t) uint64 {
-	return stat.Dev
+	return uint64(stat.Dev)
 }
 
 func syscallStatLinks(stat *syscall.Stat_t) uint64 {
-	return stat.Nlink
+	return uint64(stat.Nlink)
 }
 
 func platformDescriptorMountIdentity(

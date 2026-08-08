@@ -734,6 +734,9 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		result.Catalog.Commands[index].ServiceProfiles = CloneServiceProfileDescriptors(
 			snapshot.Catalog.Commands[index].ServiceProfiles,
 		)
+		result.Catalog.Commands[index].UpdateProfiles = CloneUpdateProfileDescriptors(
+			snapshot.Catalog.Commands[index].UpdateProfiles,
+		)
 		if snapshot.Catalog.Commands[index].ModelContract != nil {
 			contract := cloneCommandModelContract(
 				*snapshot.Catalog.Commands[index].ModelContract,

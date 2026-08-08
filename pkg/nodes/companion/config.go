@@ -65,6 +65,8 @@ type Config struct {
 	FileHelper             *FileHelperClientConfig    `json:"file_helper,omitempty"`
 	ServicePolicies        ServicePolicies            `json:"node_service_policies,omitempty"`
 	ServiceHelper          *ServiceHelperClientConfig `json:"service_helper,omitempty"`
+	UpdateSources          UpdateSources              `json:"node_update_sources,omitempty"`
+	UpdatePolicies         UpdatePolicies             `json:"node_update_policies,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -216,6 +218,13 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 		return Config{}, errors.New(
 			"service_helper and node_service_policies cannot both provide service authority",
 		)
+	}
+	cfg.UpdateSources, cfg.UpdatePolicies, err = normalizeUpdateConfiguration(
+		cfg.UpdateSources,
+		cfg.UpdatePolicies,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("validate node update configuration: %w", err)
 	}
 	return cfg, nil
 }

@@ -763,6 +763,7 @@ func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
 	descriptor.OutputSchema = bytes.Clone(descriptor.OutputSchema)
 	descriptor.FileProfiles = cloneNodeFileProfileDescriptors(descriptor.FileProfiles)
 	descriptor.ServiceProfiles = CloneServiceProfileDescriptors(descriptor.ServiceProfiles)
+	descriptor.UpdateProfiles = CloneUpdateProfileDescriptors(descriptor.UpdateProfiles)
 	if descriptor.ModelContract != nil {
 		contract := cloneCommandModelContract(*descriptor.ModelContract)
 		descriptor.ModelContract = &contract
