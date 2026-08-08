@@ -33,6 +33,43 @@ func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
 	}
 }
 
+func TestCommandDescriptorSchemaAcceptsInternalBrowserProfiles(t *testing.T) {
+	profiles := []nodes.BrowserProfileDescriptor{{
+		Alias: "managed", Revision: "managed-v1", Driver: "playwright_mcp",
+		Mode: "managed", NetworkMode: "any_http", DryRun: true,
+		Actions: []string{"download", "navigate"},
+		Limits: nodes.BrowserLimits{
+			Sessions: 1, Tabs: 1, SessionSeconds: 3600, IdleSeconds: 600,
+			PreparedSeconds: 300, ActionSeconds: 60,
+			SnapshotBytes:   nodes.MaxBrowserSnapshotBytes,
+			ScreenshotBytes: nodes.MaxBrowserScreenshotBytes,
+			UploadBytes:     nodes.MaxBrowserUploadBytes,
+			DownloadBytes:   nodes.MaxBrowserDownloadBytes, SnapshotRefs: 500,
+			TextInputBytes:  nodes.MaxBrowserTextInputBytes,
+			ToolResultBytes: nodes.MaxBrowserToolResultBytes,
+			RetentionSecs:   nodes.MaxBrowserRetentionSeconds,
+		},
+	}}
+	descriptors, err := nodes.BrowserCommandDescriptors(profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := resolveSchema(t, "command-descriptor.v1")
+	for _, descriptor := range descriptors {
+		encoded, marshalErr := json.Marshal(descriptor)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		var instance any
+		if unmarshalErr := json.Unmarshal(encoded, &instance); unmarshalErr != nil {
+			t.Fatal(unmarshalErr)
+		}
+		if validationErr := resolved.Validate(instance); validationErr != nil {
+			t.Fatalf("schema rejected %s: %v", descriptor.Name, validationErr)
+		}
+	}
+}
+
 func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
 	descriptor := nodes.CommandDescriptor{
 		Name:         "node.info.v1",

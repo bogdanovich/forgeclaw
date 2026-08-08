@@ -34,6 +34,128 @@ func TestBrowserConfigAcceptsAdmittedB1Shape(t *testing.T) {
 	}
 }
 
+func TestBrowserConfigAcceptsDisabledCompanionPlacement(t *testing.T) {
+	cfg := browserConfigFixture(t)
+	cfg.Nodes.Enabled = false
+	cfg.Execution.Targets = make(map[string]ExecutionTarget)
+	cfg.Execution.Targets["ab-local-test"] = ExecutionTarget{
+		Type: "node",
+		Node: "darwin-companion",
+	}
+	cfg.Tools.Browser.Targets["companion"] = BrowserTargetConfig{
+		Placement:  BrowserPlacementNode,
+		NodeTarget: "ab-local-test",
+		Profiles: map[string]BrowserProfileConfig{
+			BrowserDefaultProfile: {
+				Enabled: false,
+				Mode:    BrowserProfileManaged,
+				DryRun:  true,
+			},
+		},
+	}
+
+	if err := cfg.ValidateBrowserConfig(); err != nil {
+		t.Fatalf("ValidateBrowserConfig() disabled companion error = %v", err)
+	}
+}
+
+func TestBrowserConfigRejectsInvalidCompanionPlacement(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config, *BrowserTargetConfig)
+		wantErr string
+	}{
+		{
+			name: "unknown placement",
+			mutate: func(_ *Config, target *BrowserTargetConfig) {
+				target.Placement = "remote"
+			},
+			wantErr: "unsupported placement",
+		},
+		{
+			name: "missing node mapping",
+			mutate: func(_ *Config, target *BrowserTargetConfig) {
+				target.NodeTarget = ""
+			},
+			wantErr: "requires a valid node_target",
+		},
+		{
+			name: "unknown node mapping",
+			mutate: func(_ *Config, target *BrowserTargetConfig) {
+				target.NodeTarget = "missing"
+			},
+			wantErr: "references unknown node execution target",
+		},
+		{
+			name: "mixed local driver",
+			mutate: func(_ *Config, target *BrowserTargetConfig) {
+				target.Driver = BrowserDriverPlaywrightMCP
+				target.DriverServer = "playwright"
+			},
+			wantErr: "cannot combine node placement with a local driver",
+		},
+		{
+			name: "enabled while nodes disabled",
+			mutate: func(cfg *Config, target *BrowserTargetConfig) {
+				cfg.Nodes.Enabled = false
+				target.Enabled = true
+				target.Profiles[BrowserDefaultProfile] = BrowserProfileConfig{
+					Enabled: true, Mode: BrowserProfileManaged,
+					NetworkMode: BrowserNetworkAnyHTTP, DryRun: true,
+				}
+			},
+			wantErr: "requires nodes.enabled",
+		},
+		{
+			name: "enabled before host",
+			mutate: func(cfg *Config, target *BrowserTargetConfig) {
+				cfg.Nodes.Enabled = true
+				target.Enabled = true
+				target.Profiles[BrowserDefaultProfile] = BrowserProfileConfig{
+					Enabled: true, Mode: BrowserProfileManaged,
+					NetworkMode: BrowserNetworkAnyHTTP, DryRun: true,
+				}
+			},
+			wantErr: "unavailable until the companion browser host is installed",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := browserConfigFixture(t)
+			cfg.Execution.Targets = make(map[string]ExecutionTarget)
+			cfg.Execution.Targets["ab-local-test"] = ExecutionTarget{
+				Type: "node", Node: "darwin-companion",
+			}
+			target := BrowserTargetConfig{
+				Placement: BrowserPlacementNode, NodeTarget: "ab-local-test",
+				Profiles: map[string]BrowserProfileConfig{
+					BrowserDefaultProfile: {
+						Mode: BrowserProfileManaged, DryRun: true,
+					},
+				},
+			}
+			test.mutate(cfg, &target)
+			cfg.Tools.Browser.Targets["companion"] = target
+			err := cfg.ValidateBrowserConfig()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("ValidateBrowserConfig() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestBrowserConfigRejectsGatewayNodeMapping(t *testing.T) {
+	cfg := browserConfigFixture(t)
+	target := cfg.Tools.Browser.Targets[BrowserDefaultTarget]
+	target.NodeTarget = "ab-local-test"
+	cfg.Tools.Browser.Targets[BrowserDefaultTarget] = target
+	if err := cfg.ValidateBrowserConfig(); err == nil ||
+		!strings.Contains(err.Error(), "cannot combine gateway placement with node_target") {
+		t.Fatalf("ValidateBrowserConfig() error = %v", err)
+	}
+}
+
 func TestBrowserConfigAcceptsPublicWebWithoutExactOrigins(t *testing.T) {
 	cfg := browserConfigFixture(t)
 	target := cfg.Tools.Browser.Targets[BrowserDefaultTarget]

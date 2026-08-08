@@ -302,6 +302,7 @@ type CommandDescriptor struct {
 	ModelContract    *CommandModelContract      `json:"model_contract,omitempty"`
 	FileProfiles     []FileProfileDescriptor    `json:"file_profiles,omitempty"`
 	ServiceProfiles  []ServiceProfileDescriptor `json:"service_profiles,omitempty"`
+	BrowserProfiles  []BrowserProfileDescriptor `json:"browser_profiles,omitempty"`
 	UpdateProfiles   []UpdateProfileDescriptor  `json:"update_profiles,omitempty"`
 }
 
@@ -399,8 +400,57 @@ func (descriptor CommandDescriptor) Validate() error {
 	if err := descriptor.validateServiceProfiles(); err != nil {
 		return err
 	}
+	if err := descriptor.validateBrowserProfiles(); err != nil {
+		return err
+	}
 	if err := descriptor.validateUpdateProfiles(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (descriptor CommandDescriptor) validateBrowserProfiles() error {
+	if len(descriptor.BrowserProfiles) == 0 {
+		if IsBrowserCommand(descriptor.Name) {
+			return fmt.Errorf("%w: browser command lacks browser profiles", ErrInvalidCapability)
+		}
+		return nil
+	}
+	if !IsBrowserCommand(descriptor.Name) {
+		return fmt.Errorf("%w: non-browser command carries browser profiles", ErrInvalidCapability)
+	}
+	if err := validateBrowserProfiles(descriptor.BrowserProfiles); err != nil {
+		return err
+	}
+	if descriptor.ModelContract != nil {
+		return fmt.Errorf("%w: internal browser command must not have a model contract", ErrInvalidCapability)
+	}
+	wantRisk := RiskRead
+	if descriptor.Name == BrowserCommandSessionOpen ||
+		descriptor.Name == BrowserCommandAct || descriptor.Name == BrowserCommandSessionClose {
+		wantRisk = RiskWrite
+	}
+	if descriptor.Risk != wantRisk {
+		return fmt.Errorf("%w: browser command has incorrect risk", ErrInvalidCapability)
+	}
+	expectedInput, err := canonicalJSON(BrowserCommandInputSchema(
+		descriptor.Name,
+		descriptor.BrowserProfiles,
+	))
+	if err != nil {
+		return err
+	}
+	actualInput, err := canonicalJSON(descriptor.InputSchema)
+	if err != nil || !bytes.Equal(actualInput, expectedInput) {
+		return fmt.Errorf("%w: browser input schema does not match typed contract", ErrInvalidCapability)
+	}
+	expectedOutput, err := canonicalJSON(BrowserCommandOutputSchema(descriptor.Name))
+	if err != nil {
+		return err
+	}
+	actualOutput, err := canonicalJSON(descriptor.OutputSchema)
+	if err != nil || !bytes.Equal(actualOutput, expectedOutput) {
+		return fmt.Errorf("%w: browser output schema does not match typed contract", ErrInvalidCapability)
 	}
 	return nil
 }
@@ -544,13 +594,15 @@ func (catalog CapabilityCatalog) Validate() error {
 			totalBytes += len(modelContract)
 		}
 		if len(descriptor.FileProfiles) > 0 || len(descriptor.ServiceProfiles) > 0 ||
-			len(descriptor.UpdateProfiles) > 0 {
+			len(descriptor.BrowserProfiles) > 0 || len(descriptor.UpdateProfiles) > 0 {
 			profiles, err := json.Marshal(struct {
 				File    []FileProfileDescriptor    `json:"file,omitempty"`
 				Service []ServiceProfileDescriptor `json:"service,omitempty"`
+				Browser []BrowserProfileDescriptor `json:"browser,omitempty"`
 				Update  []UpdateProfileDescriptor  `json:"update,omitempty"`
 			}{
-				File: descriptor.FileProfiles, Service: descriptor.ServiceProfiles, Update: descriptor.UpdateProfiles,
+				File: descriptor.FileProfiles, Service: descriptor.ServiceProfiles,
+				Browser: descriptor.BrowserProfiles, Update: descriptor.UpdateProfiles,
 			})
 			if err != nil {
 				return fmt.Errorf("%w: encode command profiles", ErrInvalidCapability)
