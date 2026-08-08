@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
@@ -108,7 +110,9 @@ func (owner MediaOwner) validate() error {
 type MediaStore interface {
 	// Store registers an existing local file under the given scope.
 	// Returns a ref identifier (e.g. "media://<id>").
-	// Store does not move or copy the file; it only records the mapping.
+	// Persistent stores promote delete-on-cleanup files from TempDir into
+	// workspace-owned storage and remove the temporary source after commit.
+	// Other files are only recorded and are never moved or copied.
 	// If meta.CleanupPolicy is empty, CleanupPolicyDeleteOnCleanup is assumed.
 	Store(localPath string, meta MediaMeta, scope string) (ref string, err error)
 
@@ -152,14 +156,18 @@ type FileMediaStore struct {
 	refToScope  map[string]string
 	refToPath   map[string]string
 	pathStates  map[string]pathRefState
+	// lifecycleMu serializes registration with file deletion. Acquire it
+	// before mu whenever an operation may add or remove a path-backed ref.
+	lifecycleMu sync.Mutex
 
-	cleanerCfg MediaCleanerConfig
-	stop       chan struct{}
-	startOnce  sync.Once
-	stopOnce   sync.Once
-	cleanerWG  sync.WaitGroup
-	nowFunc    func() time.Time // for testing
-	index      *mediaIndex
+	cleanerCfg  MediaCleanerConfig
+	stop        chan struct{}
+	startOnce   sync.Once
+	stopOnce    sync.Once
+	cleanerWG   sync.WaitGroup
+	nowFunc     func() time.Time // for testing
+	index       *mediaIndex
+	durableRoot string
 }
 
 // NewFileMediaStore creates a new FileMediaStore without background cleanup.
@@ -176,8 +184,13 @@ func NewFileMediaStoreWithCleanup(cfg MediaCleanerConfig) *FileMediaStore {
 // atomic workspace-local index. Missing files from an earlier process are
 // discarded during recovery and are never exposed as valid refs.
 func NewFileMediaStoreWithPersistentIndex(indexPath string, cfg MediaCleanerConfig) (*FileMediaStore, error) {
+	durableRoot, err := existingDirectoryAncestor(filepath.Dir(indexPath))
+	if err != nil {
+		return nil, err
+	}
 	index := &mediaIndex{path: indexPath}
 	store := newFileMediaStore(cfg, index)
+	store.durableRoot = durableRoot
 	entries, err := loadMediaIndex(indexPath)
 	if err != nil {
 		return nil, err
@@ -226,28 +239,232 @@ func newFileMediaStore(cfg MediaCleanerConfig, index *mediaIndex) *FileMediaStor
 
 // Store registers a local file under the given scope. The file must exist.
 func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (string, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	absPath, err := filepath.Abs(localPath)
 	if err != nil {
 		return "", fmt.Errorf("media store: resolve path %q: %w", localPath, err)
 	}
 	localPath = absPath
-	if _, err := os.Stat(localPath); err != nil {
-		return "", fmt.Errorf("media store: %s: %w", localPath, err)
+	if _, statErr := os.Stat(localPath); statErr != nil {
+		return "", fmt.Errorf("media store: %s: %w", localPath, statErr)
 	}
 
 	ref := "media://" + uuid.New().String()
 	meta.CleanupPolicy = normalizeCleanupPolicy(meta.CleanupPolicy)
+	persistedPath, promotion, err := s.promoteManagedTempFile(localPath, ref, meta.CleanupPolicy)
+	if err != nil {
+		return "", err
+	}
+	if promotion != nil {
+		defer promotion.close()
+	}
 
-	entry := mediaEntry{path: localPath, meta: meta, storedAt: s.nowFunc()}
+	entry := mediaEntry{path: persistedPath, meta: meta, storedAt: s.nowFunc()}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.persistLocked([]persistentMediaEntry{{
 		Ref: ref, Path: entry.path, Meta: entry.meta, Scope: scope, StoredAt: entry.storedAt,
 	}}, nil); err != nil {
+		s.mu.Unlock()
+		if promotion != nil {
+			_ = os.Remove(persistedPath)
+		}
 		return "", err
 	}
 	s.addEntryLocked(ref, entry, scope)
+	s.mu.Unlock()
+
+	if promotion != nil {
+		if err := promotion.removeSource(); err != nil && !os.IsNotExist(err) {
+			logger.WarnCF("media", "store: failed to remove promoted temporary file", map[string]any{
+				"path":  localPath,
+				"error": err.Error(),
+			})
+		}
+	}
 	return ref, nil
+}
+
+// promoteManagedTempFile copies store-managed downloads from the shared OS
+// temp directory into the persistent workspace media directory. The copy is
+// committed before the source is removed, so a failed index write leaves the
+// caller's original file intact.
+type mediaPromotion struct {
+	sourceRoot *os.Root
+	sourceRel  string
+	sourceInfo os.FileInfo
+}
+
+func (p *mediaPromotion) close() {
+	_ = p.sourceRoot.Close()
+}
+
+func (p *mediaPromotion) removeSource() error {
+	current, err := p.sourceRoot.Stat(p.sourceRel)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(p.sourceInfo, current) {
+		return errors.New("temporary source changed during media promotion")
+	}
+	return p.sourceRoot.Remove(p.sourceRel)
+}
+
+func (s *FileMediaStore) promoteManagedTempFile(
+	localPath string,
+	ref string,
+	policy CleanupPolicy,
+) (string, *mediaPromotion, error) {
+	if s.index == nil || policy != CleanupPolicyDeleteOnCleanup || !isManagedTempPath(localPath) {
+		return localPath, nil, nil
+	}
+
+	sourceRoot, sourceRel, sourceFile, sourceInfo, err := openManagedTempFile(localPath)
+	if err != nil {
+		return "", nil, err
+	}
+	defer sourceFile.Close()
+	promotion := &mediaPromotion{
+		sourceRoot: sourceRoot,
+		sourceRel:  sourceRel,
+		sourceInfo: sourceInfo,
+	}
+	cleanupPromotion := true
+	defer func() {
+		if cleanupPromotion {
+			promotion.close()
+		}
+	}()
+
+	managedDir := filepath.Join(filepath.Dir(s.index.path), "files")
+	if err := ensureDurableDirectory(
+		s.durableRoot,
+		managedDir,
+		fileutil.MkdirAllDurable,
+	); err != nil {
+		return "", nil, fmt.Errorf("media store: create persistent media directory: %w", err)
+	}
+
+	id := strings.TrimPrefix(ref, "media://")
+	destination := filepath.Join(managedDir, id+strings.ToLower(filepath.Ext(localPath)))
+	if err := copyMediaFile(sourceFile, destination); err != nil {
+		return "", nil, fmt.Errorf("media store: persist temporary file: %w", err)
+	}
+	cleanupPromotion = false
+	return destination, promotion, nil
+}
+
+func isManagedTempPath(path string) bool {
+	rel, err := filepath.Rel(TempDir(), path)
+	return err == nil && rel != "." && rel != "" && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func existingDirectoryAncestor(path string) (string, error) {
+	root := filepath.Clean(path)
+	for {
+		info, err := os.Stat(root)
+		if err == nil {
+			if !info.IsDir() {
+				return "", fmt.Errorf("durable media ancestor is not a directory: %s", root)
+			}
+			return root, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return "", fmt.Errorf("media store: no existing ancestor for %s", path)
+		}
+		root = parent
+	}
+}
+
+func ensureDurableDirectory(
+	root string,
+	path string,
+	mkdirAll func(string, string, os.FileMode) error,
+) error {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	return mkdirAll(root, relative, 0o700)
+}
+
+func openManagedTempFile(path string) (*os.Root, string, *os.File, os.FileInfo, error) {
+	rel, err := filepath.Rel(TempDir(), path)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	root, err := os.OpenRoot(TempDir())
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	fail := func(err error) (*os.Root, string, *os.File, os.FileInfo, error) {
+		_ = root.Close()
+		return nil, "", nil, nil, err
+	}
+
+	current := ""
+	parts := strings.Split(filepath.Clean(rel), string(os.PathSeparator))
+	for idx, part := range parts {
+		current = filepath.Join(current, part)
+		info, statErr := root.Lstat(current)
+		if statErr != nil {
+			return fail(statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fail(fmt.Errorf("media store: managed temporary path contains symlink: %s", current))
+		}
+		if idx < len(parts)-1 && !info.IsDir() {
+			return fail(fmt.Errorf("media store: managed temporary path component is not a directory: %s", current))
+		}
+	}
+
+	file, err := root.Open(rel)
+	if err != nil {
+		return fail(err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fail(err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return fail(errors.New("media store: managed temporary source is not a regular file"))
+	}
+	return root, rel, file, info, nil
+}
+
+func copyMediaFile(source io.Reader, destination string) (retErr error) {
+	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	removeOnError := true
+	defer func() {
+		if removeOnError {
+			_ = out.Close()
+			_ = os.Remove(destination)
+		}
+	}()
+	if _, err := io.Copy(out, source); err != nil {
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := fileutil.SyncDirectory(filepath.Dir(destination)); err != nil {
+		return err
+	}
+	removeOnError = false
+	return nil
 }
 
 // StoreIdempotent registers one deterministic media ref for a durable
@@ -284,6 +501,8 @@ func (s *FileMediaStore) storeIdempotent(
 	key string,
 	owner *MediaOwner,
 ) (string, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if strings.TrimSpace(key) == "" || len(key) > 512 {
 		return "", fmt.Errorf("media store: invalid idempotency key")
 	}
@@ -451,6 +670,8 @@ func (s *FileMediaStore) resolve(ref string) (string, MediaMeta, error) {
 // Phase 2 (no lock): delete store-managed files from disk once their final
 // path ref is gone.
 func (s *FileMediaStore) ReleaseAll(scope string) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	// Phase 1: collect paths and remove from maps under lock
 	var paths []string
 
@@ -494,13 +715,16 @@ func (s *FileMediaStore) ReleaseAll(scope string) error {
 	return nil
 }
 
-// CleanExpired removes all entries older than MaxAge.
+// CleanExpired removes all entries older than MaxAge and reclaims stale
+// promotion files that were never committed to the persistent index.
 // Phase 1 (under lock): identify expired entries and remove from maps.
 // Phase 2 (no lock): delete store-managed files from disk to minimize lock contention.
 func (s *FileMediaStore) CleanExpired() int {
 	if s.cleanerCfg.MaxAge <= 0 {
 		return 0
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 
 	// Phase 1: collect expired entries under lock
 	type expiredEntry struct {
@@ -520,36 +744,38 @@ func (s *FileMediaStore) CleanExpired() int {
 			expired = append(expired, expiredEntry{ref: ref})
 		}
 	}
-	if len(expired) == 0 {
-		s.mu.Unlock()
-		return 0
-	}
-	removedRefs := make(map[string]struct{}, len(expired))
-	for _, item := range expired {
-		removedRefs[item.ref] = struct{}{}
-	}
-	if err := s.persistLocked(nil, removedRefs); err != nil {
-		s.mu.Unlock()
-		logger.WarnCF("media", "cleanup: failed to persist index", map[string]any{"error": err.Error()})
-		return 0
-	}
-	for idx := range expired {
-		ref := expired[idx].ref
-		entry := s.refs[ref]
-		if entry.storedAt.Before(cutoff) {
-			if scope, ok := s.refToScope[ref]; ok {
-				if scopeRefs, ok := s.scopeToRefs[scope]; ok {
-					delete(scopeRefs, ref)
-					if len(scopeRefs) == 0 {
-						delete(s.scopeToRefs, scope)
+	if len(expired) > 0 {
+		removedRefs := make(map[string]struct{}, len(expired))
+		for _, item := range expired {
+			removedRefs[item.ref] = struct{}{}
+		}
+		if err := s.persistLocked(nil, removedRefs); err != nil {
+			s.mu.Unlock()
+			logger.WarnCF("media", "cleanup: failed to persist index", map[string]any{"error": err.Error()})
+			return 0
+		}
+		for idx := range expired {
+			ref := expired[idx].ref
+			entry := s.refs[ref]
+			if entry.storedAt.Before(cutoff) {
+				if scope, ok := s.refToScope[ref]; ok {
+					if scopeRefs, ok := s.scopeToRefs[scope]; ok {
+						delete(scopeRefs, ref)
+						if len(scopeRefs) == 0 {
+							delete(s.scopeToRefs, scope)
+						}
 					}
 				}
-			}
 
-			if deletePath, shouldDelete := s.releaseRefLocked(ref, entry.path); shouldDelete {
-				expired[idx].deletePath = deletePath
+				if deletePath, shouldDelete := s.releaseRefLocked(ref, entry.path); shouldDelete {
+					expired[idx].deletePath = deletePath
+				}
 			}
 		}
+	}
+	retainedPaths := make(map[string]struct{}, len(s.refs))
+	for _, entry := range s.refs {
+		retainedPaths[entry.path] = struct{}{}
 	}
 	s.mu.Unlock()
 
@@ -566,7 +792,66 @@ func (s *FileMediaStore) CleanExpired() int {
 		}
 	}
 
-	return len(expired)
+	orphans := s.cleanOrphanedPromotionFiles(cutoff, retainedPaths)
+	return len(expired) + orphans
+}
+
+func (s *FileMediaStore) cleanOrphanedPromotionFiles(
+	cutoff time.Time,
+	retainedPaths map[string]struct{},
+) int {
+	if s.index == nil {
+		return 0
+	}
+	managedDir := filepath.Join(filepath.Dir(s.index.path), "files")
+	root, err := os.OpenRoot(managedDir)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		logger.WarnCF("media", "cleanup: failed to open persistent media directory", map[string]any{
+			"error": err.Error(),
+		})
+		return 0
+	}
+	defer root.Close()
+
+	entries, err := os.ReadDir(managedDir)
+	if err != nil {
+		logger.WarnCF("media", "cleanup: failed to scan persistent media directory", map[string]any{
+			"error": err.Error(),
+		})
+		return 0
+	}
+	removed := 0
+	for _, entry := range entries {
+		if !isPromotionFilename(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(managedDir, entry.Name())
+		if _, retained := retainedPaths[path]; retained {
+			continue
+		}
+		info, infoErr := root.Lstat(entry.Name())
+		if infoErr != nil || !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if removeErr := root.Remove(entry.Name()); removeErr != nil {
+			logger.WarnCF("media", "cleanup: failed to remove orphaned promotion", map[string]any{
+				"path":  path,
+				"error": removeErr.Error(),
+			})
+			continue
+		}
+		removed++
+	}
+	return removed
+}
+
+func isPromotionFilename(name string) bool {
+	id := strings.TrimSuffix(name, filepath.Ext(name))
+	_, err := uuid.Parse(id)
+	return err == nil
 }
 
 // persistLocked writes a complete bounded snapshot. additions are entries not

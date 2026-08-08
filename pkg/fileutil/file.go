@@ -102,6 +102,11 @@ func MkdirAllDurable(root, relativePath string, perm os.FileMode) error {
 	return mkdirAllDurable(root, relativePath, perm, syncDirectory)
 }
 
+// SyncDirectory flushes directory metadata where supported by the platform.
+func SyncDirectory(path string) error {
+	return syncDirectory(path)
+}
+
 func mkdirAllDurable(
 	root, relativePath string,
 	perm os.FileMode,

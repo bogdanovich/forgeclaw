@@ -301,6 +301,13 @@ func TestDefaultConfig_MCPMaxInlineTextChars(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_MediaRetentionSupportsHistoricalReferences(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.Tools.MediaCleanup.MaxAge; got != 7*24*60 {
+		t.Fatalf("DefaultConfig().Tools.MediaCleanup.MaxAge = %d, want seven days", got)
+	}
+}
+
 func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
