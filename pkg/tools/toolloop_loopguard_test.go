@@ -10,6 +10,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type loopGuardTestTool struct {
@@ -31,14 +32,14 @@ func (t *loopGuardTestTool) Parameters() map[string]any {
 	}
 }
 
-func (t *loopGuardTestTool) Execute(context.Context, map[string]any) *ToolResult {
+func (t *loopGuardTestTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.mu.Lock()
 	t.executed++
 	t.mu.Unlock()
 	if t.fail {
-		return ErrorResult("stable failure")
+		return toolshared.ErrorResult("stable failure")
 	}
-	return SilentResult("stable result")
+	return toolshared.SilentResult("stable result")
 }
 
 func (t *loopGuardTestTool) count() int {

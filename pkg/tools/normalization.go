@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -26,12 +27,12 @@ var (
 )
 
 func normalizeToolResult(
-	result *ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
 	store media.MediaStore,
 	channel string,
 	chatID string,
-) *ToolResult {
+) *toolshared.ToolResult {
 	if result == nil {
 		return nil
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestGrepToolTrustedRetrievalScopes(t *testing.T) {
@@ -57,7 +57,7 @@ func TestGrepToolTrustedRetrievalScopes(t *testing.T) {
 		store:  store,
 		config: Config{MaxRetrievalScope: string(retrievalScopeWorkspace)},
 	})
-	toolCtx := tools.WithToolSessionContext(
+	toolCtx := toolshared.WithToolSessionContext(
 		ctx,
 		"main",
 		current.sessionKey,
@@ -186,7 +186,7 @@ func TestRetrievalScopeRejectsRequestsAboveOperatorMaximum(t *testing.T) {
 	if err := store.SetConversationProvenance(ctx, "epoch:current", "route:a", "main"); err != nil {
 		t.Fatal(err)
 	}
-	toolCtx := tools.WithToolSessionContext(ctx, "main", "epoch:current", retrievalTestScope("route:a", "main"))
+	toolCtx := toolshared.WithToolSessionContext(ctx, "main", "epoch:current", retrievalTestScope("route:a", "main"))
 	engine := &RetrievalEngine{store: store}
 
 	grepResult := NewGrepTool(engine).Execute(toolCtx, map[string]any{
@@ -228,7 +228,7 @@ func TestConversationRetrievalSeparatesSenders(t *testing.T) {
 	currentID := seed("epoch:sender-a:current", "route:chat-a:sender-a", "current")
 	previousID := seed("epoch:sender-a:previous", "route:chat-a:sender-a", "previous")
 	otherSenderID := seed("epoch:sender-b", "route:chat-a:sender-b", "other")
-	toolCtx := tools.WithToolSessionContext(
+	toolCtx := toolshared.WithToolSessionContext(
 		ctx,
 		"main",
 		"epoch:sender-a:current",
@@ -283,7 +283,7 @@ func TestExpandToolRejectsCrossScopeMessageIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	toolCtx := tools.WithToolSessionContext(ctx, "main", "epoch:current", retrievalTestScope("route:a", "main"))
+	toolCtx := toolshared.WithToolSessionContext(ctx, "main", "epoch:current", retrievalTestScope("route:a", "main"))
 	result := NewExpandTool(&RetrievalEngine{store: store}).Execute(toolCtx, map[string]any{
 		"message_ids": []any{float64(currentMessage.ID), float64(otherMessage.ID)},
 	})
@@ -306,7 +306,7 @@ func TestExpandToolRejectsCrossScopeMessageIDs(t *testing.T) {
 func TestBroadRetrievalRequiresTrustedProvenance(t *testing.T) {
 	store := openTestStore(t)
 	tool := NewGrepTool(&RetrievalEngine{store: store})
-	ctx := tools.WithToolSessionContext(context.Background(), "main", "epoch:current", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "epoch:current", nil)
 	for _, scope := range []string{"conversation", "workspace"} {
 		result := tool.Execute(ctx, map[string]any{"pattern": "needle", "retrieval_scope": scope})
 		if !result.IsError {

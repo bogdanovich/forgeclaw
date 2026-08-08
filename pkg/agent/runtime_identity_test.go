@@ -10,6 +10,8 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type resetTrackingMessageTool struct {
@@ -22,8 +24,8 @@ func (t *resetTrackingMessageTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *resetTrackingMessageTool) Execute(context.Context, map[string]any) *tools.ToolResult {
-	return &tools.ToolResult{}
+func (t *resetTrackingMessageTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
+	return &toolshared.ToolResult{}
 }
 
 func (t *resetTrackingMessageTool) ResetSentInRound(sessionKey string) {
@@ -281,15 +283,15 @@ func TestInboundRecoveryBlockScopeIncludesRoutedWorkspace(t *testing.T) {
 }
 
 func TestMessageToolSuppressionUsesExplicitSessionOwner(t *testing.T) {
-	first := tools.NewMessageTool()
-	second := tools.NewMessageTool()
+	first := integrationtools.NewMessageTool()
+	second := integrationtools.NewMessageTool()
 	first.SetSendCallback(func(
 		context.Context, string, string, string, string, []bus.MediaPart,
 	) error {
 		return nil
 	})
 	result := first.Execute(
-		tools.WithToolSessionContext(context.Background(), "first", "shared-session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "first", "shared-session", nil),
 		map[string]any{"content": "sent", "channel": "test", "chat_id": "same"},
 	)
 	if result == nil || result.IsError {

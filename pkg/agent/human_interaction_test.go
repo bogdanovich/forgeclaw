@@ -20,7 +20,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type interactionChannelManager struct {
@@ -113,9 +113,9 @@ func (*approvalCountingTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *approvalCountingTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+func (t *approvalCountingTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.executions++
-	return tools.NewToolResult("protected action completed")
+	return toolshared.NewToolResult("protected action completed")
 }
 
 type approvalBindingTool struct {
@@ -156,19 +156,19 @@ func (*browserHandoffContinuationTool) Parameters() map[string]any {
 func (tool *browserHandoffContinuationTool) Execute(
 	ctx context.Context,
 	args map[string]any,
-) *tools.ToolResult {
+) *toolshared.ToolResult {
 	operation, _ := args["operation"].(string)
-	executionID := tools.ToolExecutionID(ctx)
+	executionID := toolshared.ToolExecutionID(ctx)
 	tool.operations = append(tool.operations, operation)
 	tool.executionIDs = append(tool.executionIDs, executionID)
 	tool.approvalContinuations = append(
 		tool.approvalContinuations,
-		tools.ToolApprovalContinuation(ctx),
+		toolshared.ToolApprovalContinuation(ctx),
 	)
 	switch operation {
 	case "handoff":
 		tool.ownerExecutionID = executionID
-		return &tools.ToolResult{
+		return &toolshared.ToolResult{
 			ForLLM: `{"controller":"human"}`,
 			Suspension: &interactions.SuspensionRequest{
 				Kind: interactions.KindQuestion, PromptSummary: "Release browser control", Timeout: time.Minute,
@@ -184,11 +184,11 @@ func (tool *browserHandoffContinuationTool) Execute(
 		}
 	case "resume", "observe":
 		if !tool.released || executionID == "" || executionID != tool.ownerExecutionID {
-			return tools.ErrorResult("browser owner identity changed across continuation")
+			return toolshared.ErrorResult("browser owner identity changed across continuation")
 		}
-		return tools.NewToolResult(`{"controller":"agent"}`)
+		return toolshared.NewToolResult(`{"controller":"agent"}`)
 	default:
-		return tools.ErrorResult("unknown browser continuation operation")
+		return toolshared.ErrorResult("unknown browser continuation operation")
 	}
 }
 
@@ -208,19 +208,19 @@ func (t *approvalBindingTool) ApprovalArguments(
 	ctx context.Context,
 	_ map[string]any,
 ) (map[string]any, error) {
-	t.bindingCalls = append(t.bindingCalls, tools.ToolCallID(ctx))
+	t.bindingCalls = append(t.bindingCalls, toolshared.ToolCallID(ctx))
 	t.bindingContinuations = append(
 		t.bindingContinuations,
-		tools.ToolApprovalContinuation(ctx),
+		toolshared.ToolApprovalContinuation(ctx),
 	)
-	t.executionIDs = append(t.executionIDs, tools.ToolExecutionID(ctx))
-	t.workspaces = append(t.workspaces, tools.ToolWorkspace(ctx))
+	t.executionIDs = append(t.executionIDs, toolshared.ToolExecutionID(ctx))
+	t.workspaces = append(t.workspaces, toolshared.ToolWorkspace(ctx))
 	return map[string]any{"plan_hash": "prepared-plan-hash"}, nil
 }
 
-func (t *approvalBindingTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+func (t *approvalBindingTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.executions++
-	return tools.NewToolResult("prepared action completed")
+	return toolshared.NewToolResult("prepared action completed")
 }
 
 func TestToolExecutionIdentityDoesNotRepeatAcrossAgentLoops(t *testing.T) {
@@ -271,12 +271,12 @@ func (*approvalContextTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *approvalContextTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+func (t *approvalContextTool) Execute(ctx context.Context, _ map[string]any) *toolshared.ToolResult {
 	t.executions++
-	t.inbound = tools.ToolInboundContext(ctx)
-	t.bypass = tools.ToolApprovalBypass(ctx)
-	t.continued = tools.ToolApprovalContinuation(ctx)
-	return tools.NewToolResult("protected context captured")
+	t.inbound = toolshared.ToolInboundContext(ctx)
+	t.bypass = toolshared.ToolApprovalBypass(ctx)
+	t.continued = toolshared.ToolApprovalContinuation(ctx)
+	return toolshared.NewToolResult("protected context captured")
 }
 
 type interactionOwnershipBus struct {
@@ -720,7 +720,7 @@ func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 		TaskID: "subagent-parent", Runtime: taskregistry.RuntimeSubagent,
 		TaskKind: "spawn", Task: "finish in parent", Status: taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
-		DeliveryMode:   string(tools.AsyncDeliveryParentOnly),
+		DeliveryMode:   string(toolshared.AsyncDeliveryParentOnly),
 		InteractionID:  "interaction-parent",
 		Channel:        "telegram", ChatID: "chat-1", RequesterSessionKey: "owner-session",
 	}); err != nil {
@@ -820,7 +820,7 @@ func TestParentOnlyTaskApprovalRemovesTelegramControlsWithoutLeakingResult(t *te
 		TaskID: "approval-parent", Runtime: taskregistry.RuntimeSubagent,
 		TaskKind: "spawn", Task: "finish approval in parent", Status: taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
-		DeliveryMode:   string(tools.AsyncDeliveryParentOnly),
+		DeliveryMode:   string(toolshared.AsyncDeliveryParentOnly),
 		InteractionID:  "interaction-approval-parent",
 		Channel:        "telegram", ChatID: "chat-1", RequesterSessionKey: "owner-session",
 	}); err != nil {
@@ -915,7 +915,7 @@ func TestTaskInteractionFinalCarriesResumeScopeToUserDelivery(t *testing.T) {
 		TaskID: "subagent-user", Runtime: taskregistry.RuntimeSubagent,
 		TaskKind: "spawn", Task: "finish for user", Status: taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
-		DeliveryMode:   string(tools.AsyncDeliveryUserOnly),
+		DeliveryMode:   string(toolshared.AsyncDeliveryUserOnly),
 		InteractionID:  "interaction-user",
 		Channel:        "telegram", ChatID: "chat-1", RequesterSessionKey: "owner-session",
 	}); err != nil {
@@ -3331,7 +3331,7 @@ func TestTaskInteractionConcurrentExplicitAnswersStartOneContinuation(t *testing
 		TaskID: "task-concurrent-answer", Runtime: taskregistry.RuntimeSubagent,
 		TaskKind: "spawn", Task: "complete after input", Status: taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
-		DeliveryMode:   string(tools.AsyncDeliveryUserOnly),
+		DeliveryMode:   string(toolshared.AsyncDeliveryUserOnly),
 		InteractionID:  "interaction-task-concurrent-answer",
 		Channel:        request.Route.Channel, ChatID: request.Route.ChatID,
 		RequesterSessionKey: sessionKey,

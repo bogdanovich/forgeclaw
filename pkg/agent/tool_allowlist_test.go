@@ -6,6 +6,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	agenttools "github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type allowlistTestTool struct {
@@ -32,8 +33,8 @@ func (t *allowlistTestTool) Parameters() map[string]any {
 func (t *allowlistTestTool) Execute(
 	_ context.Context,
 	_ map[string]any,
-) *agenttools.ToolResult {
-	return agenttools.NewToolResult("ok")
+) *toolshared.ToolResult {
+	return toolshared.NewToolResult("ok")
 }
 
 func TestUnknownAgentToolNames(t *testing.T) {

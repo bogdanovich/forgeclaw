@@ -21,6 +21,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testing.T) {
@@ -83,7 +84,7 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 		Owner: owner, RequestID: request.RequestID, SessionID: capture.SessionID,
 		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: artifact.Recovery,
 	}
-	claimCtx := tools.WithToolRouteSessionKey(ctx, "delivery-route-drift")
+	claimCtx := toolshared.WithToolRouteSessionKey(ctx, "delivery-route-drift")
 	if err = source.ClaimScreenshotDelivery(claimCtx, delivery); err != nil {
 		t.Fatalf("ClaimScreenshotDelivery() error = %v", err)
 	}
@@ -134,13 +135,13 @@ func TestGatewayBrowserScreenshotUsesP2SpoolAndIdempotentMediaDelivery(t *testin
 		SnapshotID: capture.SnapshotID, SnapshotGeneration: capture.SnapshotGeneration,
 		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
 	}
-	wrongActor := tools.WithToolInboundMetadata(ctx, bus.InboundContext{
+	wrongActor := toolshared.WithToolInboundMetadata(ctx, bus.InboundContext{
 		SenderID: "sender-2", ActorID: "actor-2",
 	})
 	for name, wrongContext := range map[string]context.Context{
-		"agent": tools.WithToolSessionContext(ctx, "main", "history-1", nil),
+		"agent": toolshared.WithToolSessionContext(ctx, "main", "history-1", nil),
 		"actor": wrongActor,
-		"route": tools.WithToolRouteSessionKey(ctx, "route-2"),
+		"route": toolshared.WithToolRouteSessionKey(ctx, "route-2"),
 	} {
 		t.Run("upload rejects wrong "+name, func(t *testing.T) {
 			if _, resolveErr := source.resolveBrowserUpload(wrongContext, validUploadRequest); !errors.Is(
@@ -257,7 +258,7 @@ func TestGatewayNodeDownloadResolvesThroughBrowserUploadWorker(t *testing.T) {
 		t.Fatalf("ExecuteAction() = %#v, %v; upload path = %q, data = %q", invocation, err, worker.path, worker.got)
 	}
 
-	otherRoute := tools.WithToolRouteSessionKey(ctx, "route-2")
+	otherRoute := toolshared.WithToolRouteSessionKey(ctx, "route-2")
 	if _, err = source.resolveBrowserUpload(otherRoute, browser.PrepareActionRequest{
 		RequestID: "request_wrong_route", SessionID: session.ID,
 		Action: browser.Action{Kind: browser.ActionUpload, ArtifactRef: artifact.Ref},
@@ -755,12 +756,12 @@ func TestGatewayBrowserScreenshotRemovesCopyAfterPostRenameSyncWarning(t *testin
 }
 
 func gatewayBrowserArtifactContext(workspace string) context.Context {
-	ctx := tools.WithToolContext(context.Background(), "telegram", "chat-1")
-	ctx = tools.WithToolInboundMetadata(ctx, bus.InboundContext{
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx = toolshared.WithToolInboundMetadata(ctx, bus.InboundContext{
 		SenderID: "sender-1", ActorID: "actor-1",
 	})
-	ctx = tools.WithToolSessionContext(ctx, "browser", "history-1", nil)
-	ctx = tools.WithToolRouteSessionKey(ctx, "route-1")
-	ctx = tools.WithToolCallID(ctx, "call-1")
-	return tools.WithToolExecutionIdentity(ctx, workspace, "execution-1")
+	ctx = toolshared.WithToolSessionContext(ctx, "browser", "history-1", nil)
+	ctx = toolshared.WithToolRouteSessionKey(ctx, "route-1")
+	ctx = toolshared.WithToolCallID(ctx, "call-1")
+	return toolshared.WithToolExecutionIdentity(ctx, workspace, "execution-1")
 }

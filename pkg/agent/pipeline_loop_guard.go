@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func (p *Pipeline) beforeToolLoopDecision(
@@ -30,7 +30,7 @@ func (p *Pipeline) afterToolLoopDecision(
 	exec *turnExecution,
 	tool string,
 	args map[string]any,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	modelContent string,
 	semantics loopguard.Semantics,
 ) loopguard.Decision {
@@ -62,7 +62,7 @@ func (p *Pipeline) emitToolLoopDecision(ts *turnState, decision loopguard.Decisi
 	)
 }
 
-func blockedToolLoopResult(decision loopguard.Decision) *tools.ToolResult {
+func blockedToolLoopResult(decision loopguard.Decision) *toolshared.ToolResult {
 	payload := struct {
 		Error string `json:"error"`
 		Loop  struct {
@@ -82,9 +82,9 @@ func blockedToolLoopResult(decision loopguard.Decision) *tools.ToolResult {
 	payload.Loop.Threshold = decision.Threshold
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return tools.ErrorResult("tool execution blocked by loop protection")
+		return toolshared.ErrorResult("tool execution blocked by loop protection")
 	}
-	return tools.ErrorResult(string(data))
+	return toolshared.ErrorResult(string(data))
 }
 
 func appendToolLoopGuidance(content string, decision loopguard.Decision) string {

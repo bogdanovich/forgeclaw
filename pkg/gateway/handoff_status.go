@@ -12,7 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const handoffOutputPreviewLimit = 1024
@@ -26,8 +26,8 @@ type gatewayHandoffStatusTool struct {
 
 func (t *gatewayHandoffStatusTool) Name() string { return "gateway_handoff_status" }
 
-func (t *gatewayHandoffStatusTool) ToolSteeringSafety(map[string]any) tools.SteeringSafety {
-	return tools.SteeringSafetyReadOnly
+func (t *gatewayHandoffStatusTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
 func (t *gatewayHandoffStatusTool) Description() string {
@@ -38,11 +38,11 @@ func (t *gatewayHandoffStatusTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 
-func (t *gatewayHandoffStatusTool) Execute(_ context.Context, _ map[string]any) *tools.ToolResult {
-	return tools.UserResult(formatGatewayHandoffStatus(t.restartStore, t.deployStore))
+func (t *gatewayHandoffStatusTool) Execute(_ context.Context, _ map[string]any) *toolshared.ToolResult {
+	return toolshared.UserResult(formatGatewayHandoffStatus(t.restartStore, t.deployStore))
 }
 
-func newGatewayHandoffStatusTool(cfg *config.Config) (tools.Tool, error) {
+func newGatewayHandoffStatusTool(cfg *config.Config) (toolshared.Tool, error) {
 	if cfg == nil || (!cfg.Gateway.SafeRestart.Enabled && !cfg.Gateway.Deploy.Enabled) {
 		return nil, nil
 	}

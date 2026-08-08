@@ -18,6 +18,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	fstools "github.com/bogdanovich/mintclaw/pkg/tools/fs"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -121,11 +122,11 @@ func (t *MemoryTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsMutating
 }
 
-func (t *MemoryTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyNonCancellable
+func (t *MemoryTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyNonCancellable
 }
 
-func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	operation, err := requiredStringArg(args, "operation", "operation")
 	if err != nil {
 		return t.failure(ctx, "", "invalid_arguments", MemoryMutationPayload{}, err)
@@ -234,7 +235,12 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	}
 	payload.Outcome = outcome
 	t.publish(ctx, payload, runtimeevents.SeverityInfo)
-	return memoryMutationResult(operation, outcome, curatedMemoryTarget, true).WithWriteAudit(WriteAuditEntry{
+	return memoryMutationResult(
+		operation,
+		outcome,
+		curatedMemoryTarget,
+		true,
+	).WithWriteAudit(toolshared.WriteAuditEntry{
 		Kind:    "memory",
 		Target:  curatedMemoryTarget,
 		Action:  operation,
@@ -259,7 +265,7 @@ func (t *MemoryTool) appendDaily(
 	ctx context.Context,
 	target, dailyDate, content, idempotencyKey string,
 	payload MemoryMutationPayload,
-) *ToolResult {
+) *toolshared.ToolResult {
 	lock := curatedMemoryLock(filepath.Join(t.workspace, "memory", ".append_daily"))
 	lock.Lock()
 	defer lock.Unlock()
@@ -319,7 +325,12 @@ func (t *MemoryTool) appendDaily(
 	}
 	payload.Outcome = "appended"
 	t.publish(ctx, payload, runtimeevents.SeverityInfo)
-	return memoryMutationResult(appendDailyMemoryOperation, "appended", target, true).WithWriteAudit(WriteAuditEntry{
+	return memoryMutationResult(
+		appendDailyMemoryOperation,
+		"appended",
+		target,
+		true,
+	).WithWriteAudit(toolshared.WriteAuditEntry{
 		Kind:    "memory",
 		Target:  target,
 		Action:  appendDailyMemoryOperation,
@@ -333,16 +344,16 @@ func (t *MemoryTool) committedWriteFailure(
 	operation, target string,
 	payload MemoryMutationPayload,
 	err error,
-) *ToolResult {
+) *toolshared.ToolResult {
 	if t.invalidate != nil {
 		t.invalidate()
 	}
 	payload.Outcome = "committed_not_durable"
 	payload.ErrorCode = "directory_sync_failed"
 	t.publish(ctx, payload, runtimeevents.SeverityError)
-	return ErrorResult(fmt.Sprintf("memory was updated, but durability was not confirmed: %v", err)).
+	return toolshared.ErrorResult(fmt.Sprintf("memory was updated, but durability was not confirmed: %v", err)).
 		WithError(err).
-		WithWriteAudit(WriteAuditEntry{
+		WithWriteAudit(toolshared.WriteAuditEntry{
 			Kind:    "memory",
 			Target:  target,
 			Action:  operation,
@@ -541,14 +552,14 @@ func curatedMemoryHash(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func memoryMutationResult(operation, status, target string, changed bool) *ToolResult {
+func memoryMutationResult(operation, status, target string, changed bool) *toolshared.ToolResult {
 	data, _ := json.Marshal(memoryMutationResponse{
 		Status:    status,
 		Operation: operation,
 		Target:    target,
 		Changed:   changed,
 	})
-	return SilentResult(string(data))
+	return toolshared.SilentResult(string(data))
 }
 
 func (t *MemoryTool) failure(
@@ -556,7 +567,7 @@ func (t *MemoryTool) failure(
 	operation, errorCode string,
 	payload MemoryMutationPayload,
 	err error,
-) *ToolResult {
+) *toolshared.ToolResult {
 	payload.Operation = operation
 	if payload.Target == "" {
 		payload.Target = curatedMemoryTarget
@@ -564,7 +575,7 @@ func (t *MemoryTool) failure(
 	payload.Outcome = "failed"
 	payload.ErrorCode = errorCode
 	t.publish(ctx, payload, runtimeevents.SeverityError)
-	return ErrorResult(err.Error()).WithError(err)
+	return toolshared.ErrorResult(err.Error()).WithError(err)
 }
 
 func (t *MemoryTool) publish(
@@ -582,13 +593,13 @@ func (t *MemoryTool) publish(
 			Name:      t.Name(),
 		},
 		Scope: runtimeevents.Scope{
-			AgentID:    ToolAgentID(ctx),
-			SessionKey: ToolSessionKey(ctx),
-			Channel:    ToolChannel(ctx),
-			ChatID:     ToolChatID(ctx),
-			TopicID:    ToolTopicID(ctx),
-			SenderID:   ToolSenderID(ctx),
-			MessageID:  ToolMessageID(ctx),
+			AgentID:    toolshared.ToolAgentID(ctx),
+			SessionKey: toolshared.ToolSessionKey(ctx),
+			Channel:    toolshared.ToolChannel(ctx),
+			ChatID:     toolshared.ToolChatID(ctx),
+			TopicID:    toolshared.ToolTopicID(ctx),
+			SenderID:   toolshared.ToolSenderID(ctx),
+			MessageID:  toolshared.ToolMessageID(ctx),
 		},
 		Severity: severity,
 		Payload:  payload,

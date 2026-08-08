@@ -13,6 +13,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/cron"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type stubJobExecutor struct {
@@ -98,7 +99,7 @@ func newTestCronTool(t *testing.T) *CronTool {
 	return newTestCronToolWithConfig(t, config.DefaultConfig())
 }
 
-func parseCronJobResult(t *testing.T, result *ToolResult) cron.CronJob {
+func parseCronJobResult(t *testing.T, result *toolshared.ToolResult) cron.CronJob {
 	t.Helper()
 	text := result.ForLLM
 	if idx := strings.Index(text, "{"); idx >= 0 {
@@ -137,7 +138,7 @@ func addTestCronJob(t *testing.T, tool *CronTool, name, channel, chatID, command
 // TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted by default.
 func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
 		"message":         "check disk",
@@ -159,7 +160,7 @@ func TestCronTool_CommandAllowedFromRemoteChannelAllowlist(t *testing.T) {
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -177,7 +178,7 @@ func TestCronTool_CommandAllowedFromRemoteChatIDAllowlist(t *testing.T) {
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{" telegram:1234567890 "}
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "telegram", "1234567890")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "1234567890")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -195,7 +196,7 @@ func TestCronTool_CommandAllowedFromRemoteWildcardAllowlist(t *testing.T) {
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"*"}
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -213,7 +214,7 @@ func TestCronTool_CommandAllowedRemoteWildcardRequiresNonEmptyChannel(t *testing
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"*"}
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -234,7 +235,7 @@ func TestCronTool_CommandBlockedFromDifferentRemoteChatID(t *testing.T) {
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram:1234567890"}
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "telegram", "other-chat")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "other-chat")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
 		"message":         "check disk",
@@ -257,7 +258,7 @@ func TestCronTool_CommandAllowedRemoteRequiresConfirmWhenAllowCommandDisabled(t 
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -278,7 +279,7 @@ func TestCronTool_AllowCommandDoesNotBypassRemoteAllowlist(t *testing.T) {
 	cfg.Tools.Cron.AllowCommand = true
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -296,7 +297,7 @@ func TestCronTool_AllowCommandDoesNotBypassRemoteAllowlist(t *testing.T) {
 
 func TestCronTool_CommandDoesNotRequireConfirmByDefault(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -317,7 +318,7 @@ func TestCronTool_CommandRequiresConfirmWhenAllowCommandDisabled(t *testing.T) {
 	cfg.Tools.Cron.AllowCommand = false
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "check disk",
@@ -338,7 +339,7 @@ func TestCronTool_CommandAllowedWithConfirmWhenAllowCommandDisabled(t *testing.T
 	cfg.Tools.Cron.AllowCommand = false
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
 		"message":         "check disk",
@@ -363,7 +364,7 @@ func TestCronTool_CommandBlockedWhenExecDisabled(t *testing.T) {
 	cfg.Tools.Exec.Enabled = false
 
 	tool := newTestCronToolWithConfig(t, cfg)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
 		"message":         "check disk",
@@ -382,7 +383,7 @@ func TestCronTool_CommandBlockedWhenExecDisabled(t *testing.T) {
 
 func TestCronTool_AddJobStoresExplicitDeliverTextPayloadKind(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":       "add",
 		"message":      "Напоминание: позвонить в PG&E.",
@@ -405,7 +406,7 @@ func TestCronTool_AddJobStoresExplicitDeliverTextPayloadKind(t *testing.T) {
 
 func TestCronTool_UpdateJobCanChangePayloadKind(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	add := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "reminder text",
@@ -441,7 +442,7 @@ func TestCronTool_UpdateJobCanChangePayloadKind(t *testing.T) {
 // TestCronTool_CommandAllowedFromInternalChannel verifies command scheduling works from internal channels
 func TestCronTool_CommandAllowedFromInternalChannel(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
 		"message":         "check disk",
@@ -478,7 +479,7 @@ func TestCronTool_AddJobRequiresSessionContext(t *testing.T) {
 // TestCronTool_NonCommandJobAllowedFromRemoteChannel verifies regular reminders work from any channel
 func TestCronTool_NonCommandJobAllowedFromRemoteChannel(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
 		"message":    "time to stretch",
@@ -492,7 +493,7 @@ func TestCronTool_NonCommandJobAllowedFromRemoteChannel(t *testing.T) {
 
 func TestCronTool_GetReturnsFullJobPayload(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	everyMS := int64(60_000)
 	message := strings.Repeat("daily briefing details ", 8)
 	job, err := tool.cronService.AddJob(
@@ -530,7 +531,7 @@ func TestCronTool_GetReturnsFullJobPayload(t *testing.T) {
 
 func TestCronTool_UpdateSchedulePreservesPayload(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	original, err := tool.cronService.AddJob(
 		"AI daily",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
@@ -573,7 +574,7 @@ func TestCronTool_UpdateSchedulePreservesPayload(t *testing.T) {
 
 func TestCronTool_UpdateMessagePreservesScheduleAndNextRun(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	everyMS := int64(120_000)
 	original, err := tool.cronService.AddJob(
 		"reminder",
@@ -617,7 +618,7 @@ func TestCronTool_UpdateMessagePreservesScheduleAndNextRun(t *testing.T) {
 
 func TestCronTool_UpdateValidationErrors(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	job, err := tool.cronService.AddJob(
 		"job",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
@@ -672,7 +673,7 @@ func TestCronTool_UpdateValidationErrors(t *testing.T) {
 
 func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	everyMS := int64(60_000)
 
 	ownJob, err := tool.cronService.AddJob(
@@ -752,7 +753,7 @@ func TestCronTool_RemoteCannotAccessOtherChatJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
-	ctx := WithToolContext(context.Background(), "telegram", "chat-2")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-2")
 
 	getResult := tool.Execute(ctx, map[string]any{"action": "get", "job_id": job.ID})
 	if !getResult.IsError || !strings.Contains(getResult.ForLLM, "not accessible") {
@@ -789,7 +790,7 @@ func TestCronTool_RemoteCannotAccessCommandJob(t *testing.T) {
 	if err := tool.cronService.UpdateJob(job); err != nil {
 		t.Fatalf("UpdateJob() error: %v", err)
 	}
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 	getResult := tool.Execute(ctx, map[string]any{"action": "get", "job_id": job.ID})
 	if !getResult.IsError || !strings.Contains(getResult.ForLLM, "not accessible") {
@@ -814,7 +815,7 @@ func TestCronTool_AllowlistedRemoteCanAccessOwnCommandJob(t *testing.T) {
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram:chat-1"}
 	tool := newTestCronToolWithConfig(t, cfg)
 	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	if listResult.IsError || !strings.Contains(listResult.ForLLM, job.ID) {
@@ -849,7 +850,7 @@ func TestCronTool_AllowlistedRemoteCannotAccessOtherChatCommandJob(t *testing.T)
 	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
 	tool := newTestCronToolWithConfig(t, cfg)
 	job := addTestCronJob(t, tool, "command", "telegram", "chat-2", "df -h")
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	if listResult.IsError || strings.Contains(listResult.ForLLM, job.ID) {
@@ -871,7 +872,7 @@ func TestCronTool_AllowlistedRemoteCannotAccessOtherChatCommandJob(t *testing.T)
 func TestCronTool_NonAllowlistedRemoteCannotAccessOwnCommandJob(t *testing.T) {
 	tool := newTestCronTool(t)
 	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	if listResult.IsError || strings.Contains(listResult.ForLLM, job.ID) {
@@ -896,7 +897,7 @@ func TestCronTool_WildcardRemoteCanAccessOwnCommandJob(t *testing.T) {
 	tool := newTestCronToolWithConfig(t, cfg)
 	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
 	other := addTestCronJob(t, tool, "other", "telegram", "chat-2", "uptime")
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	if listResult.IsError || !strings.Contains(listResult.ForLLM, job.ID) {
@@ -915,7 +916,7 @@ func TestCronTool_WildcardRemoteCanAccessOwnCommandJob(t *testing.T) {
 func TestCronTool_InternalChannelCanAccessAllCommandJobs(t *testing.T) {
 	tool := newTestCronTool(t)
 	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	if listResult.IsError || !strings.Contains(listResult.ForLLM, job.ID) {
@@ -947,7 +948,7 @@ func TestCronTool_AllowlistedRemoteCanManageOwnCommandJob(t *testing.T) {
 			if action == "enable" {
 				tool.cronService.EnableJob(job.ID, false)
 			}
-			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+			ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
 			if result.IsError {
@@ -980,7 +981,7 @@ func TestCronTool_RemoteCannotManageOtherChatJob(t *testing.T) {
 			cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
 			tool := newTestCronToolWithConfig(t, cfg)
 			job := addTestCronJob(t, tool, "command", "telegram", "chat-2", "df -h")
-			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+			ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
 			if !result.IsError || !strings.Contains(result.ForLLM, "not accessible") {
@@ -1003,7 +1004,7 @@ func TestCronTool_RemoteCannotManageCommandJobUnlessAllowlisted(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			tool := newTestCronTool(t)
 			job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
-			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+			ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
 			if !result.IsError || !strings.Contains(result.ForLLM, "not accessible") {
@@ -1029,7 +1030,7 @@ func TestCronTool_InternalChannelCanManageAllJobs(t *testing.T) {
 			if action == "enable" {
 				tool.cronService.EnableJob(job.ID, false)
 			}
-			ctx := WithToolContext(context.Background(), "cli", "direct")
+			ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 
 			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
 			if result.IsError {
@@ -1063,7 +1064,7 @@ func TestCronTool_RemoteCanManageOwnNonCommandJob(t *testing.T) {
 			if action == "enable" {
 				tool.cronService.EnableJob(job.ID, false)
 			}
-			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+			ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
 			if result.IsError {
@@ -1084,7 +1085,7 @@ func TestCronTool_WildcardRemoteCanManageOwnCommandJob(t *testing.T) {
 				tool.cronService.EnableJob(job.ID, false)
 			}
 			other := addTestCronJob(t, tool, "other", "telegram", "chat-2", "uptime")
-			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+			ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 
 			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
 			if result.IsError {
@@ -1104,7 +1105,7 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 		cfg := config.DefaultConfig()
 		cfg.Tools.Exec.Enabled = false
 		tool := newTestCronToolWithConfig(t, cfg)
-		ctx := WithToolContext(context.Background(), "cli", "direct")
+		ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 		job, err := tool.cronService.AddJob(
 			"job",
 			cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
@@ -1133,7 +1134,7 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 		cfg := config.DefaultConfig()
 		cfg.Tools.Cron.AllowCommand = false
 		tool := newTestCronToolWithConfig(t, cfg)
-		ctx := WithToolContext(context.Background(), "cli", "direct")
+		ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 		job, err := tool.cronService.AddJob(
 			"job",
 			cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
@@ -1190,7 +1191,7 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 
 func TestCronTool_InternalCanAccessCommandJobFromAnyChannel(t *testing.T) {
 	tool := newTestCronTool(t)
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	job, err := tool.cronService.AddJob(
 		"command",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},

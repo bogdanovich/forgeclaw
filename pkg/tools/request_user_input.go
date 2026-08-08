@@ -8,6 +8,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -128,14 +129,14 @@ func (t *RequestUserInputTool) Parameters() map[string]any {
 	}
 }
 
-func (t *RequestUserInputTool) Execute(_ context.Context, args map[string]any) *ToolResult {
+func (t *RequestUserInputTool) Execute(_ context.Context, args map[string]any) *toolshared.ToolResult {
 	questions, err := parseInteractionQuestions(args["questions"])
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 	timeout, err := t.parseTimeout(args["timeout_seconds"])
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 	request := interactions.SuspensionRequest{
 		Kind:      interactions.KindQuestion,
@@ -143,17 +144,17 @@ func (t *RequestUserInputTool) Execute(_ context.Context, args map[string]any) *
 		Timeout:   timeout,
 	}
 	if err := interactions.ValidateSuspensionRequest(request); err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{Silent: true, Suspension: &request}
+	return &toolshared.ToolResult{Silent: true, Suspension: &request}
 }
 
 func (*RequestUserInputTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsMutating
 }
 
-func (*RequestUserInputTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*RequestUserInputTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
 func (t *RequestUserInputTool) parseTimeout(raw any) (time.Duration, error) {

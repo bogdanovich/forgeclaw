@@ -19,6 +19,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const nodeFileTransferTTL = nodes.MaxExecutionPlanTTL
@@ -133,9 +134,9 @@ type NodeDownloadTool struct {
 	mediaStore media.MediaStore
 }
 
-func (tool *NodeUploadTool) approvalBypassOwner() Tool { return tool }
+func (tool *NodeUploadTool) approvalBypassOwner() toolshared.Tool { return tool }
 
-func (tool *NodeDownloadTool) approvalBypassOwner() Tool { return tool }
+func (tool *NodeDownloadTool) approvalBypassOwner() toolshared.Tool { return tool }
 
 type nodeFileTransferToolRuntime struct {
 	access          *nodeTargetAccess
@@ -163,7 +164,7 @@ func (denial *nodeFileSafeDenialError) Unwrap() error {
 	return denial.cause
 }
 
-func (denial *nodeFileSafeDenialError) SafeApprovalDenialResult() *ToolResult {
+func (denial *nodeFileSafeDenialError) SafeApprovalDenialResult() *toolshared.ToolResult {
 	return nodeFileErrorResult(map[string]any{
 		"state": "denied",
 		"code":  denial.code,
@@ -583,7 +584,7 @@ func nodeFileProfileBlastRadius(profile nodes.FileProfileDescriptor) string {
 func (tool *NodeFileInfoTool) Execute(
 	ctx context.Context,
 	args map[string]any,
-) *ToolResult {
+) *toolshared.ToolResult {
 	prepared, err := tool.runtime.prepare(ctx, "file.info.v1", args, nil)
 	if err != nil {
 		return nodeFileDenied(err)
@@ -598,7 +599,7 @@ func (tool *NodeFileInfoTool) Execute(
 func (tool *NodeUploadTool) Execute(
 	ctx context.Context,
 	args map[string]any,
-) *ToolResult {
+) *toolshared.ToolResult {
 	prepared, err := tool.runtime.prepare(ctx, "file.upload.v1", args, tool.mediaStore)
 	if err != nil {
 		return nodeFileDenied(err)
@@ -613,7 +614,7 @@ func (tool *NodeUploadTool) Execute(
 func (tool *NodeDownloadTool) Execute(
 	ctx context.Context,
 	args map[string]any,
-) *ToolResult {
+) *toolshared.ToolResult {
 	prepared, err := tool.runtime.prepare(ctx, "file.download.v1", args, tool.mediaStore)
 	if err != nil {
 		return nodeFileDenied(err)
@@ -626,21 +627,21 @@ func (tool *NodeDownloadTool) Execute(
 }
 
 func nodeFileApprovalGranted(ctx context.Context) bool {
-	return ToolApprovalContinuation(ctx) || ToolApprovalBypass(ctx)
+	return toolshared.ToolApprovalContinuation(ctx) || toolshared.ToolApprovalBypass(ctx)
 }
 
 func approvalRequired(value string) bool {
 	return value == "required"
 }
 
-func nodeFileApprovalRequired() *ToolResult {
+func nodeFileApprovalRequired() *toolshared.ToolResult {
 	return nodeFileErrorResult(map[string]any{
 		"state": "denied",
 		"code":  "APPROVAL_REQUIRED",
 	})
 }
 
-func nodeFileDenied(err error) *ToolResult {
+func nodeFileDenied(err error) *toolshared.ToolResult {
 	code := "FILE_TRANSFER_DENIED"
 	if errors.Is(err, errDiscoveryStale) ||
 		errors.Is(err, nodes.ErrGatewayInvocationConflict) {
@@ -652,7 +653,7 @@ func nodeFileDenied(err error) *ToolResult {
 	})
 }
 
-func nodeFileErrorResult(value any) *ToolResult {
+func nodeFileErrorResult(value any) *toolshared.ToolResult {
 	result := nodeJSONResult(value)
 	result.IsError = true
 	return result
@@ -712,7 +713,7 @@ func (runtime *nodeFileTransferToolRuntime) prepare(
 			record: existing, profile: profile, owner: owner,
 		}, nil
 	}
-	if ToolApprovalContinuation(ctx) {
+	if toolshared.ToolApprovalContinuation(ctx) {
 		return preparedNodeFileTransfer{}, errDiscoveryStale
 	}
 
@@ -779,7 +780,7 @@ func (runtime *nodeFileTransferToolRuntime) prepare(
 		true,
 		func(current NodeDiscoveryRecord) error {
 			return runtime.validateCurrentAuthority(
-				ToolAgentID(ctx),
+				toolshared.ToolAgentID(ctx),
 				resolved.name,
 				command,
 				revision,
@@ -822,7 +823,7 @@ func (runtime *nodeFileTransferToolRuntime) resolveAuthority(
 			nodes.FileProfileDescriptor{}, "", errDiscoveryStale
 	}
 	resolved, err := (&nodeInvocationToolRuntime{access: runtime.access}).resolveTarget(
-		ToolAgentID(ctx),
+		toolshared.ToolAgentID(ctx),
 		target,
 		true,
 	)
@@ -850,7 +851,7 @@ func (runtime *nodeFileTransferToolRuntime) resolveAuthority(
 			nodes.FileProfileDescriptor{}, "", errDiscoveryStale
 	}
 	revision, err := runtime.access.discoveryRevision(
-		ToolAgentID(ctx),
+		toolshared.ToolAgentID(ctx),
 		resolved.name,
 		command,
 		resolved.snapshot,
@@ -992,9 +993,9 @@ func (runtime *nodeFileTransferToolRuntime) preparePlanInput(
 		input.Filename = safeNodeDownloadFilename(input.Source)
 		input.ContentType = ""
 		if *input.Deliver {
-			input.Channel = ToolChannel(ctx)
-			input.ChatID = ToolChatID(ctx)
-			input.TopicID = ToolTopicID(ctx)
+			input.Channel = toolshared.ToolChannel(ctx)
+			input.ChatID = toolshared.ToolChatID(ctx)
+			input.TopicID = toolshared.ToolTopicID(ctx)
 			if input.Channel == "" || input.ChatID == "" {
 				return nodeFileTransferPlanInput{}, errors.New("delivery route is unavailable")
 			}
@@ -1009,7 +1010,7 @@ func (runtime *nodeFileTransferToolRuntime) execute(
 	ctx context.Context,
 	prepared preparedNodeFileTransfer,
 	store media.MediaStore,
-) *ToolResult {
+) *toolshared.ToolResult {
 	record := prepared.record
 	if record.State == nodes.GatewayInvocationDispatched {
 		result, err := runtime.source.QueryFileTransfer(
@@ -1137,7 +1138,7 @@ func (runtime *nodeFileTransferToolRuntime) result(
 	prepared preparedNodeFileTransfer,
 	result NodeFileTransferResult,
 	store media.MediaStore,
-) *ToolResult {
+) *toolshared.ToolResult {
 	result.TransferID = prepared.record.Plan.InvocationID
 	result.PolicyRevision = prepared.record.Plan.PolicyRevision
 	var retainedInput nodeFileTransferPlanInput
@@ -1183,10 +1184,10 @@ func (runtime *nodeFileTransferToolRuntime) result(
 	}
 	result.DeliveryState = "claimed"
 	data, _ := json.Marshal(result)
-	return MediaResult(string(data), []string{mediaRef}).WithResponseHandled()
+	return toolshared.MediaResult(string(data), []string{mediaRef}).WithResponseHandled()
 }
 
-func nodeFileUnknown(transferID string) *ToolResult {
+func nodeFileUnknown(transferID string) *toolshared.ToolResult {
 	return nodeFileErrorResult(NodeFileTransferResult{
 		TransferID: transferID,
 		State:      "unknown",
@@ -1267,15 +1268,15 @@ func nodeFileArtifactOwner(
 	principal nodes.GatewayInvocationPrincipal,
 	toolCallID string,
 ) (nodes.TransferArtifactOwner, error) {
-	routeSession := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	routeSession := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if routeSession == "" {
-		routeSession = strings.TrimSpace(ToolSessionKey(ctx))
+		routeSession = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
 	routeID := stableNodeInvocationID(
 		"file_route",
-		ToolChannel(ctx),
-		ToolChatID(ctx),
-		ToolTopicID(ctx),
+		toolshared.ToolChannel(ctx),
+		toolshared.ToolChatID(ctx),
+		toolshared.ToolTopicID(ctx),
 		routeSession,
 	)
 	owner := nodes.TransferArtifactOwner{
@@ -1303,25 +1304,25 @@ func RoutedNodeFileArtifactOwner(
 }
 
 func nodeFileMediaOwner(ctx context.Context) (media.MediaOwner, error) {
-	actorID := strings.TrimSpace(ToolActorID(ctx))
+	actorID := strings.TrimSpace(toolshared.ToolActorID(ctx))
 	if actorID == "" {
-		actorID = strings.TrimSpace(ToolSenderID(ctx))
+		actorID = strings.TrimSpace(toolshared.ToolSenderID(ctx))
 	}
 	if actorID == "" {
-		actorID = strings.TrimSpace(ToolAgentID(ctx))
+		actorID = strings.TrimSpace(toolshared.ToolAgentID(ctx))
 	}
-	routeSession := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	routeSession := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if routeSession == "" {
-		routeSession = strings.TrimSpace(ToolSessionKey(ctx))
+		routeSession = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
 	return media.NewMediaOwner(
-		ToolWorkspace(ctx),
-		ToolAgentID(ctx),
+		toolshared.ToolWorkspace(ctx),
+		toolshared.ToolAgentID(ctx),
 		actorID,
 		routeSession,
-		ToolChannel(ctx),
-		ToolChatID(ctx),
-		ToolTopicID(ctx),
+		toolshared.ToolChannel(ctx),
+		toolshared.ToolChatID(ctx),
+		toolshared.ToolTopicID(ctx),
 	)
 }
 
@@ -1432,14 +1433,14 @@ func (*NodeDownloadTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsMutating
 }
 
-func (*NodeFileInfoTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
+func (*NodeFileInfoTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*NodeUploadTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*NodeUploadTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
-func (*NodeDownloadTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*NodeDownloadTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }

@@ -1,54 +1,69 @@
 package tools
 
-import "strings"
+import (
+	"strings"
 
-func (*RegexSearchTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
-}
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
+)
 
-func (*BM25SearchTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
-}
-
-func (*TaskStatusTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
+func (*RegexSearchTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*SpawnStatusTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
-}
-func (*GetGoalTool) ToolSteeringSafety(map[string]any) SteeringSafety { return SteeringSafetyReadOnly }
-
-func (*CreateGoalTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*BM25SearchTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*UpdateGoalTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*TaskStatusTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*UpdatePlanTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
-}
-func (*CronTool) ToolSteeringSafety(map[string]any) SteeringSafety { return SteeringSafetyCancellable }
-func (*DelegateTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
-}
-func (*SpawnTool) ToolSteeringSafety(map[string]any) SteeringSafety { return SteeringSafetyCancellable }
-func (*SubagentTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*SpawnStatusTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*ImageGenerateTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*GetGoalTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*ExecTool) ToolSteeringSafety(args map[string]any) SteeringSafety {
+func (*CreateGoalTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*UpdateGoalTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*UpdatePlanTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*CronTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*DelegateTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*SpawnTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*SubagentTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*ImageGenerateTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
+}
+
+func (*ExecTool) ToolSteeringSafety(args map[string]any) toolshared.SteeringSafety {
 	action, _ := args["action"].(string)
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case "list", "poll", "read":
-		return SteeringSafetyReadOnly
+		return toolshared.SteeringSafetyReadOnly
 	default:
-		return SteeringSafetyCancellable
+		return toolshared.SteeringSafetyCancellable
 	}
 }

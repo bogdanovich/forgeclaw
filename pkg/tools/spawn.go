@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type SpawnTool struct {
@@ -16,7 +18,7 @@ type SpawnTool struct {
 }
 
 // Compile-time check: SpawnTool implements AsyncExecutor.
-var _ AsyncExecutor = (*SpawnTool)(nil)
+var _ toolshared.AsyncExecutor = (*SpawnTool)(nil)
 
 func NewSpawnTool(manager *SubagentManager) *SpawnTool {
 	if manager == nil {
@@ -42,7 +44,7 @@ func (t *SpawnTool) SetSpawner(spawner SubTurnSpawner) {
 			maxTokens int,
 			temperature float64,
 			hasMaxTokens, hasTemperature bool,
-		) (*ToolResult, error) {
+		) (*toolshared.ToolResult, error) {
 			return spawner.SpawnSubTurn(ctx, SubTurnConfig{
 				TaskID:        taskID,
 				TargetAgentID: strings.TrimSpace(agentID),
@@ -84,9 +86,9 @@ func (t *SpawnTool) Parameters() map[string]any {
 			"type":        "string",
 			"description": "Optional async result routing policy: user_only, parent_only, or user_and_parent. Defaults to user_only.",
 			"enum": []string{
-				string(AsyncDeliveryUserOnly),
-				string(AsyncDeliveryParentOnly),
-				string(AsyncDeliveryUserAndParent),
+				string(toolshared.AsyncDeliveryUserOnly),
+				string(toolshared.AsyncDeliveryParentOnly),
+				string(toolshared.AsyncDeliveryUserAndParent),
 			},
 		},
 	}
@@ -101,7 +103,7 @@ func (t *SpawnTool) SetAllowlistChecker(check func(targetAgentID string) bool) {
 	t.allowlistCheck = check
 }
 
-func (t *SpawnTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *SpawnTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	return t.execute(ctx, args, nil)
 }
 
@@ -110,19 +112,19 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]any) *ToolResul
 func (t *SpawnTool) ExecuteAsync(
 	ctx context.Context,
 	args map[string]any,
-	cb AsyncCallback,
-) *ToolResult {
+	cb toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	return t.execute(ctx, args, cb)
 }
 
 func (t *SpawnTool) execute(
 	ctx context.Context,
 	args map[string]any,
-	cb AsyncCallback,
-) *ToolResult {
+	cb toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	task, ok := args["task"].(string)
 	if !ok || strings.TrimSpace(task) == "" {
-		return ErrorResult("task is required and must be a non-empty string")
+		return toolshared.ErrorResult("task is required and must be a non-empty string")
 	}
 
 	label, ok := args["label"].(string)
@@ -136,13 +138,13 @@ func (t *SpawnTool) execute(
 	targetAgentID := strings.TrimSpace(agentID)
 	deliveryMode, err := parseSpawnDeliveryMode(args["delivery_mode"])
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 
 	// Check allowlist if targeting a specific agent
 	if targetAgentID != "" && t.allowlistCheck != nil {
 		if !t.allowlistCheck(targetAgentID) {
-			return ErrorResult(fmt.Sprintf("not allowed to spawn agent '%s'", targetAgentID))
+			return toolshared.ErrorResult(fmt.Sprintf("not allowed to spawn agent '%s'", targetAgentID))
 		}
 	}
 
@@ -151,7 +153,7 @@ func (t *SpawnTool) execute(
 	if t.manager != nil {
 		wrappedCallback := cb
 		if cb != nil {
-			wrappedCallback = func(cbCtx context.Context, res *ToolResult) {
+			wrappedCallback = func(cbCtx context.Context, res *toolshared.ToolResult) {
 				if res != nil {
 					res.WithAsyncDelivery(deliveryMode)
 				}
@@ -163,34 +165,34 @@ func (t *SpawnTool) execute(
 			task,
 			label,
 			strings.TrimSpace(agentID),
-			ToolChannel(ctx),
-			ToolChatID(ctx),
+			toolshared.ToolChannel(ctx),
+			toolshared.ToolChatID(ctx),
 			deliveryMode,
 			wrappedCallback,
 		)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Spawn failed: %v", err)).WithError(err)
+			return toolshared.ErrorResult(fmt.Sprintf("Spawn failed: %v", err)).WithError(err)
 		}
-		return AsyncResult(ack)
+		return toolshared.AsyncResult(ack)
 	}
 
 	// Fallback: manager not configured
-	return ErrorResult("Subagent manager not configured")
+	return toolshared.ErrorResult("Subagent manager not configured")
 }
 
-func parseSpawnDeliveryMode(raw any) (AsyncDeliveryMode, error) {
+func parseSpawnDeliveryMode(raw any) (toolshared.AsyncDeliveryMode, error) {
 	if raw == nil {
-		return AsyncDeliveryUserOnly, nil
+		return toolshared.AsyncDeliveryUserOnly, nil
 	}
 	value, ok := raw.(string)
 	if !ok {
 		return "", fmt.Errorf("delivery_mode must be a string")
 	}
-	switch AsyncDeliveryMode(strings.TrimSpace(value)) {
-	case AsyncDeliveryUserOnly, AsyncDeliveryParentOnly, AsyncDeliveryUserAndParent:
-		return AsyncDeliveryMode(strings.TrimSpace(value)), nil
+	switch toolshared.AsyncDeliveryMode(strings.TrimSpace(value)) {
+	case toolshared.AsyncDeliveryUserOnly, toolshared.AsyncDeliveryParentOnly, toolshared.AsyncDeliveryUserAndParent:
+		return toolshared.AsyncDeliveryMode(strings.TrimSpace(value)), nil
 	case "":
-		return AsyncDeliveryUserOnly, nil
+		return toolshared.AsyncDeliveryUserOnly, nil
 	default:
 		return "", fmt.Errorf("delivery_mode must be one of: user_only, parent_only, user_and_parent")
 	}

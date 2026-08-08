@@ -15,7 +15,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {
@@ -696,7 +696,7 @@ type asyncFollowUpTool struct {
 	followUpText  string
 	forUserText   string
 	completionSig chan struct{}
-	deliveryMode  tools.AsyncDeliveryMode
+	deliveryMode  toolshared.AsyncDeliveryMode
 	taskID        string
 }
 
@@ -716,17 +716,17 @@ func (t *asyncFollowUpTool) Parameters() map[string]any {
 	}
 }
 
-func (t *asyncFollowUpTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
-	return tools.AsyncResult("async follow-up scheduled")
+func (t *asyncFollowUpTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	return toolshared.AsyncResult("async follow-up scheduled")
 }
 
 func (t *asyncFollowUpTool) ExecuteAsync(
 	ctx context.Context,
 	args map[string]any,
-	cb tools.AsyncCallback,
-) *tools.ToolResult {
+	cb toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	go func() {
-		res := &tools.ToolResult{ForLLM: t.followUpText, ForUser: t.forUserText}
+		res := &toolshared.ToolResult{ForLLM: t.followUpText, ForUser: t.forUserText}
 		if t.deliveryMode != "" {
 			res.WithAsyncDelivery(t.deliveryMode)
 		}
@@ -738,7 +738,7 @@ func (t *asyncFollowUpTool) ExecuteAsync(
 			close(t.completionSig)
 		}
 	}()
-	return tools.AsyncResult("async follow-up scheduled")
+	return toolshared.AsyncResult("async follow-up scheduled")
 }
 
 func waitForOutboundMessage(
@@ -868,8 +868,8 @@ func TestAgentLoop_TaskRegistryReconcilesPendingTerminalDelivery(t *testing.T) {
 }
 
 var (
-	_ tools.Tool          = (*mockCustomTool)(nil)
-	_ tools.AsyncExecutor = (*asyncFollowUpTool)(nil)
+	_ toolshared.Tool          = (*mockCustomTool)(nil)
+	_ toolshared.AsyncExecutor = (*asyncFollowUpTool)(nil)
 )
 
 func TestAgentLoop_AsyncToolUserOnly_DoesNotEmitFollowUpQueued(t *testing.T) {
@@ -909,7 +909,7 @@ func TestAgentLoop_AsyncToolUserOnly_DoesNotEmitFollowUpQueued(t *testing.T) {
 		name:          "async_followup_user_only",
 		followUpText:  "background result",
 		completionSig: doneCh,
-		deliveryMode:  tools.AsyncDeliveryUserOnly,
+		deliveryMode:  toolshared.AsyncDeliveryUserOnly,
 	})
 	defaultAgent := al.registry.GetDefaultAgent()
 	if defaultAgent == nil {
@@ -990,7 +990,7 @@ func TestAgentLoop_EmitsAsyncCompletionEvent(t *testing.T) {
 		name:          "async_completion_event",
 		followUpText:  "background result",
 		completionSig: doneCh,
-		deliveryMode:  tools.AsyncDeliveryUserOnly,
+		deliveryMode:  toolshared.AsyncDeliveryUserOnly,
 		taskID:        "subagent-42",
 	})
 	defaultAgent := al.registry.GetDefaultAgent()
@@ -1038,8 +1038,8 @@ func TestAgentLoop_EmitsAsyncCompletionEvent(t *testing.T) {
 	if payload.SourceTool != "async_completion_event" {
 		t.Fatalf("SourceTool = %q, want async_completion_event", payload.SourceTool)
 	}
-	if payload.DeliveryMode != string(tools.AsyncDeliveryUserOnly) {
-		t.Fatalf("DeliveryMode = %q, want %q", payload.DeliveryMode, tools.AsyncDeliveryUserOnly)
+	if payload.DeliveryMode != string(toolshared.AsyncDeliveryUserOnly) {
+		t.Fatalf("DeliveryMode = %q, want %q", payload.DeliveryMode, toolshared.AsyncDeliveryUserOnly)
 	}
 	if payload.ContentLen != len("background result") {
 		t.Fatalf("ContentLen = %d, want %d", payload.ContentLen, len("background result"))
@@ -1061,7 +1061,7 @@ func TestAgentLoop_EmitsAsyncCompletionEvent(t *testing.T) {
 func TestAsyncToolResultDeliveryRouting(t *testing.T) {
 	tests := []struct {
 		name              string
-		result            *tools.ToolResult
+		result            *toolshared.ToolResult
 		wantPublishToUser bool
 		wantQueueParent   bool
 	}{
@@ -1073,7 +1073,7 @@ func TestAsyncToolResultDeliveryRouting(t *testing.T) {
 		},
 		{
 			name: "default_routes_to_user_and_parent",
-			result: &tools.ToolResult{
+			result: &toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
 			},
@@ -1082,46 +1082,46 @@ func TestAsyncToolResultDeliveryRouting(t *testing.T) {
 		},
 		{
 			name: "user_only_routes_to_user_without_parent",
-			result: (&tools.ToolResult{
+			result: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly),
 			wantPublishToUser: true,
 			wantQueueParent:   false,
 		},
 		{
 			name: "parent_only_routes_to_parent_without_user",
-			result: (&tools.ToolResult{
+			result: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
-			}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly),
 			wantPublishToUser: false,
 			wantQueueParent:   true,
 		},
 		{
 			name: "user_and_parent_routes_to_both",
-			result: (&tools.ToolResult{
+			result: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserAndParent),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserAndParent),
 			wantPublishToUser: true,
 			wantQueueParent:   true,
 		},
 		{
 			name: "silent_user_only_still_routes_explicit_user_payload",
-			result: (&tools.ToolResult{
+			result: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
 				Silent:  true,
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly),
 			wantPublishToUser: true,
 			wantQueueParent:   false,
 		},
 		{
 			name: "empty_parent_content_does_not_queue",
-			result: (&tools.ToolResult{
+			result: (&toolshared.ToolResult{
 				ForUser: "user text",
-			}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly),
 			wantPublishToUser: false,
 			wantQueueParent:   false,
 		},
@@ -1169,7 +1169,7 @@ func TestAgentLoop_AsyncUserOnlyAckSuppressesDefaultFinalResponse(t *testing.T) 
 		name:          "spawn",
 		followUpText:  "background result",
 		completionSig: doneCh,
-		deliveryMode:  tools.AsyncDeliveryUserOnly,
+		deliveryMode:  toolshared.AsyncDeliveryUserOnly,
 	})
 
 	defaultAgent := al.registry.GetDefaultAgent()
@@ -1243,7 +1243,7 @@ func TestAgentLoop_AsyncParentOnlyQueuesFollowUpWithoutUserDelivery(t *testing.T
 		followUpText:  "parent-only completion",
 		forUserText:   "do not send this directly",
 		completionSig: doneCh,
-		deliveryMode:  tools.AsyncDeliveryParentOnly,
+		deliveryMode:  toolshared.AsyncDeliveryParentOnly,
 		taskID:        parentTaskID,
 	})
 
@@ -1308,7 +1308,7 @@ func TestAgentLoop_AsyncUserAndParentPublishesUserAndQueuesFollowUp(t *testing.T
 				Name: "spawn",
 				Arguments: map[string]any{
 					"task":          "download media",
-					"delivery_mode": string(tools.AsyncDeliveryUserAndParent),
+					"delivery_mode": string(toolshared.AsyncDeliveryUserAndParent),
 				},
 			},
 		},
@@ -1324,7 +1324,7 @@ func TestAgentLoop_AsyncUserAndParentPublishesUserAndQueuesFollowUp(t *testing.T
 		followUpText:  "parent completion",
 		forUserText:   "user completion",
 		completionSig: doneCh,
-		deliveryMode:  tools.AsyncDeliveryUserAndParent,
+		deliveryMode:  toolshared.AsyncDeliveryUserAndParent,
 		taskID:        userAndParentTaskID,
 	})
 

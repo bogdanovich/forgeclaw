@@ -17,6 +17,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // BrowserToolSource is the narrow gateway-owned boundary used by first-party
@@ -187,8 +188,8 @@ type browserLimitsView struct {
 	RetentionSecs   int `json:"retention_seconds"`
 }
 
-func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *ToolResult {
-	if !tool.runtime.enabledForAgent(ToolAgentID(ctx)) {
+func (tool *BrowserTargetsTool) Execute(ctx context.Context, _ map[string]any) *toolshared.ToolResult {
+	if !tool.runtime.enabledForAgent(toolshared.ToolAgentID(ctx)) {
 		return browserErrorResult(
 			"not_granted",
 			"Browser access is not granted to this agent.",
@@ -367,8 +368,8 @@ func browserSessionResult(session browser.Session) browserSessionView {
 	}
 }
 
-func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	if !tool.runtime.enabledForAgent(ToolAgentID(ctx)) {
+func (tool *BrowserSessionTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	if !tool.runtime.enabledForAgent(toolshared.ToolAgentID(ctx)) {
 		return browserErrorResult(
 			"not_granted",
 			"Browser access is not granted to this agent.",
@@ -514,8 +515,8 @@ func (runtime *browserToolRuntime) observationResult(observation browser.Observa
 	}
 }
 
-func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	if !tool.runtime.enabledForAgent(ToolAgentID(ctx)) {
+func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	if !tool.runtime.enabledForAgent(toolshared.ToolAgentID(ctx)) {
 		return browserErrorResult(
 			"not_granted",
 			"Browser access is not granted to this agent.",
@@ -540,7 +541,7 @@ func (tool *BrowserObserveTool) Execute(ctx context.Context, args map[string]any
 				"omit_screenshot",
 			)
 		}
-		if !ToolRecoverableOutbound(ctx) {
+		if !toolshared.ToolRecoverableOutbound(ctx) {
 			return browserErrorResult(
 				"delivery_unavailable",
 				"Browser screenshots require a durable outbound delivery transaction.",
@@ -604,9 +605,9 @@ func (tool *BrowserObserveTool) screenshotResult(
 	owner browser.Owner,
 	requestID string,
 	artifact browser.ScreenshotArtifact,
-) *ToolResult {
+) *toolshared.ToolResult {
 	result := tool.runtime.result(view)
-	if result.IsError || !ToolRecoverableOutbound(ctx) ||
+	if result.IsError || !toolshared.ToolRecoverableOutbound(ctx) ||
 		(artifact.DeliveryState != browser.ScreenshotDeliveryPending &&
 			artifact.DeliveryState != browser.ScreenshotDeliveryAlreadyClaimed) ||
 		artifact.MediaRef == "" {
@@ -625,7 +626,7 @@ func (tool *BrowserObserveTool) screenshotResult(
 		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: &deliveryRecovery,
 	}
 	recovery := artifact.Recovery
-	return result.WithOutboundDelivery(OutboundDelivery{
+	return result.WithOutboundDelivery(toolshared.OutboundDelivery{
 		Media: []bus.MediaPart{{
 			Type: "image", Ref: artifact.MediaRef, Filename: artifact.Filename,
 			ContentType: artifact.ContentType,
@@ -696,7 +697,7 @@ func (tool *BrowserActTool) Parameters() map[string]any {
 func (*BrowserActTool) ToolLoopSemantics() loopguard.Semantics { return loopguard.SemanticsMutating }
 
 func (tool *BrowserActTool) ApprovalArguments(ctx context.Context, args map[string]any) (map[string]any, error) {
-	if !tool.runtime.enabledForAgent(ToolAgentID(ctx)) {
+	if !tool.runtime.enabledForAgent(toolshared.ToolAgentID(ctx)) {
 		return nil, &browserSafeDenialError{cause: browser.ErrDenied}
 	}
 	preparation, err := tool.prepare(ctx, args)
@@ -721,8 +722,8 @@ type browserActionResult struct {
 	Artifact     *browser.DownloadArtifact `json:"artifact,omitempty"`
 }
 
-func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	if !tool.runtime.enabledForAgent(ToolAgentID(ctx)) {
+func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	if !tool.runtime.enabledForAgent(toolshared.ToolAgentID(ctx)) {
 		return browserErrorResult(
 			"not_granted",
 			"Browser access is not granted to this agent.",
@@ -734,8 +735,8 @@ func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *T
 		return browserToolError(err)
 	}
 	if preparation.RequiresApproval &&
-		!ToolApprovalContinuation(ctx) && !ToolApprovalBypass(ctx) {
-		return &ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
+		!toolshared.ToolApprovalContinuation(ctx) && !toolshared.ToolApprovalBypass(ctx) {
+		return &toolshared.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
 			Kind:          interactions.KindApproval,
 			PromptSummary: browserApprovalSummary(preparation),
 			Timeout:       time.Duration(tool.runtime.config.Limits.Effective().PreparedSeconds) * time.Second,
@@ -793,7 +794,7 @@ func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *T
 		Owner: owner, RequestID: preparation.Action.RequestID, SessionID: artifact.SessionID,
 		Ref: artifact.Ref, MediaRef: artifact.MediaRef, Recovery: recovery,
 	}
-	return toolResult.WithOutboundDelivery(OutboundDelivery{
+	return toolResult.WithOutboundDelivery(toolshared.OutboundDelivery{
 		Media: []bus.MediaPart{{
 			Type: "file", Ref: artifact.MediaRef, Filename: artifact.Filename, ContentType: artifact.ContentType,
 		}},
@@ -807,7 +808,7 @@ func (tool *BrowserActTool) Execute(ctx context.Context, args map[string]any) *T
 	}).WithImmediateDelivery()
 }
 
-func browserPostActionStateError(invocation browser.Invocation, quarantined bool) *ToolResult {
+func browserPostActionStateError(invocation browser.Invocation, quarantined bool) *toolshared.ToolResult {
 	action, reason := "do_not_retry_check_session", "state_persistence_failed"
 	if quarantined {
 		action, reason = "do_not_retry_reopen_session", "session_quarantined"
@@ -822,7 +823,7 @@ func browserPostActionStateError(invocation browser.Invocation, quarantined bool
 		"state":         invocation.State,
 		"reason":        reason,
 	})
-	return ErrorResult(string(encoded))
+	return toolshared.ErrorResult(string(encoded))
 }
 
 func (tool *BrowserActTool) prepare(ctx context.Context, args map[string]any) (browser.Preparation, error) {
@@ -838,7 +839,7 @@ func (tool *BrowserActTool) prepare(ctx context.Context, args map[string]any) (b
 	if err != nil {
 		return browser.Preparation{}, err
 	}
-	if action.Kind == browser.ActionDownload && action.Deliver && !ToolRecoverableOutbound(ctx) {
+	if action.Kind == browser.ActionDownload && action.Deliver && !toolshared.ToolRecoverableOutbound(ctx) {
 		return browser.Preparation{}, browser.ErrDenied
 	}
 	if action.Kind == browser.ActionUpload && !tool.runtime.source.ArtifactTransferAvailable() {
@@ -928,16 +929,16 @@ func browserApprovalSummary(preparation browser.Preparation) string {
 }
 
 func browserOwnerFromContext(ctx context.Context) (browser.Owner, error) {
-	actorID := strings.TrimSpace(ToolActorID(ctx))
+	actorID := strings.TrimSpace(toolshared.ToolActorID(ctx))
 	if actorID == "" {
-		actorID = strings.TrimSpace(ToolSenderID(ctx))
+		actorID = strings.TrimSpace(toolshared.ToolSenderID(ctx))
 	}
-	agentID := strings.TrimSpace(ToolAgentID(ctx))
-	sessionKey := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	agentID := strings.TrimSpace(toolshared.ToolAgentID(ctx))
+	sessionKey := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if sessionKey == "" {
-		sessionKey = strings.TrimSpace(ToolSessionKey(ctx))
+		sessionKey = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
-	executionID := strings.TrimSpace(ToolExecutionID(ctx))
+	executionID := strings.TrimSpace(toolshared.ToolExecutionID(ctx))
 	if actorID == "" || agentID == "" || sessionKey == "" || executionID == "" {
 		return browser.Owner{}, errors.New("browser tool context is incomplete")
 	}
@@ -950,8 +951,8 @@ func browserOwnerFromContext(ctx context.Context) (browser.Owner, error) {
 }
 
 func browserRequestID(ctx context.Context) (string, error) {
-	callID := strings.TrimSpace(ToolCallID(ctx))
-	executionID := strings.TrimSpace(ToolExecutionID(ctx))
+	callID := strings.TrimSpace(toolshared.ToolCallID(ctx))
+	executionID := strings.TrimSpace(toolshared.ToolExecutionID(ctx))
 	if callID == "" || executionID == "" {
 		return "", errors.New("browser tool call identity is incomplete")
 	}
@@ -963,7 +964,7 @@ func browserContextID(prefix, value string) string {
 	return prefix + "_" + hex.EncodeToString(digest[:16])
 }
 
-func (runtime *browserToolRuntime) result(value any) *ToolResult {
+func (runtime *browserToolRuntime) result(value any) *toolshared.ToolResult {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return browserErrorResult("result_unavailable", "Browser result could not be encoded.", "retry")
@@ -972,7 +973,7 @@ func (runtime *browserToolRuntime) result(value any) *ToolResult {
 	if len(encoded) > limit {
 		return browserErrorResult("result_too_large", "Browser result exceeded the configured limit.", "observe_again")
 	}
-	return NewToolResult(string(encoded))
+	return toolshared.NewToolResult(string(encoded))
 }
 
 type browserErrorView struct {
@@ -982,14 +983,14 @@ type browserErrorView struct {
 	Action  string `json:"action"`
 }
 
-func browserErrorResult(code, message, action string) *ToolResult {
+func browserErrorResult(code, message, action string) *toolshared.ToolResult {
 	encoded, _ := json.Marshal(browserErrorView{
 		Status: "denied", Code: code, Message: message, Action: action,
 	})
-	return ErrorResult(string(encoded))
+	return toolshared.ErrorResult(string(encoded))
 }
 
-func browserToolError(err error) *ToolResult {
+func browserToolError(err error) *toolshared.ToolResult {
 	switch {
 	case errors.Is(err, browser.ErrBusy):
 		return browserErrorResult("profile_busy", "The browser profile is already in use.", "close_or_wait")
@@ -1018,6 +1019,6 @@ type browserSafeDenialError struct{ cause error }
 
 func (err *browserSafeDenialError) Error() string { return "browser approval preparation denied" }
 func (err *browserSafeDenialError) Unwrap() error { return err.cause }
-func (err *browserSafeDenialError) SafeApprovalDenialResult() *ToolResult {
+func (err *browserSafeDenialError) SafeApprovalDenialResult() *toolshared.ToolResult {
 	return browserToolError(err.cause)
 }

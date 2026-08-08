@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type retrievalScope string
@@ -99,8 +99,8 @@ func resolveToolConversationIDs(
 			maxScope,
 		)
 	}
-	sessionKey := strings.TrimSpace(tools.ToolSessionKey(ctx))
-	sessionScope := tools.ToolSessionScope(ctx)
+	sessionKey := strings.TrimSpace(toolshared.ToolSessionKey(ctx))
+	sessionScope := toolshared.ToolSessionScope(ctx)
 	if sessionKey != "" && sessionScope != nil && sessionScope.RouteScopeKey != "" && sessionScope.AgentID != "" {
 		if err := engine.store.SetConversationProvenance(
 			ctx,

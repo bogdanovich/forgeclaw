@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // TestShellTool_Success verifies successful command execution
@@ -439,7 +440,7 @@ func TestShellTool_RemoteChannelBlockedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExecToolWithConfig() error: %v", err)
 	}
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{"action": "run", "command": "echo hi"})
 
 	if !result.IsError {
@@ -460,7 +461,7 @@ func TestShellTool_InternalChannelAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExecToolWithConfig() error: %v", err)
 	}
-	ctx := WithToolContext(context.Background(), "cli", "direct")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{"action": "run", "command": "echo hi"})
 
 	if result.IsError {
@@ -500,7 +501,7 @@ func TestShellTool_AllowRemoteBypassesChannelCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExecToolWithConfig() error: %v", err)
 	}
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{"action": "run", "command": "echo hi"})
 
 	if result.IsError {
@@ -1160,7 +1161,7 @@ func TestShellTool_Background_ReturnsImmediately(t *testing.T) {
 	require.Less(t, elapsed, time.Second, "background run should return immediately")
 	require.Contains(t, result.ForLLM, "sessionId")
 
-	var response ExecResponse
+	var response toolshared.ExecResponse
 	require.NoError(t, json.Unmarshal([]byte(result.ForLLM), &response))
 	require.Equal(t, "process_local", response.SessionScope)
 	require.NotNil(t, response.RestartSafe)
@@ -1200,7 +1201,7 @@ func TestShellTool_RunBackground_List(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	runResult := tool.Execute(ctx, map[string]any{
 		"action":     "run",
@@ -1209,7 +1210,7 @@ func TestShellTool_RunBackground_List(t *testing.T) {
 	})
 	require.False(t, runResult.IsError, "run should succeed: %s", runResult.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &resp)
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.SessionID)
@@ -1219,7 +1220,7 @@ func TestShellTool_RunBackground_List(t *testing.T) {
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	require.False(t, listResult.IsError)
 
-	var listResp ExecResponse
+	var listResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(listResult.ForLLM), &listResp)
 	require.NoError(t, err)
 	require.Len(t, listResp.Sessions, 1)
@@ -1240,7 +1241,7 @@ func TestShellTool_Read_Output(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	runResult := tool.Execute(ctx, map[string]any{
 		"action":     "run",
@@ -1249,7 +1250,7 @@ func TestShellTool_Read_Output(t *testing.T) {
 	})
 	require.False(t, runResult.IsError)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1261,7 +1262,7 @@ func TestShellTool_Read_Output(t *testing.T) {
 	})
 
 	if !readResult.IsError {
-		var readResp ExecResponse
+		var readResp toolshared.ExecResponse
 		err = json.Unmarshal([]byte(readResult.ForLLM), &readResp)
 		require.NoError(t, err)
 	}
@@ -1275,7 +1276,7 @@ func TestShellTool_Kill(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	runResult := tool.Execute(ctx, map[string]any{
 		"action":     "run",
@@ -1284,7 +1285,7 @@ func TestShellTool_Kill(t *testing.T) {
 	})
 	require.False(t, runResult.IsError)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1297,7 +1298,7 @@ func TestShellTool_Kill(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
-	var listResp ExecResponse
+	var listResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(listResult.ForLLM), &listResp)
 	require.NoError(t, err)
 	require.Len(t, listResp.Sessions, 0)
@@ -1315,7 +1316,7 @@ func TestShellTool_PTY_AllowedCommands(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Test that PTY is allowed for non-interpreter commands
 	result := tool.Execute(ctx, map[string]any{
@@ -1327,7 +1328,7 @@ func TestShellTool_PTY_AllowedCommands(t *testing.T) {
 	require.False(t, result.IsError, "PTY with cat should succeed: %s", result.ForLLM)
 	require.Contains(t, result.ForLLM, "sessionId")
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.SessionID)
@@ -1351,7 +1352,7 @@ func TestShellTool_PTY_WriteRead(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a PTY session with a command that waits for input
 	// Using 'cat' which will wait for stdin
@@ -1363,7 +1364,7 @@ func TestShellTool_PTY_WriteRead(t *testing.T) {
 	})
 	require.False(t, result.IsError, "PTY run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1386,7 +1387,7 @@ func TestShellTool_PTY_WriteRead(t *testing.T) {
 
 	require.False(t, readResult.IsError, "read should succeed: %s", readResult.ForLLM)
 
-	var readResp ExecResponse
+	var readResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(readResult.ForLLM), &readResp)
 	require.NoError(t, err)
 	// PTY output should contain "hello"
@@ -1411,7 +1412,7 @@ func TestShellTool_PTY_Poll(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a PTY session with a long-running command
 	result := tool.Execute(ctx, map[string]any{
@@ -1422,7 +1423,7 @@ func TestShellTool_PTY_Poll(t *testing.T) {
 	})
 	require.False(t, result.IsError, "PTY run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1433,7 +1434,7 @@ func TestShellTool_PTY_Poll(t *testing.T) {
 	})
 	require.False(t, pollResult.IsError, "poll should succeed: %s", pollResult.ForLLM)
 
-	var pollResp ExecResponse
+	var pollResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(pollResult.ForLLM), &pollResp)
 	require.NoError(t, err)
 	require.Equal(t, "running", pollResp.Status)
@@ -1465,7 +1466,7 @@ func TestShellTool_PTY_Kill(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a PTY session with a long-running command
 	result := tool.Execute(ctx, map[string]any{
@@ -1476,7 +1477,7 @@ func TestShellTool_PTY_Kill(t *testing.T) {
 	})
 	require.False(t, result.IsError, "PTY run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1488,7 +1489,7 @@ func TestShellTool_PTY_Kill(t *testing.T) {
 	require.False(t, killResult.IsError, "kill should succeed: %s", killResult.ForLLM)
 
 	// Verify kill response shows done status
-	var killResp ExecResponse
+	var killResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(killResult.ForLLM), &killResp)
 	require.NoError(t, err)
 	require.Equal(t, "done", killResp.Status)
@@ -1511,7 +1512,7 @@ func TestShellTool_Write_Read_NonPTY(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a background process that reads from stdin and outputs it
 	// Using 'cat' which echoes stdin to stdout
@@ -1523,7 +1524,7 @@ func TestShellTool_Write_Read_NonPTY(t *testing.T) {
 	})
 	require.False(t, result.IsError, "run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1545,7 +1546,7 @@ func TestShellTool_Write_Read_NonPTY(t *testing.T) {
 	})
 	require.False(t, readResult.IsError, "read should succeed: %s", readResult.ForLLM)
 
-	var readResp ExecResponse
+	var readResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(readResult.ForLLM), &readResp)
 	require.NoError(t, err)
 	require.Contains(t, readResp.Output, "hello world")
@@ -1565,7 +1566,7 @@ func TestShellTool_Read_NonPTY_Running(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a long-running process that produces output over time
 	// Using sh -c with sleep at the end so process doesn't exit immediately
@@ -1577,7 +1578,7 @@ func TestShellTool_Read_NonPTY_Running(t *testing.T) {
 	})
 	require.False(t, result.IsError, "run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1591,7 +1592,7 @@ func TestShellTool_Read_NonPTY_Running(t *testing.T) {
 	})
 	require.False(t, readResult.IsError, "read should succeed: %s", readResult.ForLLM)
 
-	var readResp ExecResponse
+	var readResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(readResult.ForLLM), &readResp)
 	require.NoError(t, err)
 	// Should have at least line1
@@ -1634,7 +1635,7 @@ func TestShellTool_ProcessGroupKill(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a shell that spawns child processes (non-PTY mode)
 	// The sh -c command creates child sleep processes
@@ -1646,7 +1647,7 @@ func TestShellTool_ProcessGroupKill(t *testing.T) {
 	})
 	require.False(t, result.IsError, "run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1661,7 +1662,7 @@ func TestShellTool_ProcessGroupKill(t *testing.T) {
 	require.False(t, killResult.IsError, "kill should succeed: %s", killResult.ForLLM)
 
 	// Verify kill response shows done status
-	var killResp ExecResponse
+	var killResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(killResult.ForLLM), &killResp)
 	require.NoError(t, err)
 	require.Equal(t, "done", killResp.Status)
@@ -1695,7 +1696,7 @@ func TestShellTool_PTY_ProcessGroupKill(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start the test binary with PTY mode
 	// It forks 4 child sleep processes and waits for signals
@@ -1707,7 +1708,7 @@ func TestShellTool_PTY_ProcessGroupKill(t *testing.T) {
 	})
 	require.False(t, result.IsError, "run should succeed: %s", result.ForLLM)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(result.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1722,7 +1723,7 @@ func TestShellTool_PTY_ProcessGroupKill(t *testing.T) {
 	require.False(t, killResult.IsError, "kill should succeed: %s", killResult.ForLLM)
 
 	// Verify kill response shows done status
-	var killResp ExecResponse
+	var killResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(killResult.ForLLM), &killResp)
 	require.NoError(t, err)
 	require.Equal(t, "done", killResp.Status)
@@ -1748,7 +1749,7 @@ func TestShellTool_PTY_Background_Read(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a fast command with PTY + background mode
 	runResult := tool.Execute(ctx, map[string]any{
@@ -1759,7 +1760,7 @@ func TestShellTool_PTY_Background_Read(t *testing.T) {
 	})
 	require.False(t, runResult.IsError, "run should succeed: %s", runResult.ForLLM)
 
-	var runResp ExecResponse
+	var runResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &runResp)
 	require.NoError(t, err)
 	require.NotEmpty(t, runResp.SessionID)
@@ -1789,7 +1790,7 @@ func TestShellTool_PTY_Background_ReadNoBlock(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	// Start a long-running command with PTY + background mode
 	// This command produces no output, just sleeps
@@ -1801,7 +1802,7 @@ func TestShellTool_PTY_Background_ReadNoBlock(t *testing.T) {
 	})
 	require.False(t, runResult.IsError, "run should succeed: %s", runResult.ForLLM)
 
-	var runResp ExecResponse
+	var runResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &runResp)
 	require.NoError(t, err)
 	require.NotEmpty(t, runResp.SessionID)
@@ -1834,7 +1835,7 @@ func TestShellTool_Poll_Status(t *testing.T) {
 	t.Cleanup(sm.Stop)
 	tool.sessionManager = sm
 
-	ctx := WithToolContext(context.Background(), "cli", "test")
+	ctx := toolshared.WithToolContext(context.Background(), "cli", "test")
 
 	runResult := tool.Execute(ctx, map[string]any{
 		"action":     "run",
@@ -1843,7 +1844,7 @@ func TestShellTool_Poll_Status(t *testing.T) {
 	})
 	require.False(t, runResult.IsError)
 
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &resp)
 	require.NoError(t, err)
 
@@ -1853,7 +1854,7 @@ func TestShellTool_Poll_Status(t *testing.T) {
 	})
 	require.False(t, pollResult.IsError)
 
-	var pollResp ExecResponse
+	var pollResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(pollResult.ForLLM), &pollResp)
 	require.NoError(t, err)
 	require.Equal(t, "running", pollResp.Status)
@@ -1903,7 +1904,7 @@ func TestShellTool_Background_ReadAfterExit(t *testing.T) {
 	require.False(t, runResult.IsError, "run should succeed: %s", runResult.ForUser)
 
 	// Parse session ID from response
-	var resp ExecResponse
+	var resp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(runResult.ForLLM), &resp)
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.SessionID)
@@ -1918,7 +1919,7 @@ func TestShellTool_Background_ReadAfterExit(t *testing.T) {
 		"sessionId": sessionID,
 	})
 	require.False(t, pollResult.IsError, "poll should succeed: %s", pollResult.ForLLM)
-	var pollResp ExecResponse
+	var pollResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(pollResult.ForLLM), &pollResp)
 	require.NoError(t, err)
 	require.Equal(t, "done", pollResp.Status, "process should be done")
@@ -1930,7 +1931,7 @@ func TestShellTool_Background_ReadAfterExit(t *testing.T) {
 	})
 	require.False(t, readResult.IsError, "read should succeed after exit: %s", readResult.ForLLM)
 
-	var readResp ExecResponse
+	var readResp toolshared.ExecResponse
 	err = json.Unmarshal([]byte(readResult.ForLLM), &readResp)
 	require.NoError(t, err)
 

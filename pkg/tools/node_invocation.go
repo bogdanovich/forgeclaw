@@ -14,6 +14,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -74,7 +75,7 @@ func (denial *nodeSafeDenialError) Unwrap() error {
 	return denial.cause
 }
 
-func (denial *nodeSafeDenialError) SafeApprovalDenialResult() *ToolResult {
+func (denial *nodeSafeDenialError) SafeApprovalDenialResult() *toolshared.ToolResult {
 	return nodeDenialToolResult(nodeDenialResult{
 		Status:     "denied",
 		Code:       denial.Code,
@@ -149,7 +150,7 @@ type NodeInvokeTool struct {
 	runtime *nodeInvocationToolRuntime
 }
 
-func (tool *NodeInvokeTool) approvalBypassOwner() Tool { return tool }
+func (tool *NodeInvokeTool) approvalBypassOwner() toolshared.Tool { return tool }
 
 type NodeStatusTool struct {
 	runtime *nodeInvocationToolRuntime
@@ -355,7 +356,7 @@ func (tool *NodeInvokeTool) ApprovalArguments(
 	}, nil
 }
 
-func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	record, err := tool.runtime.prepare(ctx, args)
 	if err != nil {
 		var denial *nodeSafeDenialError
@@ -386,8 +387,8 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 		(record.Descriptor.ModelContract != nil &&
 			record.Descriptor.ModelContract.ApprovalMode == "each_command")
 	if requiresApproval &&
-		!ToolApprovalContinuation(ctx) &&
-		!ToolApprovalBypass(ctx) {
+		!toolshared.ToolApprovalContinuation(ctx) &&
+		!toolshared.ToolApprovalBypass(ctx) {
 		return nodeDenialToolResult(nodeDenialResult{
 			Status:     "denied",
 			Code:       nodeDenialApprovalRequired,
@@ -532,8 +533,8 @@ func (*NodeInvokeTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsMutating
 }
 
-func (*NodeInvokeTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*NodeInvokeTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
 func (*NodeStatusTool) Name() string { return "nodes_status" }
@@ -557,7 +558,7 @@ func (*NodeStatusTool) Parameters() map[string]any {
 	}
 }
 
-func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	record, principal, snapshot, available, err := tool.runtime.visibleInvocation(ctx, args)
 	if err != nil {
 		return nodeInvocationError("INVOCATION_UNAVAILABLE", err.Error(), nil)
@@ -691,8 +692,8 @@ func (*NodeStatusTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (*NodeStatusTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
+func (*NodeStatusTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
 func (*NodeCancelTool) Name() string { return "nodes_cancel" }
@@ -716,7 +717,7 @@ func (*NodeCancelTool) Parameters() map[string]any {
 	}
 }
 
-func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	record, principal, snapshot, available, err := tool.runtime.visibleInvocation(ctx, args)
 	if err != nil {
 		return nodeJSONResult(nodeCancelResult{Status: "denied", ErrorCode: "CANCEL_DENIED"})
@@ -797,8 +798,8 @@ func (*NodeCancelTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsMutating
 }
 
-func (*NodeCancelTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*NodeCancelTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
 func (runtime *nodeInvocationToolRuntime) fileTransferStatus(
@@ -806,7 +807,7 @@ func (runtime *nodeInvocationToolRuntime) fileTransferStatus(
 	record nodes.GatewayInvocationRecord,
 	principal nodes.GatewayInvocationPrincipal,
 	available bool,
-) *ToolResult {
+) *toolshared.ToolResult {
 	result := NodeFileTransferResult{
 		TransferID:     record.Plan.InvocationID,
 		State:          string(nodes.InvocationUnknown),
@@ -870,7 +871,7 @@ func (runtime *nodeInvocationToolRuntime) cancelFileTransfer(
 	ctx context.Context,
 	record nodes.GatewayInvocationRecord,
 	principal nodes.GatewayInvocationPrincipal,
-) *ToolResult {
+) *toolshared.ToolResult {
 	view := nodeCancelResult{
 		InvocationID: record.Plan.InvocationID,
 		Target:       record.Target,
@@ -968,7 +969,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			nil,
 		)
 	}
-	agentID := strings.TrimSpace(ToolAgentID(ctx))
+	agentID := strings.TrimSpace(toolshared.ToolAgentID(ctx))
 	resolved, err := runtime.resolveTarget(agentID, stringArgument(args, "target"), false)
 	if err != nil {
 		if strings.TrimSpace(stringArgument(args, "discovery_revision")) != "" &&
@@ -1220,7 +1221,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		principal,
 		plan,
 		descriptor,
-		!ToolApprovalContinuation(ctx),
+		!toolshared.ToolApprovalContinuation(ctx),
 		func(current NodeDiscoveryRecord) error {
 			return runtime.validatePreparationAuthority(
 				agentID,
@@ -1231,7 +1232,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			)
 		},
 	)
-	if errors.Is(err, nodes.ErrGatewayInvocationNotFound) && ToolApprovalContinuation(ctx) {
+	if errors.Is(err, nodes.ErrGatewayInvocationNotFound) && toolshared.ToolApprovalContinuation(ctx) {
 		return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
 	}
 	if errors.Is(err, errDiscoveryStale) {
@@ -1377,9 +1378,9 @@ func publishNodeInvocationEvent(
 	if eventBus == nil {
 		return
 	}
-	sessionKey := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	sessionKey := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if sessionKey == "" {
-		sessionKey = strings.TrimSpace(ToolSessionKey(ctx))
+		sessionKey = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
 	gatewayState := record.State
 	if observation != NodeInvocationObservationPrepared {
@@ -1427,18 +1428,18 @@ func publishNodeInvocationEvent(
 		Source: runtimeevents.Source{Component: "nodes", Name: sourceName},
 		Scope: runtimeevents.Scope{
 			TraceScope: runtimeevents.NewTraceScope(
-				ToolWorkspace(ctx),
-				ToolExecutionID(ctx),
+				toolshared.ToolWorkspace(ctx),
+				toolshared.ToolExecutionID(ctx),
 			),
-			AgentID:    ToolAgentID(ctx),
+			AgentID:    toolshared.ToolAgentID(ctx),
 			SessionKey: sessionKey,
-			Channel:    ToolChannel(ctx),
-			ChatID:     ToolChatID(ctx),
-			TopicID:    ToolTopicID(ctx),
-			SenderID:   ToolSenderID(ctx),
-			MessageID:  ToolMessageID(ctx),
+			Channel:    toolshared.ToolChannel(ctx),
+			ChatID:     toolshared.ToolChatID(ctx),
+			TopicID:    toolshared.ToolTopicID(ctx),
+			SenderID:   toolshared.ToolSenderID(ctx),
+			MessageID:  toolshared.ToolMessageID(ctx),
 		},
-		Correlation: runtimeevents.Correlation{RequestID: ToolCallID(ctx)},
+		Correlation: runtimeevents.Correlation{RequestID: toolshared.ToolCallID(ctx)},
 		Severity:    severity,
 		Payload:     payload,
 		Attrs:       attrs,
@@ -1530,7 +1531,7 @@ func (runtime *nodeInvocationToolRuntime) visibleInvocation(
 		return nodes.GatewayInvocationRecord{}, nodes.GatewayInvocationPrincipal{},
 			nodes.Snapshot{}, false, errors.New("invocation was not found in this scope")
 	}
-	resolved, err := runtime.resolveTarget(ToolAgentID(ctx), record.Target, false)
+	resolved, err := runtime.resolveTarget(toolshared.ToolAgentID(ctx), record.Target, false)
 	if err != nil || resolved.snapshot.ID != record.Plan.NodeID {
 		return nodes.GatewayInvocationRecord{}, nodes.GatewayInvocationPrincipal{},
 			nodes.Snapshot{}, false, errors.New("invocation target is no longer visible")
@@ -1578,9 +1579,9 @@ func nodeInvocationIdentity(
 	if err != nil {
 		return nodes.GatewayInvocationPrincipal{}, "", err
 	}
-	toolCallID := strings.TrimSpace(ToolCallID(ctx))
-	executionID := strings.TrimSpace(ToolExecutionID(ctx))
-	workspace := strings.TrimSpace(ToolWorkspace(ctx))
+	toolCallID := strings.TrimSpace(toolshared.ToolCallID(ctx))
+	executionID := strings.TrimSpace(toolshared.ToolExecutionID(ctx))
+	workspace := strings.TrimSpace(toolshared.ToolWorkspace(ctx))
 	if toolCallID == "" || executionID == "" || workspace == "" {
 		return nodes.GatewayInvocationPrincipal{}, "", errors.New(
 			"node invocation requires workspace, execution, and provider tool-call identity",
@@ -1597,14 +1598,14 @@ func nodeInvocationIdentity(
 func nodeInvocationIdentityWithoutCall(
 	ctx context.Context,
 ) (nodes.GatewayInvocationPrincipal, error) {
-	agentID := strings.TrimSpace(ToolAgentID(ctx))
-	sessionID := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	agentID := strings.TrimSpace(toolshared.ToolAgentID(ctx))
+	sessionID := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if sessionID == "" {
-		sessionID = strings.TrimSpace(ToolSessionKey(ctx))
+		sessionID = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
-	actorID := strings.TrimSpace(ToolActorID(ctx))
+	actorID := strings.TrimSpace(toolshared.ToolActorID(ctx))
 	if actorID == "" {
-		actorID = strings.TrimSpace(ToolSenderID(ctx))
+		actorID = strings.TrimSpace(toolshared.ToolSenderID(ctx))
 	}
 	if actorID == "" {
 		actorID = agentID
@@ -1614,8 +1615,8 @@ func nodeInvocationIdentityWithoutCall(
 			"node invocation requires agent, session, and actor identity",
 		)
 	}
-	workspace := strings.TrimSpace(ToolWorkspace(ctx))
-	executionID := strings.TrimSpace(ToolExecutionID(ctx))
+	workspace := strings.TrimSpace(toolshared.ToolWorkspace(ctx))
+	executionID := strings.TrimSpace(toolshared.ToolExecutionID(ctx))
 	if workspace == "" || executionID == "" {
 		return nodes.GatewayInvocationPrincipal{}, errors.New(
 			"node invocation requires workspace and execution identity",
@@ -1851,24 +1852,24 @@ func stringArgument(args map[string]any, name string) string {
 	return value
 }
 
-func nodeInvocationError(code string, message string, view *nodeInvokeResult) *ToolResult {
+func nodeInvocationError(code string, message string, view *nodeInvokeResult) *toolshared.ToolResult {
 	payload := map[string]any{"error": message, "error_code": code}
 	if view != nil {
 		payload["invocation"] = view
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return ErrorResult("node invocation failed")
+		return toolshared.ErrorResult("node invocation failed")
 	}
-	return ErrorResult(string(data))
+	return toolshared.ErrorResult(string(data))
 }
 
-func nodeDenialToolResult(denial nodeDenialResult) *ToolResult {
+func nodeDenialToolResult(denial nodeDenialResult) *toolshared.ToolResult {
 	data, err := json.Marshal(denial)
 	if err != nil {
-		return ErrorResult("node invocation denied")
+		return toolshared.ErrorResult("node invocation denied")
 	}
-	return ErrorResult(string(data))
+	return toolshared.ErrorResult(string(data))
 }
 
 func gatewayStatusResult(

@@ -16,6 +16,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestMemoryToolAddDeduplicatesAndAuditsWithoutRawContent(t *testing.T) {
@@ -33,9 +34,9 @@ func TestMemoryToolAddDeduplicatesAndAuditsWithoutRawContent(t *testing.T) {
 	var invalidations atomic.Int32
 	tool := NewMemoryTool(workspace, func() { invalidations.Add(1) }, eventBus)
 	secret := "User's favorite tea is jasmine"
-	ctx := WithToolSessionContext(t.Context(), "main", "telegram:chat-1", nil)
-	ctx = WithToolInboundContext(ctx, "telegram", "chat-1", "message-1", "")
-	ctx = WithToolInboundMetadata(ctx, bus.InboundContext{
+	ctx := toolshared.WithToolSessionContext(t.Context(), "main", "telegram:chat-1", nil)
+	ctx = toolshared.WithToolInboundContext(ctx, "telegram", "chat-1", "message-1", "")
+	ctx = toolshared.WithToolInboundMetadata(ctx, bus.InboundContext{
 		Channel:   "telegram",
 		ChatID:    "chat-1",
 		SenderID:  "user-1",
@@ -250,7 +251,7 @@ func TestMemoryToolAppendDailySelectsDateDeduplicatesAndAudits(t *testing.T) {
 		"content":         "retry content is ignored",
 		"idempotency_key": "deployment-finished",
 	})
-	for _, result := range []*ToolResult{first, second, duplicate} {
+	for _, result := range []*toolshared.ToolResult{first, second, duplicate} {
 		if result.IsError {
 			t.Fatalf("append_daily result = %#v", result)
 		}

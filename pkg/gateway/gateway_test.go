@@ -20,7 +20,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
@@ -447,13 +447,13 @@ func TestBrowserToolLeaseRejectsRevokedGrantAfterSuccessfulReload(t *testing.T) 
 }
 
 func gatewayBrowserToolContext(agentID string) context.Context {
-	ctx := tools.WithToolInboundMetadata(context.Background(), bus.InboundContext{
+	ctx := toolshared.WithToolInboundMetadata(context.Background(), bus.InboundContext{
 		SenderID: "browser-test-user", ActorID: "browser-test-actor",
 	})
-	ctx = tools.WithToolSessionContext(ctx, agentID, "browser-test-history", nil)
-	ctx = tools.WithToolRouteSessionKey(ctx, "telegram:browser-test")
-	ctx = tools.WithToolCallID(ctx, "browser-test-call")
-	return tools.WithToolExecutionIdentity(ctx, "/browser-test", "browser-test-execution")
+	ctx = toolshared.WithToolSessionContext(ctx, agentID, "browser-test-history", nil)
+	ctx = toolshared.WithToolRouteSessionKey(ctx, "telegram:browser-test")
+	ctx = toolshared.WithToolCallID(ctx, "browser-test-call")
+	return toolshared.WithToolExecutionIdentity(ctx, "/browser-test", "browser-test-execution")
 }
 
 func TestNodeFileToolsRequireConfiguredTargetGrant(t *testing.T) {

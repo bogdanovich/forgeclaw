@@ -17,6 +17,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 var labeledArtifactPathRe = regexp.MustCompile(
@@ -26,13 +27,13 @@ var labeledArtifactPathRe = regexp.MustCompile(
 // SubTurnSpawner is an interface for spawning sub-turns.
 // This avoids circular dependency between tools and agent packages.
 type SubTurnSpawner interface {
-	SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*ToolResult, error)
+	SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*toolshared.ToolResult, error)
 }
 
 // SubTurnConfig holds configuration for spawning a sub-turn.
 type SubTurnConfig struct {
 	Model              string
-	Tools              []Tool
+	Tools              []toolshared.Tool
 	SystemPrompt       string
 	MaxTokens          int
 	Temperature        float64
@@ -44,7 +45,7 @@ type SubTurnConfig struct {
 	InitialMessages    []providers.Message
 	InitialTokenBudget *atomic.Int64 // Shared token budget for team members; nil if no budget
 	TargetAgentID      string        // If set, run as this agent (its workspace, model, tools)
-	DeliveryMode       AsyncDeliveryMode
+	DeliveryMode       toolshared.AsyncDeliveryMode
 	TaskID             string // Durable task owning this child turn, when one exists.
 }
 
@@ -55,7 +56,7 @@ type SubagentTask struct {
 	AgentID       string
 	OriginChannel string
 	OriginChatID  string
-	DeliveryMode  AsyncDeliveryMode
+	DeliveryMode  toolshared.AsyncDeliveryMode
 	Status        string
 	Result        string
 	Created       int64
@@ -69,7 +70,7 @@ type SpawnSubTurnFunc func(
 	maxTokens int,
 	temperature float64,
 	hasMaxTokens, hasTemperature bool,
-) (*ToolResult, error)
+) (*toolshared.ToolResult, error)
 
 type SubagentManager struct {
 	tasks          map[string]*SubagentTask
@@ -157,7 +158,7 @@ func (sm *SubagentManager) SetTools(tools *ToolRegistry) {
 }
 
 // RegisterTool registers a tool for subagent execution.
-func (sm *SubagentManager) RegisterTool(tool Tool) {
+func (sm *SubagentManager) RegisterTool(tool toolshared.Tool) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.tools.Register(tool)
@@ -166,8 +167,8 @@ func (sm *SubagentManager) RegisterTool(tool Tool) {
 func (sm *SubagentManager) Spawn(
 	ctx context.Context,
 	task, label, agentID, originChannel, originChatID string,
-	deliveryMode AsyncDeliveryMode,
-	callback AsyncCallback,
+	deliveryMode toolshared.AsyncDeliveryMode,
+	callback toolshared.AsyncCallback,
 ) (string, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -201,7 +202,7 @@ func (sm *SubagentManager) Spawn(
 func (sm *SubagentManager) runTask(
 	ctx context.Context,
 	task *SubagentTask,
-	callback AsyncCallback,
+	callback toolshared.AsyncCallback,
 ) {
 	task.Status = "running"
 	// TODO(eventbus): once subagents are modeled as child turns inside
@@ -237,7 +238,7 @@ func (sm *SubagentManager) runTask(
 	loopDetection := sm.loopDetection
 	sm.mu.RUnlock()
 
-	var result *ToolResult
+	var result *toolshared.ToolResult
 	var err error
 	stopHeartbeat := startTaskRegistryHeartbeat(ctx, sm.taskRegistry, task.ID, "spawned subagent is still running")
 	defer stopHeartbeat()
@@ -289,7 +290,7 @@ After completing the task, provide a clear summary of what was done.`
 		}, messages, task.OriginChannel, task.OriginChatID)
 
 		if err == nil {
-			result = &ToolResult{
+			result = &toolshared.ToolResult{
 				ForLLM: fmt.Sprintf(
 					"Subagent '%s' completed (iterations: %d): %s",
 					task.Label,
@@ -338,7 +339,7 @@ After completing the task, provide a clear summary of what was done.`
 				task.Result,
 			)
 		}
-		result = &ToolResult{
+		result = &toolshared.ToolResult{
 			ForLLM:  task.Result,
 			ForUser: task.Result,
 			Silent:  false,
@@ -387,7 +388,7 @@ func subagentTaskFromRecord(rec taskregistry.Record) *SubagentTask {
 		AgentID:       rec.AgentID,
 		OriginChannel: rec.Channel,
 		OriginChatID:  rec.ChatID,
-		DeliveryMode:  AsyncDeliveryMode(rec.DeliveryMode),
+		DeliveryMode:  toolshared.AsyncDeliveryMode(rec.DeliveryMode),
 		Status:        status,
 		Result:        rec.TerminalSummary,
 		Created:       rec.CreatedAt,
@@ -505,7 +506,7 @@ func (sm *SubagentManager) recordTaskOrLog(
 	}
 }
 
-func (sm *SubagentManager) recordTaskResult(task *SubagentTask, result *ToolResult) {
+func (sm *SubagentManager) recordTaskResult(task *SubagentTask, result *toolshared.ToolResult) {
 	if sm == nil || sm.taskRegistry == nil || task == nil {
 		return
 	}
@@ -514,7 +515,7 @@ func (sm *SubagentManager) recordTaskResult(task *SubagentTask, result *ToolResu
 		summary = result.ContentForLLM()
 	}
 	delivery := taskregistry.DeliveryPending
-	if result == nil || (result.Silent && result.AsyncDelivery == AsyncDeliveryParentOnly) {
+	if result == nil || (result.Silent && result.AsyncDelivery == toolshared.AsyncDeliveryParentOnly) {
 		delivery = taskregistry.DeliveryNotApplicable
 	}
 	completion := completionPayloadForTaskRegistry(result)
@@ -546,7 +547,7 @@ func completionPayloadForLegacyStorage(
 	return completion
 }
 
-func completionPayloadForTaskRegistry(result *ToolResult) *taskregistry.CompletionPayload {
+func completionPayloadForTaskRegistry(result *toolshared.ToolResult) *taskregistry.CompletionPayload {
 	if result == nil || result.Completion == nil {
 		return nil
 	}
@@ -565,17 +566,17 @@ func completionPayloadForTaskRegistry(result *ToolResult) *taskregistry.Completi
 	return payload
 }
 
-func deliverablePayloadForTaskRegistry(result *ToolResult) *taskregistry.DeliverablePayload {
+func deliverablePayloadForTaskRegistry(result *toolshared.ToolResult) *taskregistry.DeliverablePayload {
 	if result == nil {
 		return nil
 	}
 	deliverable := result.Deliverable
 	if deliverable == nil && result.Completion != nil {
-		deliverable = &DeliverableResult{
+		deliverable = &toolshared.DeliverableResult{
 			Text: result.Completion.Text,
 		}
 		for _, item := range result.Completion.Media {
-			deliverable.Artifacts = append(deliverable.Artifacts, DeliverableItem{
+			deliverable.Artifacts = append(deliverable.Artifacts, toolshared.DeliverableItem{
 				Ref:         item.Ref,
 				Kind:        item.Type,
 				Filename:    item.Filename,
@@ -612,7 +613,7 @@ func deliverablePayloadForTaskRegistry(result *ToolResult) *taskregistry.Deliver
 	return payload
 }
 
-func deliverableReportPayloadForTaskRegistry(report *DeliverableReport) *taskregistry.DeliverableReport {
+func deliverableReportPayloadForTaskRegistry(report *toolshared.DeliverableReport) *taskregistry.DeliverableReport {
 	if report == nil {
 		return nil
 	}
@@ -667,7 +668,7 @@ func copyReportExtra(in map[string]any) map[string]any {
 	return out
 }
 
-func appendMissingDeliverableArtifacts(existing, extra []DeliverableItem) []DeliverableItem {
+func appendMissingDeliverableArtifacts(existing, extra []toolshared.DeliverableItem) []toolshared.DeliverableItem {
 	if len(extra) == 0 {
 		return existing
 	}
@@ -677,7 +678,7 @@ func appendMissingDeliverableArtifacts(existing, extra []DeliverableItem) []Deli
 			seen[ref] = struct{}{}
 		}
 	}
-	out := append([]DeliverableItem(nil), existing...)
+	out := append([]toolshared.DeliverableItem(nil), existing...)
 	for _, item := range extra {
 		ref := strings.TrimSpace(item.Ref)
 		if ref == "" {
@@ -692,7 +693,7 @@ func appendMissingDeliverableArtifacts(existing, extra []DeliverableItem) []Deli
 	return out
 }
 
-func extractLabeledArtifactItems(text string) []DeliverableItem {
+func extractLabeledArtifactItems(text string) []toolshared.DeliverableItem {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -702,7 +703,7 @@ func extractLabeledArtifactItems(text string) []DeliverableItem {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(matches))
-	items := make([]DeliverableItem, 0, len(matches))
+	items := make([]toolshared.DeliverableItem, 0, len(matches))
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue
@@ -715,7 +716,7 @@ func extractLabeledArtifactItems(text string) []DeliverableItem {
 			continue
 		}
 		seen[path] = struct{}{}
-		items = append(items, DeliverableItem{
+		items = append(items, toolshared.DeliverableItem{
 			Ref:         "file:" + path,
 			Kind:        artifactKindForPath(path),
 			Filename:    filepath.Base(path),
@@ -894,10 +895,10 @@ func (t *SubagentTool) Parameters() map[string]any {
 	}
 }
 
-func (t *SubagentTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *SubagentTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	task, ok := args["task"].(string)
 	if !ok {
-		return ErrorResult("task is required").WithError(fmt.Errorf("task parameter is required"))
+		return toolshared.ErrorResult("task is required").WithError(fmt.Errorf("task parameter is required"))
 	}
 
 	label, ok := args["label"].(string)
@@ -934,7 +935,7 @@ Task: %s`,
 			Async:        false, // Synchronous execution
 		})
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Subagent execution failed: %v", err)).WithError(err)
+			return toolshared.ErrorResult(fmt.Sprintf("Subagent execution failed: %v", err)).WithError(err)
 		}
 
 		// Format result for display
@@ -954,7 +955,7 @@ Task: %s`,
 		llmContent := fmt.Sprintf("Subagent task completed:\nLabel: %s\nResult: %s",
 			labelStr, result.ForLLM)
 
-		return &ToolResult{
+		return &toolshared.ToolResult{
 			ForLLM:  llmContent,
 			ForUser: userContent,
 			Silent:  false,
@@ -964,5 +965,5 @@ Task: %s`,
 	}
 
 	// Fallback: spawner not configured
-	return ErrorResult("Subagent manager not configured").WithError(fmt.Errorf("spawner not set"))
+	return toolshared.ErrorResult("Subagent manager not configured").WithError(fmt.Errorf("spawner not set"))
 }

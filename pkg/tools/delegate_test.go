@@ -8,17 +8,18 @@ import (
 	"time"
 
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // delegateMockSpawner records the config and returns a canned result.
 type delegateMockSpawner struct {
 	lastCfg SubTurnConfig
 	calls   []SubTurnConfig
-	result  *ToolResult
+	result  *toolshared.ToolResult
 	err     error
 }
 
-func (m *delegateMockSpawner) SpawnSubTurn(_ context.Context, cfg SubTurnConfig) (*ToolResult, error) {
+func (m *delegateMockSpawner) SpawnSubTurn(_ context.Context, cfg SubTurnConfig) (*toolshared.ToolResult, error) {
 	m.lastCfg = cfg
 	m.calls = append(m.calls, cfg)
 	if m.err != nil {
@@ -27,7 +28,7 @@ func (m *delegateMockSpawner) SpawnSubTurn(_ context.Context, cfg SubTurnConfig)
 	if m.result != nil {
 		return m.result, nil
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  "completed: " + cfg.SystemPrompt,
 		ForUser: "completed",
 	}, nil
@@ -96,8 +97,8 @@ func TestDelegateTool_Execute_Success(t *testing.T) {
 	if spawner.lastCfg.SystemPrompt != "summarize the logs" {
 		t.Errorf("SystemPrompt = %q, want %q", spawner.lastCfg.SystemPrompt, "summarize the logs")
 	}
-	if spawner.lastCfg.DeliveryMode != AsyncDeliveryParentOnly {
-		t.Errorf("DeliveryMode = %q, want %q", spawner.lastCfg.DeliveryMode, AsyncDeliveryParentOnly)
+	if spawner.lastCfg.DeliveryMode != toolshared.AsyncDeliveryParentOnly {
+		t.Errorf("DeliveryMode = %q, want %q", spawner.lastCfg.DeliveryMode, toolshared.AsyncDeliveryParentOnly)
 	}
 }
 
@@ -127,9 +128,9 @@ func TestDelegateTool_Execute_RecordsTaskRegistry(t *testing.T) {
 	tool.SetSpawner(spawner)
 	tool.SetTaskRegistry(registry)
 
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
-	ctx = WithToolTopicID(ctx, "topic-1")
-	ctx = WithToolSessionContext(ctx, "main", "session-1", nil)
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx = toolshared.WithToolTopicID(ctx, "topic-1")
+	ctx = toolshared.WithToolSessionContext(ctx, "main", "session-1", nil)
 	result := tool.Execute(ctx, map[string]any{
 		"agent_id": "media",
 		"task":     "download reel",
@@ -175,11 +176,11 @@ func TestDelegateTool_Execute_RecordsTaskRegistry(t *testing.T) {
 func TestDelegateTool_Execute_RecordsDeliverableFromCompletion(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	spawner := &delegateMockSpawner{
-		result: (&ToolResult{
+		result: (&toolshared.ToolResult{
 			ForLLM: "child finished",
-			Completion: &CompletionResult{
+			Completion: &toolshared.CompletionResult{
 				Text: "recipe text",
-				Media: []CompletionMedia{{
+				Media: []toolshared.CompletionMedia{{
 					Ref:         "media://video",
 					Type:        "video",
 					Filename:    "source.mp4",
@@ -219,21 +220,21 @@ func TestDelegateTool_Execute_RecordsDeliverableFromCompletion(t *testing.T) {
 func TestDelegateTool_Execute_RecordsExplicitDeliverableReport(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	spawner := &delegateMockSpawner{
-		result: (&ToolResult{
+		result: (&toolshared.ToolResult{
 			ForLLM: "review finished",
-		}).WithDeliverable(&DeliverableResult{
+		}).WithDeliverable(&toolshared.DeliverableResult{
 			Text: "No issues found",
-			Report: &DeliverableReport{
+			Report: &toolshared.DeliverableReport{
 				SchemaVersion: taskregistry.DeliverableReportV1,
 				ReportID:      "review-1",
 				ContentHash:   "abc123",
 				Summary:       "No high-confidence issues found",
-				Claims: []ReportClaim{{
+				Claims: []toolshared.ReportClaim{{
 					Kind:       "negative_evidence",
 					Text:       "No correctness issues found",
 					Confidence: "high",
 				}},
-				FieldDeltas: []ReportFieldDelta{{
+				FieldDeltas: []toolshared.ReportFieldDelta{{
 					Field: "review_status",
 					From:  "pending",
 					To:    "clean",
@@ -279,9 +280,9 @@ func TestDelegateTool_Execute_RecordsExplicitDeliverableReport(t *testing.T) {
 func TestDelegateTool_Execute_RecordsDeliverableArtifactFromLabeledPath(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	spawner := &delegateMockSpawner{
-		result: (&ToolResult{
+		result: (&toolshared.ToolResult{
 			ForLLM: "child finished",
-			Completion: &CompletionResult{
+			Completion: &toolshared.CompletionResult{
 				Text: "- sendable_file_path: `/tmp/mintclaw/source.mp4`\n- russian_recipe_translation: `recipe`",
 			},
 		}),
@@ -487,7 +488,7 @@ func TestDelegateTool_Execute_UserOnlyMarksHandled(t *testing.T) {
 	result := tool.Execute(context.Background(), map[string]any{
 		"agent_id":      "media",
 		"task":          "deliver this to the user",
-		"delivery_mode": string(AsyncDeliveryUserOnly),
+		"delivery_mode": string(toolshared.AsyncDeliveryUserOnly),
 	})
 
 	if result.IsError {
@@ -499,8 +500,8 @@ func TestDelegateTool_Execute_UserOnlyMarksHandled(t *testing.T) {
 	if !result.Silent {
 		t.Fatal("expected delegate user_only result to be silent in parent")
 	}
-	if spawner.lastCfg.DeliveryMode != AsyncDeliveryUserOnly {
-		t.Fatalf("DeliveryMode = %q, want %q", spawner.lastCfg.DeliveryMode, AsyncDeliveryUserOnly)
+	if spawner.lastCfg.DeliveryMode != toolshared.AsyncDeliveryUserOnly {
+		t.Fatalf("DeliveryMode = %q, want %q", spawner.lastCfg.DeliveryMode, toolshared.AsyncDeliveryUserOnly)
 	}
 }
 
@@ -580,6 +581,6 @@ func TestDelegateTool_Execute_SelfDelegation_Normalized(t *testing.T) {
 // nilResultSpawner always returns (nil, nil).
 type nilResultSpawner struct{}
 
-func (m *nilResultSpawner) SpawnSubTurn(_ context.Context, _ SubTurnConfig) (*ToolResult, error) {
+func (m *nilResultSpawner) SpawnSubTurn(_ context.Context, _ SubTurnConfig) (*toolshared.ToolResult, error) {
 	return nil, nil
 }

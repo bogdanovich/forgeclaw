@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // Dummy tool to fill the registry in our tests.
@@ -19,8 +21,8 @@ func (m *mockSearchableTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (m *mockSearchableTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	return SilentResult("mock executed: " + m.name)
+func (m *mockSearchableTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	return toolshared.SilentResult("mock executed: " + m.name)
 }
 
 // Helper to initialize a populated ToolRegistry

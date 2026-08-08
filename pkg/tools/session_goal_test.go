@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/state"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func goalToolContext(routeSessionKey string) context.Context {
-	return WithToolRouteSessionKey(context.Background(), routeSessionKey)
+	return toolshared.WithToolRouteSessionKey(context.Background(), routeSessionKey)
 }
 
-func decodeSessionGoalToolResponse(t *testing.T, result *ToolResult) sessionGoalToolResponse {
+func decodeSessionGoalToolResponse(t *testing.T, result *toolshared.ToolResult) sessionGoalToolResponse {
 	t.Helper()
 	if result == nil {
 		t.Fatal("expected tool result")
@@ -100,7 +101,7 @@ func TestSessionGoalToolsRequireRouteSessionContext(t *testing.T) {
 	manager := state.NewManager(t.TempDir())
 	tests := []struct {
 		name string
-		tool Tool
+		tool toolshared.Tool
 		args map[string]any
 	}{
 		{name: "get", tool: NewGetGoalTool(manager), args: map[string]any{}},
@@ -120,8 +121,8 @@ func TestSessionGoalToolsRequireRouteSessionContext(t *testing.T) {
 
 func TestSessionGoalToolsUseRouteSessionKeyInsteadOfHistorySession(t *testing.T) {
 	manager := state.NewManager(t.TempDir())
-	ctx := WithToolSessionContext(context.Background(), "main", "history-session", nil)
-	ctx = WithToolRouteSessionKey(ctx, "route-session")
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "history-session", nil)
+	ctx = toolshared.WithToolRouteSessionKey(ctx, "route-session")
 
 	response := decodeSessionGoalToolResponse(t, NewCreateGoalTool(manager).Execute(ctx, map[string]any{
 		"objective": "persist on route session",

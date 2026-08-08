@@ -5,14 +5,14 @@ import (
 	"fmt"
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type syncToolResultDelivery struct {
 	deliverToUser func(
 		ctx context.Context,
 		ts *turnState,
-		result *tools.ToolResult,
+		result *toolshared.ToolResult,
 		toolName string,
 	) ([]providers.Attachment, toolResultDeliveryOutcome, error)
 }
@@ -24,9 +24,9 @@ func (al *AgentLoop) syncToolResultDelivery() *syncToolResultDelivery {
 	return &syncToolResultDelivery{deliverToUser: al.deliverToolResultToUser}
 }
 
-func normalizeToolResultForSyncDelivery(ts *turnState, result *tools.ToolResult) *tools.ToolResult {
+func normalizeToolResultForSyncDelivery(ts *turnState, result *toolshared.ToolResult) *toolshared.ToolResult {
 	if result == nil {
-		return tools.ErrorResult("nil tool result")
+		return toolshared.ErrorResult("nil tool result")
 	}
 	if ts != nil && ts.opts.SuppressToolUserDelivery {
 		result.ResponseHandled = false
@@ -38,14 +38,14 @@ func normalizeToolResultForSyncDelivery(ts *turnState, result *tools.ToolResult)
 func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
-) ([]providers.Attachment, *tools.ToolResult) {
+) ([]providers.Attachment, *toolshared.ToolResult) {
 	result = normalizeToolResultForSyncDelivery(ts, result)
 
 	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
 		if d == nil || d.deliverToUser == nil {
-			return nil, tools.ErrorResult("tool result delivery is not initialized")
+			return nil, toolshared.ErrorResult("tool result delivery is not initialized")
 		}
 		if _, _, err := d.deliverToUser(ctx, ts, result, toolName); err != nil {
 			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
@@ -54,7 +54,7 @@ func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 
 	if !ts.opts.SuppressToolUserDelivery && result.ResponseHandled {
 		if d == nil || d.deliverToUser == nil {
-			return nil, tools.ErrorResult("tool result delivery is not initialized")
+			return nil, toolshared.ErrorResult("tool result delivery is not initialized")
 		}
 		attachments, outcome, err := d.deliverToUser(ctx, ts, result, toolName)
 		if err != nil {
@@ -71,7 +71,7 @@ func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 	return nil, result
 }
 
-func commitToolResultOutbound(ctx context.Context, result *tools.ToolResult) error {
+func commitToolResultOutbound(ctx context.Context, result *toolshared.ToolResult) error {
 	if result == nil || result.CommitOutbound == nil {
 		return nil
 	}
@@ -81,11 +81,11 @@ func commitToolResultOutbound(ctx context.Context, result *tools.ToolResult) err
 }
 
 func wrapToolDeliveryError(
-	original *tools.ToolResult,
+	original *toolshared.ToolResult,
 	message string,
 	err error,
-) *tools.ToolResult {
-	wrapped := tools.ErrorResult(message).WithError(err)
+) *toolshared.ToolResult {
+	wrapped := toolshared.ErrorResult(message).WithError(err)
 	if original == nil || len(original.WriteAudit) == 0 {
 		return wrapped
 	}

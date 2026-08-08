@@ -12,6 +12,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -117,8 +118,8 @@ func (t *ImageGenerateTool) Parameters() map[string]any {
 			"delivery_intent": map[string]any{
 				"type": "string",
 				"enum": []string{
-					string(DeliveryImmediateContinue),
-					string(DeliveryFinalHandled),
+					string(toolshared.DeliveryImmediateContinue),
+					string(toolshared.DeliveryFinalHandled),
 				},
 				"description": "Delivery policy for this generated image. Use immediate_continue for non-final images in a multi-image task. Use final_handled, or omit, when this image satisfies the user request.",
 			},
@@ -127,25 +128,26 @@ func (t *ImageGenerateTool) Parameters() map[string]any {
 	}
 }
 
-func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	prompt, _ := args["prompt"].(string)
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return ErrorResult("prompt is required")
+		return toolshared.ErrorResult("prompt is required")
 	}
 	if t.mediaStore == nil {
-		return ErrorResult("media store not configured")
+		return toolshared.ErrorResult("media store not configured")
 	}
 	if t.provider == nil && t.resolver != nil {
 		provider, model, err := t.resolver(t.model)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("image generation provider not configured: %v", err)).WithError(err)
+			return toolshared.ErrorResult(fmt.Sprintf("image generation provider not configured: %v", err)).
+				WithError(err)
 		}
 		t.provider = provider
 		t.model = model
 	}
 	if t.provider == nil {
-		return ErrorResult("image generation provider not configured")
+		return toolshared.ErrorResult("image generation provider not configured")
 	}
 
 	req := providers.ImageGenerationRequest{
@@ -161,14 +163,14 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *T
 	}
 	resp, err := t.provider.GenerateImage(ctx, req)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("image generation failed: %v", err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("image generation failed: %v", err)).WithError(err)
 	}
 	if resp == nil {
-		return ErrorResult("image generation returned no response")
+		return toolshared.ErrorResult("image generation returned no response")
 	}
 	images := resp.Images
 	if len(images) == 0 {
-		return ErrorResult("image generation returned no images")
+		return toolshared.ErrorResult("image generation returned no images")
 	}
 
 	refs := make([]string, 0, len(images))
@@ -177,7 +179,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *T
 	for i, image := range images {
 		path, err := t.writeGeneratedImage(image, i)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to write generated image: %v", err)).WithError(err)
+			return toolshared.ErrorResult(fmt.Sprintf("failed to write generated image: %v", err)).WithError(err)
 		}
 		ref, err := t.mediaStore.Store(path, media.MediaMeta{
 			Filename:      filepath.Base(path),
@@ -186,7 +188,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *T
 			CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
 		}, scope)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to register generated image: %v", err)).WithError(err)
+			return toolshared.ErrorResult(fmt.Sprintf("failed to register generated image: %v", err)).WithError(err)
 		}
 		refs = append(refs, ref)
 		paths = append(paths, path)
@@ -198,12 +200,12 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *T
 		req.Model,
 		t.provider.ImageGenerationProviderID(),
 	)
-	result := MediaResult(message, refs)
-	switch readDeliveryIntentDefault(args, DeliveryFinalHandled) {
-	case DeliveryImmediateContinue:
-		result.WithDeliveryIntent(DeliveryImmediateContinue)
+	result := toolshared.MediaResult(message, refs)
+	switch readDeliveryIntentDefault(args, toolshared.DeliveryFinalHandled) {
+	case toolshared.DeliveryImmediateContinue:
+		result.WithDeliveryIntent(toolshared.DeliveryImmediateContinue)
 	default:
-		result.WithDeliveryIntent(DeliveryFinalHandled)
+		result.WithDeliveryIntent(toolshared.DeliveryFinalHandled)
 	}
 	result.ArtifactTags = make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -249,13 +251,13 @@ func (t *ImageGenerateTool) effectiveOutputDir() string {
 
 func (t *ImageGenerateTool) mediaScope(ctx context.Context) string {
 	parts := []string{"tool:image_generate"}
-	if channel := ToolChannel(ctx); channel != "" {
+	if channel := toolshared.ToolChannel(ctx); channel != "" {
 		parts = append(parts, channel)
 	}
-	if chatID := ToolChatID(ctx); chatID != "" {
+	if chatID := toolshared.ToolChatID(ctx); chatID != "" {
 		parts = append(parts, chatID)
 	}
-	if sessionKey := ToolSessionKey(ctx); sessionKey != "" {
+	if sessionKey := toolshared.ToolSessionKey(ctx); sessionKey != "" {
 		parts = append(parts, sessionKey)
 	}
 	return strings.Join(parts, ":")
@@ -291,17 +293,17 @@ func readImageCount(raw any) int {
 	return count
 }
 
-func readDeliveryIntentDefault(args map[string]any, fallback DeliveryIntent) DeliveryIntent {
+func readDeliveryIntentDefault(args map[string]any, fallback toolshared.DeliveryIntent) toolshared.DeliveryIntent {
 	raw, ok := args["delivery_intent"]
 	if !ok {
 		return fallback
 	}
 	value, _ := raw.(string)
-	switch DeliveryIntent(strings.TrimSpace(value)) {
-	case DeliveryImmediateContinue:
-		return DeliveryImmediateContinue
-	case DeliveryFinalHandled:
-		return DeliveryFinalHandled
+	switch toolshared.DeliveryIntent(strings.TrimSpace(value)) {
+	case toolshared.DeliveryImmediateContinue:
+		return toolshared.DeliveryImmediateContinue
+	case toolshared.DeliveryFinalHandled:
+		return toolshared.DeliveryFinalHandled
 	default:
 		return fallback
 	}

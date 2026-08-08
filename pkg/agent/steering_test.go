@@ -23,7 +23,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func userMessageContains(msg providers.Message, text string) bool {
@@ -736,12 +736,12 @@ func (t *slowTool) Parameters() map[string]any {
 	}
 }
 
-func (t *slowTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *slowTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	if t.execCh != nil {
 		close(t.execCh)
 	}
 	time.Sleep(t.duration)
-	return tools.SilentResult(fmt.Sprintf("executed %s", t.name))
+	return toolshared.SilentResult(fmt.Sprintf("executed %s", t.name))
 }
 
 // toolCallProvider returns an LLM response with tool calls on the first call,
@@ -1049,12 +1049,12 @@ func (t *interruptibleTool) Parameters() map[string]any {
 	}
 }
 
-func (t *interruptibleTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *interruptibleTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	if t.started != nil {
 		t.once.Do(func() { close(t.started) })
 	}
 	<-ctx.Done()
-	return tools.ErrorResult(ctx.Err().Error()).WithError(ctx.Err())
+	return toolshared.ErrorResult(ctx.Err().Error()).WithError(ctx.Err())
 }
 
 func TestAgentLoop_Steering_SkipsRemainingTools(t *testing.T) {

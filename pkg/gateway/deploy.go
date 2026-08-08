@@ -14,7 +14,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const deployOutputLimit = 16 * 1024
@@ -273,8 +273,8 @@ type GatewayDeployTool struct {
 
 func (t *GatewayDeployTool) Name() string { return "gateway_deploy" }
 
-func (t *GatewayDeployTool) ToolSteeringSafety(map[string]any) tools.SteeringSafety {
-	return tools.SteeringSafetyCancellable
+func (t *GatewayDeployTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
 func (t *GatewayDeployTool) Description() string {
@@ -288,33 +288,33 @@ func (t *GatewayDeployTool) Parameters() map[string]any {
 	}
 }
 
-func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	target, _ := args["target"].(string)
 	origin := RestartOrigin{
-		Channel:    tools.ToolChannel(ctx),
-		ChatID:     tools.ToolChatID(ctx),
-		TopicID:    tools.ToolTopicID(ctx),
-		SessionKey: tools.ToolSessionKey(ctx),
+		Channel:    toolshared.ToolChannel(ctx),
+		ChatID:     toolshared.ToolChatID(ctx),
+		TopicID:    toolshared.ToolTopicID(ctx),
+		SessionKey: toolshared.ToolSessionKey(ctx),
 	}
 	if target = strings.TrimSpace(target); target == "" {
 		target = strings.TrimSpace(t.runner.cfg.DefaultTarget)
 	}
 	if t.runner.cfg.RequiresHandoff(target) && t.launcher != nil {
 		if err := t.launcher.Launch(ctx, t.runner, target, origin); err != nil {
-			return tools.ErrorResult(fmt.Sprintf("gateway deploy handoff failed: %v", err)).
+			return toolshared.ErrorResult(fmt.Sprintf("gateway deploy handoff failed: %v", err)).
 				WithError(err)
 		}
-		return tools.UserResult("Deploy started in a detached worker. The final handoff status will be reported after completion.").
-			WithDeliveryIntent(tools.DeliveryFinalHandled)
+		return toolshared.UserResult("Deploy started in a detached worker. The final handoff status will be reported after completion.").
+			WithDeliveryIntent(toolshared.DeliveryFinalHandled)
 	}
 	out, _, err := t.runner.Run(ctx, target, origin)
 	if err != nil {
-		return tools.ErrorResult(fmt.Sprintf("gateway deploy failed: %v\n%s", err, out)).
+		return toolshared.ErrorResult(fmt.Sprintf("gateway deploy failed: %v\n%s", err, out)).
 			WithError(err)
 	}
 	message := out
 	if strings.TrimSpace(message) == "" {
 		message = fmt.Sprintf("Gateway deploy for target %s completed successfully.", target)
 	}
-	return tools.UserResult(message).WithDeliveryIntent(tools.DeliveryFinalHandled)
+	return toolshared.UserResult(message).WithDeliveryIntent(toolshared.DeliveryFinalHandled)
 }

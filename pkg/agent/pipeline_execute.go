@@ -19,6 +19,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
@@ -53,7 +54,7 @@ type mcpServerTool interface {
 	MCPServerName() string
 }
 
-func toolErrorSummary(result *tools.ToolResult) string {
+func toolErrorSummary(result *toolshared.ToolResult) string {
 	if result == nil || !result.IsError {
 		return ""
 	}
@@ -108,9 +109,9 @@ func fatalMCPServerErrorReply(serverName, toolName string) string {
 func (al *AgentLoop) applySyncToolResultDelivery(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
-) ([]providers.Attachment, *tools.ToolResult) {
+) ([]providers.Attachment, *toolshared.ToolResult) {
 	return al.syncToolResultDelivery().applySyncToolResultDelivery(ctx, ts, result, toolName)
 }
 
@@ -201,11 +202,11 @@ func inferSkillNamesFromToolCall(ts *turnState, toolName string, toolArgs map[st
 	return names
 }
 
-func shouldPublishAsyncToolResultToUser(result *tools.ToolResult) bool {
+func shouldPublishAsyncToolResultToUser(result *toolshared.ToolResult) bool {
 	return decideAsyncToolResultDelivery(result).PublishToUser
 }
 
-func shouldQueueAsyncToolResultForParent(result *tools.ToolResult) bool {
+func shouldQueueAsyncToolResultForParent(result *toolshared.ToolResult) bool {
 	return decideAsyncToolResultDelivery(result).QueueParent
 }
 
@@ -230,8 +231,8 @@ func recordCompletionMedia(exec *turnExecution, store mediaResolver, refs []stri
 	}
 }
 
-func buildCompletionMedia(store mediaResolver, ref string) tools.CompletionMedia {
-	item := tools.CompletionMedia{Ref: ref}
+func buildCompletionMedia(store mediaResolver, ref string) toolshared.CompletionMedia {
+	item := toolshared.CompletionMedia{Ref: ref}
 	if store == nil {
 		return item
 	}
@@ -552,7 +553,7 @@ toolLoop:
 			continue
 		}
 
-		execCtx := tools.WithToolInboundContext(
+		execCtx := toolshared.WithToolInboundContext(
 			turnCtx,
 			ts.channel,
 			ts.chatID,
@@ -560,25 +561,25 @@ toolLoop:
 			ts.opts.Dispatch.ReplyToMessageID(),
 		)
 		if ts.opts.Dispatch.InboundContext != nil {
-			execCtx = tools.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
+			execCtx = toolshared.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
 		}
-		execCtx = tools.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
-		execCtx = tools.WithToolSessionContext(
+		execCtx = toolshared.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
+		execCtx = toolshared.WithToolSessionContext(
 			execCtx,
 			ts.agent.ID,
 			ts.sessionKey,
 			ts.opts.Dispatch.SessionScope,
 		)
-		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
-		execCtx = tools.WithToolCallID(execCtx, tc.ID)
+		execCtx = toolshared.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
+		execCtx = toolshared.WithToolCallID(execCtx, tc.ID)
 		executionID := effectiveToolExecutionID(ts)
-		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
+		execCtx = toolshared.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
 		approvalBypass, trustedExecution := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
-		execCtx = tools.WithToolApprovalContinuation(
+		execCtx = toolshared.WithToolApprovalContinuation(
 			execCtx,
 			ts.opts.ApprovalGrant != nil && !approvalBypass,
 		)
-		execCtx = tools.WithToolApprovalBypass(execCtx, approvalBypass)
+		execCtx = toolshared.WithToolApprovalBypass(execCtx, approvalBypass)
 
 		if (!approvalBypass && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}
@@ -707,7 +708,7 @@ toolLoop:
 							tc,
 							toolName,
 							0,
-							&tools.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
+							&toolshared.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
 								Kind: interactions.KindApproval, PromptSummary: approval.ActionSummary,
 								Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
 							}},
@@ -787,15 +788,15 @@ toolLoop:
 		mcpServerName := mcpServerNameForTool(ts, toolName)
 		var asyncAckDelivery AsyncDeliveryDecision
 		if tool, ok := ts.agent.Tools.Get(toolName); ok {
-			if _, isAsync := tool.(tools.AsyncExecutor); isAsync {
+			if _, isAsync := tool.(toolshared.AsyncExecutor); isAsync {
 				if deliveryMode, err := asyncDeliveryModeFromToolArgs(toolName, toolArgs); err == nil {
 					asyncAckDelivery = decideAsyncToolResultDelivery(
-						tools.AsyncResult("").WithAsyncDelivery(deliveryMode),
+						toolshared.AsyncResult("").WithAsyncDelivery(deliveryMode),
 					)
 				}
 			}
 		}
-		asyncCallback := func(_ context.Context, result *tools.ToolResult) {
+		asyncCallback := func(_ context.Context, result *toolshared.ToolResult) {
 			completionID := asyncCompletionID(ts.turnID, toolCallID, asyncToolName)
 			delivery := decideAsyncToolResultDelivery(result)
 			p.emitEvent(
@@ -837,7 +838,7 @@ toolLoop:
 		if !ts.tryMarkToolExecutionStarted() {
 			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
-		var toolResult *tools.ToolResult
+		var toolResult *toolshared.ToolResult
 		if trustedExecution != nil {
 			toolResult = ts.agent.Tools.ExecuteTrustedWithContext(
 				execCtx,
@@ -906,7 +907,7 @@ toolLoop:
 		}
 
 		if toolResult == nil {
-			toolResult = tools.ErrorResult("hook returned nil tool result")
+			toolResult = toolshared.ErrorResult("hook returned nil tool result")
 		}
 		if toolResult.Suspension != nil {
 			argumentHash, approvalAction, approvalErr := runner.prepareToolApprovalSuspension(
@@ -920,7 +921,7 @@ toolLoop:
 				if denial, safe := tools.SafeApprovalDenialResult(approvalErr); safe {
 					toolResult = denial
 				} else {
-					toolResult = tools.ErrorResult(
+					toolResult = toolshared.ErrorResult(
 						"Tool execution denied because approval authority could not be prepared.",
 					)
 				}
@@ -1204,7 +1205,7 @@ func (r *toolLoopRunner) prepareToolApprovalSuspension(
 	ctx context.Context,
 	toolName string,
 	toolArgs map[string]any,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 ) (string, string, error) {
 	if result == nil || result.Suspension == nil || result.Suspension.Kind != interactions.KindApproval {
 		return "", "", nil
@@ -1234,7 +1235,7 @@ func (r *toolLoopRunner) prepareToolApprovalSuspension(
 	return hash, action, nil
 }
 
-func toolResultContextStatus(result *tools.ToolResult) providers.ToolResultStatus {
+func toolResultContextStatus(result *toolshared.ToolResult) providers.ToolResultStatus {
 	if result == nil || result.Async {
 		return providers.ToolResultStatusUnresolved
 	}
@@ -1316,13 +1317,13 @@ func (r *toolLoopRunner) skipPendingToolForInterrupt(
 		return false
 	}
 
-	safety := tools.SteeringSafetyUnknown
+	safety := toolshared.SteeringSafetyUnknown
 	if r.ts != nil && r.ts.agent != nil && r.ts.agent.Tools != nil {
 		safety = r.ts.agent.Tools.SteeringSafety(toolName, toolArgs)
 	}
 	decision := "skip"
 	if cause == "queued_user_steering" &&
-		(safety == tools.SteeringSafetyReadOnly || safety == tools.SteeringSafetyNonCancellable) {
+		(safety == toolshared.SteeringSafetyReadOnly || safety == toolshared.SteeringSafetyNonCancellable) {
 		decision = "finish"
 	}
 	r.p.emitEvent(
@@ -1357,7 +1358,7 @@ func (r *toolLoopRunner) recordCommittedHookResponseDecision(tc providers.ToolCa
 		runtimeevents.KindAgentToolSteeringDecision,
 		r.ts.eventMeta("runTurn", "turn.tool.steering_decision"),
 		ToolSteeringDecisionPayload{
-			ToolCallID: tc.ID, Tool: toolName, Classification: string(tools.SteeringSafetyNonCancellable),
+			ToolCallID: tc.ID, Tool: toolName, Classification: string(toolshared.SteeringSafetyNonCancellable),
 			Decision: "finish", Cause: cause,
 		},
 	)
@@ -1403,10 +1404,10 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	toolCall providers.ToolCall,
 	toolName string,
 	duration time.Duration,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	argumentHash string,
 	approvalAction string,
-) (ToolControl, bool, *tools.ToolResult) {
+) (ToolControl, bool, *toolshared.ToolResult) {
 	if result == nil || result.Suspension == nil {
 		return ToolControlContinue, false, result
 	}
@@ -1432,9 +1433,9 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		return ToolControlContinue, true, nil
 	}
 
-	fallback := func(message string) (ToolControl, bool, *tools.ToolResult) {
+	fallback := func(message string) (ToolControl, bool, *toolshared.ToolResult) {
 		resolveCanceled()
-		return ToolControlContinue, false, tools.ErrorResult(message)
+		return ToolControlContinue, false, toolshared.ErrorResult(message)
 	}
 	if r.ts == nil || r.ts.opts.NoHistory {
 		return fallback("request_user_input requires durable session history")
@@ -1537,7 +1538,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	return ToolControlSuspend, true, nil
 }
 
-func resolveCanceledToolSuspension(ctx context.Context, result *tools.ToolResult) {
+func resolveCanceledToolSuspension(ctx context.Context, result *toolshared.ToolResult) {
 	if result == nil || result.SuspensionResolution == nil {
 		return
 	}
@@ -1553,7 +1554,7 @@ func resolveCanceledToolSuspension(ctx context.Context, result *tools.ToolResult
 // A replacement that retains suspension inherits the trusted original request
 // and resolver; a replacement that removes suspension is canceled by the
 // caller instead.
-func transferToolSuspensionResolution(current, replacement *tools.ToolResult) bool {
+func transferToolSuspensionResolution(current, replacement *toolshared.ToolResult) bool {
 	if current == nil || current.Suspension == nil || replacement == nil || replacement.Suspension == nil {
 		return false
 	}

@@ -13,7 +13,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type restartSourceSequence struct {
@@ -348,8 +348,8 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := tools.WithToolTopicID(
-		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	ctx := toolshared.WithToolTopicID(
+		toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
 	)
 	result := NewGatewayRestartTool(controller).Execute(ctx, map[string]any{})
 	if result.Err != nil {
@@ -403,9 +403,9 @@ func TestGatewayRestartToolAlreadyScheduledIsFinalHandled(t *testing.T) {
 	assertFinalHandledRestartResult(t, second)
 }
 
-func assertFinalHandledRestartResult(t *testing.T, result *tools.ToolResult) {
+func assertFinalHandledRestartResult(t *testing.T, result *toolshared.ToolResult) {
 	t.Helper()
-	if result.DeliveryIntent != tools.DeliveryFinalHandled || !result.ResponseHandled {
+	if result.DeliveryIntent != toolshared.DeliveryFinalHandled || !result.ResponseHandled {
 		t.Fatalf("successful restart result did not own the turn: %#v", result)
 	}
 	if result.ImmediateDelivery || result.Silent {
@@ -572,7 +572,7 @@ func TestRestartControllerFailsWhenDrainTimesOutWithoutForce(t *testing.T) {
 func TestGatewayRestartToolReportsControllerErrors(t *testing.T) {
 	tool := NewGatewayRestartTool(nil)
 
-	ctx := tools.WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	got := tool.Execute(ctx, map[string]any{"reason": "test"})
 	if !got.IsError {
 		t.Fatal("tool result should be an error")

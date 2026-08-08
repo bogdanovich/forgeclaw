@@ -25,6 +25,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/isolation"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	fstools "github.com/bogdanovich/mintclaw/pkg/tools/fs"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/tools/shellguard"
 	workspaceutil "github.com/bogdanovich/mintclaw/pkg/workspace"
 )
@@ -267,10 +268,10 @@ func (t *ExecTool) Parameters() map[string]any {
 	}
 }
 
-func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	action, _ := args["action"].(string)
 	if action == "" {
-		return ErrorResult("action is required")
+		return toolshared.ErrorResult("action is required")
 	}
 
 	switch action {
@@ -289,26 +290,26 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	case "send-keys":
 		return t.executeSendKeys(args)
 	default:
-		return ErrorResult(fmt.Sprintf("unknown action: %s", action))
+		return toolshared.ErrorResult(fmt.Sprintf("unknown action: %s", action))
 	}
 }
 
-func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolResult {
+func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	command, ok := args["command"].(string)
 	if !ok {
-		return ErrorResult("command is required")
+		return toolshared.ErrorResult("command is required")
 	}
 
 	// GHSA-pv8c-p6jf-3fpp: block exec from remote channels (e.g. Telegram webhooks)
 	// unless explicitly opted-in via config. Fail-closed: empty channel = blocked.
 	if !t.allowRemote {
-		channel := ToolChannel(ctx)
+		channel := toolshared.ToolChannel(ctx)
 		if channel == "" {
 			channel, _ = args["__channel"].(string)
 		}
 		channel = strings.TrimSpace(channel)
 		if channel == "" || !constants.IsInternalChannel(channel) {
-			return ErrorResult("exec is restricted to internal channels")
+			return toolshared.ErrorResult("exec is restricted to internal channels")
 		}
 	}
 
@@ -326,7 +327,7 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 
 	if isPty {
 		if runtime.GOOS == "windows" {
-			return ErrorResult("PTY is not supported on Windows. Use background=true without pty.")
+			return toolshared.ErrorResult("PTY is not supported on Windows. Use background=true without pty.")
 		}
 	}
 
@@ -335,7 +336,7 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 		if t.restrictToWorkspace && t.workingDir != "" {
 			resolvedWD, err := fstools.ValidatePathWithAllowPaths(wd, t.workingDir, true, t.allowedPathPatterns)
 			if err != nil {
-				return ErrorResult("Command blocked by safety guard (" + err.Error() + ")")
+				return toolshared.ErrorResult("Command blocked by safety guard (" + err.Error() + ")")
 			}
 			cwd = resolvedWD
 		} else {
@@ -351,7 +352,7 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 	}
 
 	if guardError := t.guardCommand(command, cwd); guardError != "" {
-		return ErrorResult(guardError)
+		return toolshared.ErrorResult(guardError)
 	}
 
 	// Re-resolve symlinks immediately before execution to shrink the TOCTOU window
@@ -359,7 +360,9 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 	if t.restrictToWorkspace && t.workingDir != "" && cwd != t.workingDir {
 		resolved, err := filepath.EvalSymlinks(cwd)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Command blocked by safety guard (path resolution failed: %v)", err))
+			return toolshared.ErrorResult(
+				fmt.Sprintf("Command blocked by safety guard (path resolution failed: %v)", err),
+			)
 		}
 		if fstools.IsAllowedPath(resolved, t.allowedPathPatterns) {
 			cwd = resolved
@@ -371,7 +374,7 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 			}
 			rel, err := filepath.Rel(wsResolved, resolved)
 			if err != nil || !filepath.IsLocal(rel) {
-				return ErrorResult("Command blocked by safety guard (working directory escaped workspace)")
+				return toolshared.ErrorResult("Command blocked by safety guard (working directory escaped workspace)")
 			}
 			cwd = resolved
 		}
@@ -384,7 +387,7 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 	return t.runSync(ctx, command, cwd)
 }
 
-func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult {
+func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *toolshared.ToolResult {
 	// timeout == 0 means no timeout
 	var cmdCtx context.Context
 	var cancel context.CancelFunc
@@ -405,11 +408,11 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(),
-		"MINTCLAW_TOOL_CHANNEL="+ToolChannel(ctx),
-		"MINTCLAW_TOOL_CHAT_ID="+ToolChatID(ctx),
-		"MINTCLAW_TOOL_TOPIC_ID="+ToolTopicID(ctx),
-		"MINTCLAW_TOOL_MESSAGE_ID="+ToolMessageID(ctx),
-		"MINTCLAW_TOOL_REPLY_TO_MESSAGE_ID="+ToolReplyToMessageID(ctx),
+		"MINTCLAW_TOOL_CHANNEL="+toolshared.ToolChannel(ctx),
+		"MINTCLAW_TOOL_CHAT_ID="+toolshared.ToolChatID(ctx),
+		"MINTCLAW_TOOL_TOPIC_ID="+toolshared.ToolTopicID(ctx),
+		"MINTCLAW_TOOL_MESSAGE_ID="+toolshared.ToolMessageID(ctx),
+		"MINTCLAW_TOOL_REPLY_TO_MESSAGE_ID="+toolshared.ToolReplyToMessageID(ctx),
 		"MINTCLAW_WORKSPACE_TMP="+t.workspaceTempDir,
 	)
 
@@ -422,7 +425,7 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 	// Route shell execution through the shared isolation entry point so exec tool
 	// subprocesses receive the same isolation policy as other integrations.
 	if err := isolation.Start(cmd); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to start command: %v", err))
 	}
 
 	done := make(chan error, 1)
@@ -467,7 +470,7 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 				msg += "\n\nPartial output before timeout:\n" + output
 			}
 			msg = truncateCommandOutput(msg)
-			return &ToolResult{
+			return &toolshared.ToolResult{
 				ForLLM:  msg,
 				ForUser: msg,
 				IsError: true,
@@ -497,14 +500,14 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 	output = truncateCommandOutput(output)
 
 	if err != nil {
-		return &ToolResult{
+		return &toolshared.ToolResult{
 			ForLLM:  output,
 			ForUser: output,
 			IsError: true,
 		}
 	}
 
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  output,
 		ForUser: output,
 		IsError: false,
@@ -557,7 +560,7 @@ func validUTF8Suffix(s string, maxBytes int) string {
 	return s[start:]
 }
 
-func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEnabled bool) *ToolResult {
+func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEnabled bool) *toolshared.ToolResult {
 	sessionID := generateSessionID()
 	session := &ProcessSession{
 		ID:         sessionID,
@@ -579,11 +582,11 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(),
-		"MINTCLAW_TOOL_CHANNEL="+ToolChannel(ctx),
-		"MINTCLAW_TOOL_CHAT_ID="+ToolChatID(ctx),
-		"MINTCLAW_TOOL_TOPIC_ID="+ToolTopicID(ctx),
-		"MINTCLAW_TOOL_MESSAGE_ID="+ToolMessageID(ctx),
-		"MINTCLAW_TOOL_REPLY_TO_MESSAGE_ID="+ToolReplyToMessageID(ctx),
+		"MINTCLAW_TOOL_CHANNEL="+toolshared.ToolChannel(ctx),
+		"MINTCLAW_TOOL_CHAT_ID="+toolshared.ToolChatID(ctx),
+		"MINTCLAW_TOOL_TOPIC_ID="+toolshared.ToolTopicID(ctx),
+		"MINTCLAW_TOOL_MESSAGE_ID="+toolshared.ToolMessageID(ctx),
+		"MINTCLAW_TOOL_REPLY_TO_MESSAGE_ID="+toolshared.ToolReplyToMessageID(ctx),
 		"MINTCLAW_WORKSPACE_TMP="+t.workspaceTempDir,
 	)
 
@@ -596,7 +599,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	if ptyEnabled {
 		ptmx, tty, err := pty.Open()
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create PTY: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to create PTY: %v", err))
 		}
 
 		cmd.Stdin = tty
@@ -612,15 +615,15 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		var err error
 		stdoutReader, err = cmd.StdoutPipe()
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create stdout pipe: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to create stdout pipe: %v", err))
 		}
 		stderrReader, err = cmd.StderrPipe()
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create stderr pipe: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to create stderr pipe: %v", err))
 		}
 		stdinWriter, err = cmd.StdinPipe()
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create stdin pipe: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to create stdin pipe: %v", err))
 		}
 		session.stdoutPipe = io.MultiReader(stdoutReader, stderrReader)
 		session.stdinWriter = stdinWriter
@@ -632,7 +635,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		if session.ptyMaster != nil {
 			_ = session.ptyMaster.Close()
 		}
-		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to start command: %v", err))
 	}
 
 	session.PID = cmd.Process.Pid
@@ -773,7 +776,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	}
 
 	restartSafe := false
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		SessionID:    sessionID,
 		SessionScope: "process_local",
 		RestartSafe:  &restartSafe,
@@ -781,168 +784,168 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(data),
 		ForUser: fmt.Sprintf("Session %s started", sessionID),
 		IsError: false,
 	}
 }
 
-func (t *ExecTool) executeList() *ToolResult {
+func (t *ExecTool) executeList() *toolshared.ToolResult {
 	sessions := t.sessionManager.List()
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		Sessions: sessions,
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(data),
 		ForUser: fmt.Sprintf("%d active sessions", len(sessions)),
 		IsError: false,
 	}
 }
 
-func (t *ExecTool) executePoll(args map[string]any) *ToolResult {
+func (t *ExecTool) executePoll(args map[string]any) *toolshared.ToolResult {
 	sessionID, ok := args["sessionId"].(string)
 	if !ok {
-		return ErrorResult("sessionId is required")
+		return toolshared.ErrorResult("sessionId is required")
 	}
 
 	session, err := t.sessionManager.Get(sessionID)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
-			return ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
+			return toolshared.ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
 		}
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		SessionID: sessionID,
 		Status:    session.GetStatus(),
 		ExitCode:  session.GetExitCode(),
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(data),
 		IsError: false,
 	}
 }
 
-func (t *ExecTool) executeRead(args map[string]any) *ToolResult {
+func (t *ExecTool) executeRead(args map[string]any) *toolshared.ToolResult {
 	sessionID, ok := args["sessionId"].(string)
 	if !ok {
-		return ErrorResult("sessionId is required")
+		return toolshared.ErrorResult("sessionId is required")
 	}
 
 	session, err := t.sessionManager.Get(sessionID)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
-			return ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
+			return toolshared.ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
 		}
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	output := session.Read()
 
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		SessionID: sessionID,
 		Output:    output,
 		Status:    session.GetStatus(),
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(data),
 		IsError: false,
 	}
 }
 
-func (t *ExecTool) executeWrite(args map[string]any) *ToolResult {
+func (t *ExecTool) executeWrite(args map[string]any) *toolshared.ToolResult {
 	sessionID, ok := args["sessionId"].(string)
 	if !ok {
-		return ErrorResult("sessionId is required")
+		return toolshared.ErrorResult("sessionId is required")
 	}
 
 	data, ok := args["data"].(string)
 	if !ok {
-		return ErrorResult("data is required")
+		return toolshared.ErrorResult("data is required")
 	}
 
 	session, err := t.sessionManager.Get(sessionID)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
-			return ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
+			return toolshared.ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
 		}
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	if session.IsDone() {
-		return ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
+		return toolshared.ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
 	}
 
 	if err = session.Write(data); err != nil {
 		if errors.Is(err, ErrSessionDone) {
-			return ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
+			return toolshared.ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
 		}
-		return ErrorResult(fmt.Sprintf("failed to write to session: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to write to session: %v", err))
 	}
 
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		SessionID: sessionID,
 		Status:    session.GetStatus(),
 	}
 	respData, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(respData),
 		IsError: false,
 	}
 }
 
-func (t *ExecTool) executeKill(args map[string]any) *ToolResult {
+func (t *ExecTool) executeKill(args map[string]any) *toolshared.ToolResult {
 	sessionID, ok := args["sessionId"].(string)
 	if !ok {
-		return ErrorResult("sessionId is required")
+		return toolshared.ErrorResult("sessionId is required")
 	}
 
 	session, err := t.sessionManager.Get(sessionID)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
-			return ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
+			return toolshared.ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
 		}
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	if session.IsDone() {
-		return ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
+		return toolshared.ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
 	}
 
 	if err = session.Kill(); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to kill session: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to kill session: %v", err))
 	}
 
 	t.sessionManager.Remove(sessionID)
 
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		SessionID: sessionID,
 		Status:    "done",
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(data),
 		ForUser: fmt.Sprintf("Session %s killed", sessionID),
 		IsError: false,
@@ -1105,19 +1108,19 @@ func encodeKeySequence(tokens []string, ptyKeyMode PtyKeyMode) (string, error) {
 	return result, nil
 }
 
-func (t *ExecTool) executeSendKeys(args map[string]any) *ToolResult {
+func (t *ExecTool) executeSendKeys(args map[string]any) *toolshared.ToolResult {
 	sessionID, ok := args["sessionId"].(string)
 	if !ok {
-		return ErrorResult("sessionId is required")
+		return toolshared.ErrorResult("sessionId is required")
 	}
 
 	keysStr, ok := args["keys"].(string)
 	if !ok {
-		return ErrorResult("keys must be a string")
+		return toolshared.ErrorResult("keys must be a string")
 	}
 
 	if keysStr == "" {
-		return ErrorResult("keys cannot be empty")
+		return toolshared.ErrorResult("keys cannot be empty")
 	}
 
 	// Parse comma-separated key names
@@ -1131,45 +1134,45 @@ func (t *ExecTool) executeSendKeys(args map[string]any) *ToolResult {
 	}
 
 	if len(keys) == 0 {
-		return ErrorResult("keys cannot be empty")
+		return toolshared.ErrorResult("keys cannot be empty")
 	}
 
 	session, err := t.sessionManager.Get(sessionID)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
-			return ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
+			return toolshared.ErrorResult(fmt.Sprintf("session not found: %s", sessionID))
 		}
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	ptyKeyMode := session.GetPtyKeyMode()
 
 	data, err := encodeKeySequence(keys, ptyKeyMode)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("invalid key: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("invalid key: %v", err))
 	}
 
 	if session.IsDone() {
-		return ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
+		return toolshared.ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
 	}
 
 	if err = session.Write(data); err != nil {
 		if errors.Is(err, ErrSessionDone) {
-			return ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
+			return toolshared.ErrorResult(fmt.Sprintf("process already exited with code %d", session.GetExitCode()))
 		}
-		return ErrorResult(fmt.Sprintf("failed to send keys: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to send keys: %v", err))
 	}
 
-	resp := ExecResponse{
+	resp := toolshared.ExecResponse{
 		SessionID: sessionID,
 		Status:    "running",
 		Output:    fmt.Sprintf("Sent keys: %v", keys),
 	}
 	respData, err := json.Marshal(resp)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  string(respData),
 		IsError: false,
 	}

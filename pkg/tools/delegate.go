@@ -10,6 +10,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // DelegateTool delegates a task to a specific named agent and waits for
@@ -69,9 +70,9 @@ func (t *DelegateTool) Parameters() map[string]any {
 			"type":        "string",
 			"description": "Optional sync result routing policy: parent_only, user_only, or user_and_parent. Defaults to parent_only.",
 			"enum": []string{
-				string(AsyncDeliveryParentOnly),
-				string(AsyncDeliveryUserOnly),
-				string(AsyncDeliveryUserAndParent),
+				string(toolshared.AsyncDeliveryParentOnly),
+				string(toolshared.AsyncDeliveryUserOnly),
+				string(toolshared.AsyncDeliveryUserAndParent),
 			},
 		},
 		"timeout_seconds": map[string]any{
@@ -86,36 +87,36 @@ func (t *DelegateTool) Parameters() map[string]any {
 	}
 }
 
-func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	rawAgentID, _ := args["agent_id"].(string)
 	if strings.TrimSpace(rawAgentID) == "" {
-		return ErrorResult("agent_id is required and must be a non-empty string")
+		return toolshared.ErrorResult("agent_id is required and must be a non-empty string")
 	}
 	agentID := routing.NormalizeAgentID(rawAgentID)
 
 	task, _ := args["task"].(string)
 	if strings.TrimSpace(task) == "" {
-		return ErrorResult("task is required and must be a non-empty string")
+		return toolshared.ErrorResult("task is required and must be a non-empty string")
 	}
 	deliveryMode, err := parseDelegateDeliveryMode(args["delivery_mode"])
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	timeout, err := parseOptionalTimeoutSeconds(args["timeout_seconds"])
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 
 	if t.selfAgentID != "" && agentID == t.selfAgentID {
-		return ErrorResult("cannot delegate to self")
+		return toolshared.ErrorResult("cannot delegate to self")
 	}
 
 	if t.allowlistCheck != nil && !t.allowlistCheck(agentID) {
-		return ErrorResult(fmt.Sprintf("not allowed to delegate to agent %q", agentID))
+		return toolshared.ErrorResult(fmt.Sprintf("not allowed to delegate to agent %q", agentID))
 	}
 
 	if t.spawner == nil {
-		return ErrorResult("delegate tool not configured")
+		return toolshared.ErrorResult("delegate tool not configured")
 	}
 
 	taskID := t.nextTaskID()
@@ -152,7 +153,7 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			nil,
 			nil,
 		)
-		return ErrorResult(fmt.Sprintf("delegation to agent %q failed: %v", agentID, err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("delegation to agent %q failed: %v", agentID, err)).WithError(err)
 	}
 	if result == nil {
 		msg := fmt.Sprintf("delegation to agent %q returned no result", agentID)
@@ -164,14 +165,14 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			nil,
 			nil,
 		)
-		return ErrorResult(fmt.Sprintf("delegation to agent %q returned no result", agentID))
+		return toolshared.ErrorResult(fmt.Sprintf("delegation to agent %q returned no result", agentID))
 	}
 	if result.TaskSuspended {
-		return NewToolResult("Delegated task is waiting for human input.")
+		return toolshared.NewToolResult("Delegated task is waiting for human input.")
 	}
 
 	result.ForLLM = fmt.Sprintf("[Response from agent %q]\n%s", agentID, result.ForLLM)
-	if deliveryMode == AsyncDeliveryUserOnly {
+	if deliveryMode == toolshared.AsyncDeliveryUserOnly {
 		result.Silent = true
 		result.ResponseHandled = true
 	}
@@ -195,7 +196,7 @@ func (t *DelegateTool) nextTaskID() string {
 func (t *DelegateTool) recordDelegateTask(
 	ctx context.Context,
 	taskID, agentID, task string,
-	deliveryMode AsyncDeliveryMode,
+	deliveryMode toolshared.AsyncDeliveryMode,
 	status taskregistry.Status,
 	delivery taskregistry.DeliveryStatus,
 	summary string,
@@ -211,11 +212,11 @@ func (t *DelegateTool) recordDelegateTask(
 		TaskID:              taskID,
 		Runtime:             taskregistry.RuntimeDelegate,
 		TaskKind:            "delegate",
-		RequesterSessionKey: ToolSessionKey(ctx),
-		OwnerKey:            ToolAgentID(ctx),
-		Channel:             ToolChannel(ctx),
-		ChatID:              ToolChatID(ctx),
-		TopicID:             ToolTopicID(ctx),
+		RequesterSessionKey: toolshared.ToolSessionKey(ctx),
+		OwnerKey:            toolshared.ToolAgentID(ctx),
+		Channel:             toolshared.ToolChannel(ctx),
+		ChatID:              toolshared.ToolChatID(ctx),
+		TopicID:             toolshared.ToolTopicID(ctx),
 		AgentID:             agentID,
 		Label:               "delegate:" + agentID,
 		Task:                task,
@@ -241,38 +242,41 @@ func (t *DelegateTool) recordDelegateTask(
 	_ = t.taskRegistry.Upsert(rec)
 }
 
-func delegateDeliveryStatus(result *ToolResult, mode AsyncDeliveryMode) taskregistry.DeliveryStatus {
+func delegateDeliveryStatus(
+	result *toolshared.ToolResult,
+	mode toolshared.AsyncDeliveryMode,
+) taskregistry.DeliveryStatus {
 	if result == nil {
 		return taskregistry.DeliveryFailed
 	}
 	switch mode {
-	case AsyncDeliveryParentOnly:
+	case toolshared.AsyncDeliveryParentOnly:
 		return taskregistry.DeliverySessionQueued
-	case AsyncDeliveryUserOnly:
+	case toolshared.AsyncDeliveryUserOnly:
 		if result.ResponseHandled || result.Silent {
 			return taskregistry.DeliveryDelivered
 		}
 		return taskregistry.DeliveryPending
-	case AsyncDeliveryUserAndParent:
+	case toolshared.AsyncDeliveryUserAndParent:
 		return taskregistry.DeliveryPending
 	default:
 		return taskregistry.DeliveryPending
 	}
 }
 
-func parseDelegateDeliveryMode(raw any) (AsyncDeliveryMode, error) {
+func parseDelegateDeliveryMode(raw any) (toolshared.AsyncDeliveryMode, error) {
 	if raw == nil {
-		return AsyncDeliveryParentOnly, nil
+		return toolshared.AsyncDeliveryParentOnly, nil
 	}
 	value, ok := raw.(string)
 	if !ok {
 		return "", fmt.Errorf("delivery_mode must be a string")
 	}
-	switch AsyncDeliveryMode(strings.TrimSpace(value)) {
-	case AsyncDeliveryParentOnly, AsyncDeliveryUserOnly, AsyncDeliveryUserAndParent:
-		return AsyncDeliveryMode(strings.TrimSpace(value)), nil
+	switch toolshared.AsyncDeliveryMode(strings.TrimSpace(value)) {
+	case toolshared.AsyncDeliveryParentOnly, toolshared.AsyncDeliveryUserOnly, toolshared.AsyncDeliveryUserAndParent:
+		return toolshared.AsyncDeliveryMode(strings.TrimSpace(value)), nil
 	case "":
-		return AsyncDeliveryParentOnly, nil
+		return toolshared.AsyncDeliveryParentOnly, nil
 	default:
 		return "", fmt.Errorf("delivery_mode must be one of: parent_only, user_only, user_and_parent")
 	}

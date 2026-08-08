@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestExecuteHeartbeat_Async(t *testing.T) {
@@ -21,7 +21,7 @@ func TestExecuteHeartbeat_Async(t *testing.T) {
 	hs.stopChan = make(chan struct{}) // Enable for testing
 
 	asyncCalled := false
-	asyncResult := &tools.ToolResult{
+	asyncResult := &toolshared.ToolResult{
 		ForLLM:  "Background task started",
 		ForUser: "Task started in background",
 		Silent:  false,
@@ -29,7 +29,7 @@ func TestExecuteHeartbeat_Async(t *testing.T) {
 		Async:   true,
 	}
 
-	hs.SetHandler(func(prompt, channel, chatID string) *tools.ToolResult {
+	hs.SetHandler(func(prompt, channel, chatID string) *toolshared.ToolResult {
 		asyncCalled = true
 		if prompt == "" {
 			t.Error("Expected non-empty prompt")
@@ -51,12 +51,12 @@ func TestExecuteHeartbeat_Async(t *testing.T) {
 func TestExecuteHeartbeat_ResultLogging(t *testing.T) {
 	tests := []struct {
 		name    string
-		result  *tools.ToolResult
+		result  *toolshared.ToolResult
 		wantLog string
 	}{
 		{
 			name: "error result",
-			result: &tools.ToolResult{
+			result: &toolshared.ToolResult{
 				ForLLM:  "Heartbeat failed: connection error",
 				ForUser: "",
 				Silent:  false,
@@ -67,7 +67,7 @@ func TestExecuteHeartbeat_ResultLogging(t *testing.T) {
 		},
 		{
 			name: "silent result",
-			result: &tools.ToolResult{
+			result: &toolshared.ToolResult{
 				ForLLM:  "Heartbeat completed successfully",
 				ForUser: "",
 				Silent:  true,
@@ -89,7 +89,7 @@ func TestExecuteHeartbeat_ResultLogging(t *testing.T) {
 			hs := NewHeartbeatService(tmpDir, 30, true)
 			hs.stopChan = make(chan struct{}) // Enable for testing
 
-			hs.SetHandler(func(prompt, channel, chatID string) *tools.ToolResult {
+			hs.SetHandler(func(prompt, channel, chatID string) *toolshared.ToolResult {
 				return tt.result
 			})
 
@@ -154,7 +154,7 @@ func TestExecuteHeartbeat_NilResult(t *testing.T) {
 	hs := NewHeartbeatService(tmpDir, 30, true)
 	hs.stopChan = make(chan struct{}) // Enable for testing
 
-	hs.SetHandler(func(prompt, channel, chatID string) *tools.ToolResult {
+	hs.SetHandler(func(prompt, channel, chatID string) *toolshared.ToolResult {
 		return nil
 	})
 

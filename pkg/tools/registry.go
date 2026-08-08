@@ -15,10 +15,11 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type ToolEntry struct {
-	Tool   Tool
+	Tool   toolshared.Tool
 	IsCore bool
 	TTL    int
 }
@@ -52,7 +53,7 @@ type ApprovalArgumentsProvider interface {
 }
 
 type nodeTargetApprovalBypassProvider interface {
-	approvalBypassOwner() Tool
+	approvalBypassOwner() toolshared.Tool
 }
 
 // TrustedToolExecution binds approval provenance to the exact tool instance
@@ -62,10 +63,10 @@ type TrustedToolExecution struct {
 	registry *ToolRegistry
 	name     string
 	target   string
-	tool     Tool
+	tool     toolshared.Tool
 }
 
-func sameToolInstance(left, right Tool) bool {
+func sameToolInstance(left, right toolshared.Tool) bool {
 	leftValue := reflect.ValueOf(left)
 	rightValue := reflect.ValueOf(right)
 	return leftValue.IsValid() && rightValue.IsValid() &&
@@ -75,13 +76,13 @@ func sameToolInstance(left, right Tool) bool {
 }
 
 type safeApprovalDenialProvider interface {
-	SafeApprovalDenialResult() *ToolResult
+	SafeApprovalDenialResult() *toolshared.ToolResult
 }
 
 // SafeApprovalDenialResult returns a tool-authored, model-safe denial for an
 // approval-preparation error. Ordinary errors are never forwarded to the
 // model through this path.
-func SafeApprovalDenialResult(err error) (*ToolResult, bool) {
+func SafeApprovalDenialResult(err error) (*toolshared.ToolResult, bool) {
 	var provider safeApprovalDenialProvider
 	if !errors.As(err, &provider) {
 		return nil, false
@@ -121,7 +122,7 @@ func (r *ToolRegistry) SetAllowlist(names []string) {
 	r.allowlist = allowlist
 }
 
-func (r *ToolRegistry) Register(tool Tool) {
+func (r *ToolRegistry) Register(tool toolshared.Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Name()
@@ -150,7 +151,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 }
 
 // RegisterHidden saves hidden tools (visible only via TTL)
-func (r *ToolRegistry) RegisterHidden(tool Tool) {
+func (r *ToolRegistry) RegisterHidden(tool toolshared.Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Name()
@@ -236,7 +237,7 @@ func (r *ToolRegistry) LoopSemantics(name string) loopguard.Semantics {
 	if !ok || tool == nil {
 		return loopguard.SemanticsUnknown
 	}
-	provider, ok := tool.(LoopSemanticsProvider)
+	provider, ok := tool.(toolshared.LoopSemanticsProvider)
 	if !ok {
 		return loopguard.SemanticsUnknown
 	}
@@ -251,21 +252,23 @@ func (r *ToolRegistry) LoopSemantics(name string) loopguard.Semantics {
 
 // SteeringSafety returns a tool's pending-call policy. Missing, unavailable,
 // or invalid declarations fail closed as unknown.
-func (r *ToolRegistry) SteeringSafety(name string, args map[string]any) SteeringSafety {
+func (r *ToolRegistry) SteeringSafety(name string, args map[string]any) toolshared.SteeringSafety {
 	tool, ok := r.Get(name)
 	if !ok || tool == nil {
-		return SteeringSafetyUnknown
+		return toolshared.SteeringSafetyUnknown
 	}
-	provider, ok := tool.(SteeringSafetyProvider)
+	provider, ok := tool.(toolshared.SteeringSafetyProvider)
 	if !ok {
-		return SteeringSafetyUnknown
+		return toolshared.SteeringSafetyUnknown
 	}
 	safety := provider.ToolSteeringSafety(args)
 	switch safety {
-	case SteeringSafetyReadOnly, SteeringSafetyNonCancellable, SteeringSafetyCancellable:
+	case toolshared.SteeringSafetyReadOnly,
+		toolshared.SteeringSafetyNonCancellable,
+		toolshared.SteeringSafetyCancellable:
 		return safety
 	default:
-		return SteeringSafetyUnknown
+		return toolshared.SteeringSafetyUnknown
 	}
 }
 
@@ -340,7 +343,7 @@ func (r *ToolRegistry) SnapshotHiddenTools() HiddenToolSnapshot {
 	}
 }
 
-func (r *ToolRegistry) Get(name string) (Tool, bool) {
+func (r *ToolRegistry) Get(name string) (toolshared.Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	entry, ok := r.tools[name]
@@ -417,11 +420,11 @@ func (r *ToolRegistry) ValidateArguments(name string, args map[string]any) error
 	return validateRegisteredToolArguments(tool, args)
 }
 
-func validateRegisteredToolArguments(tool Tool, args map[string]any) error {
+func validateRegisteredToolArguments(tool toolshared.Tool, args map[string]any) error {
 	return validateToolArgs(tool.Parameters(), args)
 }
 
-func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string]any) *ToolResult {
+func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string]any) *toolshared.ToolResult {
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
 
@@ -434,15 +437,15 @@ func (r *ToolRegistry) ExecuteWithContext(
 	name string,
 	args map[string]any,
 	channel, chatID string,
-	asyncCallback AsyncCallback,
-) *ToolResult {
+	asyncCallback toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	tool, ok := r.Get(name)
 	if !ok {
 		logger.ErrorCF("tool", "Tool not found",
 			map[string]any{
 				"tool": name,
 			})
-		return ErrorResult(
+		return toolshared.ErrorResult(
 			fmt.Sprintf("tool %q not found", name),
 		).WithError(fmt.Errorf("tool not found"))
 	}
@@ -457,15 +460,15 @@ func (r *ToolRegistry) ExecuteTrustedWithContext(
 	binding *TrustedToolExecution,
 	args map[string]any,
 	channel, chatID string,
-	asyncCallback AsyncCallback,
-) *ToolResult {
+	asyncCallback toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	if binding == nil || binding.registry != r || binding.tool == nil || binding.name == "" {
-		return ErrorResult("trusted tool execution binding is invalid").
+		return toolshared.ErrorResult("trusted tool execution binding is invalid").
 			WithError(fmt.Errorf("invalid trusted tool execution binding"))
 	}
 	target, _ := args["target"].(string)
 	if target == "" || target != binding.target {
-		return ErrorResult("trusted node target changed after approval").
+		return toolshared.ErrorResult("trusted node target changed after approval").
 			WithError(fmt.Errorf("trusted node target binding mismatch"))
 	}
 	return r.executeToolWithContext(
@@ -482,11 +485,11 @@ func (r *ToolRegistry) ExecuteTrustedWithContext(
 func (r *ToolRegistry) executeToolWithContext(
 	ctx context.Context,
 	name string,
-	tool Tool,
+	tool toolshared.Tool,
 	args map[string]any,
 	channel, chatID string,
-	asyncCallback AsyncCallback,
-) *ToolResult {
+	asyncCallback toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	logger.InfoCF("tool", "Tool execution started",
 		map[string]any{
 			"tool": name,
@@ -497,17 +500,17 @@ func (r *ToolRegistry) executeToolWithContext(
 	if err := validateRegisteredToolArguments(tool, args); err != nil {
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
-		return ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
+		return toolshared.ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
 	}
 
 	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
 	// Always inject — tools validate what they require.
-	ctx = WithToolContext(ctx, channel, chatID)
+	ctx = toolshared.WithToolContext(ctx, channel, chatID)
 
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
-	var result *ToolResult
+	var result *toolshared.ToolResult
 	start := time.Now()
 
 	// Use recover to catch any panics during tool execution
@@ -522,7 +525,7 @@ func (r *ToolRegistry) executeToolWithContext(
 						"tool":  name,
 						"panic": fmt.Sprintf("%v", re),
 					})
-				result = &ToolResult{
+				result = &toolshared.ToolResult{
 					ForLLM:  errMsg,
 					ForUser: errMsg,
 					IsError: true,
@@ -531,7 +534,7 @@ func (r *ToolRegistry) executeToolWithContext(
 			}
 		}()
 
-		if asyncExec, ok := tool.(AsyncExecutor); ok && asyncCallback != nil {
+		if asyncExec, ok := tool.(toolshared.AsyncExecutor); ok && asyncCallback != nil {
 			logger.DebugCF("tool", "Executing async tool via ExecuteAsync",
 				map[string]any{
 					"tool": name,
@@ -544,7 +547,7 @@ func (r *ToolRegistry) executeToolWithContext(
 
 	// Handle nil result (should not happen, but defensive)
 	if result == nil {
-		result = &ToolResult{
+		result = &toolshared.ToolResult{
 			ForLLM:  fmt.Sprintf("Tool '%s' returned nil result unexpectedly", name),
 			ForUser: fmt.Sprintf("Tool '%s' returned nil result unexpectedly", name),
 			IsError: true,
@@ -608,7 +611,7 @@ func (r *ToolRegistry) GetDefinitions() []map[string]any {
 			continue
 		}
 
-		definitions = append(definitions, ToolToSchema(r.tools[name].Tool))
+		definitions = append(definitions, toolshared.ToolToSchema(r.tools[name].Tool))
 	}
 	return definitions
 }
@@ -628,7 +631,7 @@ func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 			continue
 		}
 
-		schema := ToolToSchema(entry.Tool)
+		schema := toolshared.ToolToSchema(entry.Tool)
 
 		// Safely extract nested values with type checks
 		fn, ok := schema["function"].(map[string]any)
@@ -656,13 +659,13 @@ func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 	return definitions
 }
 
-func promptMetadataForTool(tool Tool) PromptMetadata {
-	metadata := PromptMetadata{
-		Layer:  ToolPromptLayerCapability,
-		Slot:   ToolPromptSlotTooling,
-		Source: ToolPromptSourceRegistry,
+func promptMetadataForTool(tool toolshared.Tool) toolshared.PromptMetadata {
+	metadata := toolshared.PromptMetadata{
+		Layer:  toolshared.ToolPromptLayerCapability,
+		Slot:   toolshared.ToolPromptSlotTooling,
+		Source: toolshared.ToolPromptSourceRegistry,
 	}
-	if provider, ok := tool.(PromptMetadataProvider); ok {
+	if provider, ok := tool.(toolshared.PromptMetadataProvider); ok {
 		provided := provider.PromptMetadata()
 		if provided.Layer != "" {
 			metadata.Layer = provided.Layer
@@ -746,12 +749,12 @@ func (r *ToolRegistry) GetSummaries() []string {
 
 // GetAll returns all registered tools (both core and non-core with TTL > 0).
 // Used by SubTurn to inherit parent's tool set.
-func (r *ToolRegistry) GetAll() []Tool {
+func (r *ToolRegistry) GetAll() []toolshared.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	sorted := r.sortedToolNames()
-	tools := make([]Tool, 0, len(sorted))
+	tools := make([]toolshared.Tool, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
 

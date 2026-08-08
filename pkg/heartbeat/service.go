@@ -21,7 +21,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/identity"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/state"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -33,7 +33,7 @@ const (
 // HeartbeatHandler is the function type for handling heartbeat.
 // It returns a ToolResult that can indicate async operations.
 // channel and chatID are derived from the last active user channel.
-type HeartbeatHandler func(prompt, channel, chatID string) *tools.ToolResult
+type HeartbeatHandler func(prompt, channel, chatID string) *toolshared.ToolResult
 
 // HeartbeatService manages periodic heartbeat checks
 type HeartbeatService struct {

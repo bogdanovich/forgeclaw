@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
-	mintclawtools "github.com/bogdanovich/mintclaw/pkg/tools"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
 )
 
 type toolCatalogEntry struct {
@@ -556,7 +556,7 @@ func normalizeWebSearchAPIKeys(apiKeys []string, apiKey string) ([]string, bool)
 }
 
 func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
-	opts := mintclawtools.WebSearchToolOptionsFromConfig(cfg)
+	opts := integrationtools.WebSearchToolOptionsFromConfig(cfg)
 	current := resolveCurrentWebSearchProvider(cfg)
 	settings := map[string]webSearchProviderConfig{
 		"sogou": {
@@ -625,67 +625,67 @@ func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
 		{
 			ID:         "sogou",
 			Label:      "Sogou",
-			Configured: mintclawtools.WebSearchProviderReady(opts, "sogou"),
+			Configured: integrationtools.WebSearchProviderReady(opts, "sogou"),
 			Current:    current == "sogou",
 		},
 		{
 			ID:         "duckduckgo",
 			Label:      "DuckDuckGo",
-			Configured: mintclawtools.WebSearchProviderReady(opts, "duckduckgo"),
+			Configured: integrationtools.WebSearchProviderReady(opts, "duckduckgo"),
 			Current:    current == "duckduckgo",
 		},
 		{
 			ID:           "gemini",
 			Label:        "Gemini (Google Search)",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "gemini"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "gemini"),
 			Current:      current == "gemini",
 			RequiresAuth: true,
 		},
 		{
 			ID:           "brave",
 			Label:        "Brave Search",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "brave"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "brave"),
 			Current:      current == "brave",
 			RequiresAuth: true,
 		},
 		{
 			ID:           "tavily",
 			Label:        "Tavily",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "tavily"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "tavily"),
 			Current:      current == "tavily",
 			RequiresAuth: true,
 		},
 		{
 			ID:           "kagi",
 			Label:        "Kagi Search",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "kagi"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "kagi"),
 			Current:      current == "kagi",
 			RequiresAuth: true,
 		},
 		{
 			ID:           "perplexity",
 			Label:        "Perplexity",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "perplexity"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "perplexity"),
 			Current:      current == "perplexity",
 			RequiresAuth: true,
 		},
 		{
 			ID:         "searxng",
 			Label:      "SearXNG",
-			Configured: mintclawtools.WebSearchProviderReady(opts, "searxng"),
+			Configured: integrationtools.WebSearchProviderReady(opts, "searxng"),
 			Current:    current == "searxng",
 		},
 		{
 			ID:           "glm_search",
 			Label:        "GLM Search",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "glm_search"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "glm_search"),
 			Current:      current == "glm_search",
 			RequiresAuth: true,
 		},
 		{
 			ID:           "baidu_search",
 			Label:        "Baidu Search",
-			Configured:   mintclawtools.WebSearchProviderReady(opts, "baidu_search"),
+			Configured:   integrationtools.WebSearchProviderReady(opts, "baidu_search"),
 			Current:      current == "baidu_search",
 			RequiresAuth: true,
 		},
@@ -710,7 +710,10 @@ func resolveCurrentWebSearchProvider(cfg *config.Config) string {
 	if cfg == nil || !cfg.Tools.IsToolEnabled("web") {
 		return ""
 	}
-	selected, err := mintclawtools.ResolveWebSearchProviderName(mintclawtools.WebSearchToolOptionsFromConfig(cfg), "")
+	selected, err := integrationtools.ResolveWebSearchProviderName(
+		integrationtools.WebSearchToolOptionsFromConfig(cfg),
+		"",
+	)
 	if err != nil {
 		return ""
 	}

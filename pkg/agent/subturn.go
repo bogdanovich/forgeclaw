@@ -17,6 +17,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers/messageutil"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // ====================== Config & Constants ======================
@@ -108,7 +109,7 @@ type subTurnRuntimeConfig struct {
 //	// Parent turn will poll and process it in a later iteration
 type SubTurnConfig struct {
 	Model        string
-	Tools        []tools.Tool
+	Tools        []toolshared.Tool
 	SystemPrompt string
 	MaxTokens    int
 
@@ -186,7 +187,7 @@ type SubTurnConfig struct {
 	// DeliveryMode controls user-facing delivery ownership for synchronous
 	// delegate/sub-turn flows. Reuses the same enum names as async spawn:
 	// parent_only, user_only, user_and_parent.
-	DeliveryMode tools.AsyncDeliveryMode
+	DeliveryMode toolshared.AsyncDeliveryMode
 	TaskID       string
 }
 
@@ -224,7 +225,7 @@ type AgentLoopSpawner struct {
 func (s *AgentLoopSpawner) SpawnSubTurn(
 	ctx context.Context,
 	cfg tools.SubTurnConfig,
-) (*tools.ToolResult, error) {
+) (*toolshared.ToolResult, error) {
 	parentTS := turnStateFromContext(ctx)
 	if parentTS == nil {
 		return nil, errors.New(
@@ -260,7 +261,7 @@ func NewSubTurnSpawner(al *AgentLoop) *AgentLoopSpawner {
 
 // SpawnSubTurn is the exported entry point for tools to spawn sub-turns.
 // It retrieves AgentLoop and parent turnState from context and delegates to spawnSubTurn.
-func SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*tools.ToolResult, error) {
+func SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*toolshared.ToolResult, error) {
 	al := AgentLoopFromContext(ctx)
 	if al == nil {
 		return nil, errors.New(
@@ -318,14 +319,14 @@ func isUserDeliveryToolName(name string) bool {
 	return false
 }
 
-func effectiveSubTurnDeliveryMode(cfg SubTurnConfig) tools.AsyncDeliveryMode {
+func effectiveSubTurnDeliveryMode(cfg SubTurnConfig) toolshared.AsyncDeliveryMode {
 	if cfg.DeliveryMode != "" {
 		return cfg.DeliveryMode
 	}
 	if cfg.Async {
-		return tools.AsyncDeliveryUserOnly
+		return toolshared.AsyncDeliveryUserOnly
 	}
-	return tools.AsyncDeliveryParentOnly
+	return toolshared.AsyncDeliveryParentOnly
 }
 
 func spawnSubTurn(
@@ -333,7 +334,7 @@ func spawnSubTurn(
 	al *AgentLoop,
 	parentTS *turnState,
 	cfg SubTurnConfig,
-) (result *tools.ToolResult, err error) {
+) (result *toolshared.ToolResult, err error) {
 	deliveryMode := effectiveSubTurnDeliveryMode(cfg)
 
 	// Get effective SubTurn configuration
@@ -475,7 +476,7 @@ func spawnSubTurn(
 		if !durableTask {
 			removeDurableInteractionTools(agent.Tools)
 		}
-		if !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly {
+		if !cfg.Async && deliveryMode == toolshared.AsyncDeliveryParentOnly {
 			removeUserDeliveryTools(agent.Tools)
 		}
 	}
@@ -510,8 +511,8 @@ func spawnSubTurn(
 		DefaultResponse:         "",
 		EnableSummary:           false,
 		SendResponse: !hasOutboundTransaction(childCtx) && !cfg.Async &&
-			(deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent),
-		SuppressToolUserDelivery: !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly,
+			(deliveryMode == toolshared.AsyncDeliveryUserOnly || deliveryMode == toolshared.AsyncDeliveryUserAndParent),
+		SuppressToolUserDelivery: !cfg.Async && deliveryMode == toolshared.AsyncDeliveryParentOnly,
 		SuppressToolFeedback:     parentTS.opts.SuppressToolFeedback,
 		NoHistory:                !durableTask,
 		SkipInitialSteeringPoll:  true,
@@ -537,7 +538,7 @@ func spawnSubTurn(
 	childTS.depth = parentTS.depth + 1
 	childTS.parentTurnID = parentTS.turnID
 	childTS.parentTurnState = parentTS
-	childTS.pendingResults = make(chan *tools.ToolResult, 16)
+	childTS.pendingResults = make(chan *toolshared.ToolResult, 16)
 	childTS.concurrencySem = make(chan struct{}, rtCfg.maxConcurrent)
 	childTS.al = al // back-ref for hard abort cascade
 	childTS.session = agent.Sessions
@@ -647,33 +648,33 @@ func spawnSubTurn(
 	// Convert turnResult to tools.ToolResult
 	if turnErr != nil {
 		err = turnErr
-		result = &tools.ToolResult{
+		result = &toolshared.ToolResult{
 			Err:    turnErr,
 			ForLLM: fmt.Sprintf("SubTurn failed: %v", turnErr),
 		}
 	} else if turnRes.status == TurnEndStatusSuspended {
-		result = &tools.ToolResult{TaskSuspended: true}
+		result = &toolshared.ToolResult{TaskSuspended: true}
 	} else {
-		result = &tools.ToolResult{
+		result = &toolshared.ToolResult{
 			ForLLM:  turnRes.finalContent,
 			ForUser: turnRes.finalContent,
 		}
 		if strings.TrimSpace(turnRes.finalContent) != "" || len(turnRes.completionMedia) > 0 {
-			result.WithCompletion(&tools.CompletionResult{
+			result.WithCompletion(&toolshared.CompletionResult{
 				Text:  turnRes.finalContent,
-				Media: append([]tools.CompletionMedia(nil), turnRes.completionMedia...),
+				Media: append([]toolshared.CompletionMedia(nil), turnRes.completionMedia...),
 			})
 			result.Media = append(result.Media, completionMediaRefs(turnRes.completionMedia)...)
 		}
 		if !cfg.Async {
 			switch deliveryMode {
-			case tools.AsyncDeliveryParentOnly:
+			case toolshared.AsyncDeliveryParentOnly:
 				result.ForUser = ""
-			case tools.AsyncDeliveryUserOnly:
+			case toolshared.AsyncDeliveryUserOnly:
 				result.ForUser = ""
 				result.Silent = true
 				result.ResponseHandled = true
-			case tools.AsyncDeliveryUserAndParent:
+			case toolshared.AsyncDeliveryUserAndParent:
 				if hasOutboundTransaction(childCtx) {
 					result.ImmediateDelivery = true
 					result.Silent = true
@@ -690,7 +691,7 @@ func durableTaskSessionKey(ownerWorkspace, taskID string) string {
 	return "task:" + hex.EncodeToString(sum[:8]) + ":" + strings.TrimSpace(taskID)
 }
 
-func completionMediaRefs(items []tools.CompletionMedia) []string {
+func completionMediaRefs(items []toolshared.CompletionMedia) []string {
 	refs := make([]string, 0, len(items))
 	for _, item := range items {
 		ref := strings.TrimSpace(item.Ref)
@@ -720,7 +721,7 @@ func completionMediaRefs(items []tools.CompletionMedia) []string {
 // Event emissions:
 //   - agent.subturn.result_delivered: successful delivery to channel
 //   - agent.subturn.orphan: delivery failed (parent finished or channel full)
-func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, result *tools.ToolResult) {
+func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, result *toolshared.ToolResult) {
 	if parentTS.enqueuePendingResult(result) {
 		if al != nil {
 			contentLen := 0

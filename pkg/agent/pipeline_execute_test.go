@@ -20,6 +20,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type pipelineLoopGuardTool struct {
@@ -33,7 +34,7 @@ type toolResultFailingJournal struct {
 
 type fixedToolResultTool struct {
 	name       string
-	result     *tools.ToolResult
+	result     *toolshared.ToolResult
 	executions int
 }
 
@@ -65,13 +66,13 @@ func (tool *boundApprovalSuspensionTool) ApprovalArguments(
 	return map[string]any{"prepared_action_id": "prepared_1", "action_hash": "trusted_hash"}, nil
 }
 
-func (tool *boundApprovalSuspensionTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+func (tool *boundApprovalSuspensionTool) Execute(ctx context.Context, _ map[string]any) *toolshared.ToolResult {
 	tool.executions++
-	if tools.ToolApprovalContinuation(ctx) {
+	if toolshared.ToolApprovalContinuation(ctx) {
 		tool.continued = true
-		return tools.NewToolResult("approved")
+		return toolshared.NewToolResult("approved")
 	}
-	return &tools.ToolResult{Silent: true, Suspension: &tools.SuspensionRequest{
+	return &toolshared.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
 		Kind: interactions.KindApproval, PromptSummary: "Publish the prepared browser action", Timeout: time.Minute,
 	}}
 }
@@ -82,7 +83,7 @@ func (t *fixedToolResultTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *fixedToolResultTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+func (t *fixedToolResultTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.executions++
 	return t.result
 }
@@ -111,9 +112,9 @@ func (*recordingToolResultDelivery) GetStreamer(
 func (d *recordingToolResultDelivery) applySyncToolResultDelivery(
 	_ context.Context,
 	_ *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	_ string,
-) ([]providers.Attachment, *tools.ToolResult) {
+) ([]providers.Attachment, *toolshared.ToolResult) {
 	if result != nil && (result.ResponseHandled || result.ImmediateDelivery) {
 		d.syncCalls++
 	}
@@ -121,7 +122,7 @@ func (d *recordingToolResultDelivery) applySyncToolResultDelivery(
 }
 
 type toolResultRespondHook struct {
-	result *tools.ToolResult
+	result *toolshared.ToolResult
 }
 
 type dropToolSuspensionHook struct{}
@@ -213,14 +214,14 @@ func (m *fakeToolSuspensionManager) ConsumeApproval(
 func TestToolResultContextStatus(t *testing.T) {
 	tests := []struct {
 		name   string
-		result *tools.ToolResult
+		result *toolshared.ToolResult
 		want   providers.ToolResultStatus
 	}{
-		{name: "success", result: tools.NewToolResult("ok"), want: providers.ToolResultStatusSuccess},
-		{name: "error", result: tools.ErrorResult("failed"), want: providers.ToolResultStatusError},
+		{name: "success", result: toolshared.NewToolResult("ok"), want: providers.ToolResultStatusSuccess},
+		{name: "error", result: toolshared.ErrorResult("failed"), want: providers.ToolResultStatusError},
 		{
 			name:   "async unresolved",
-			result: &tools.ToolResult{ForLLM: "started", Async: true},
+			result: &toolshared.ToolResult{ForLLM: "started", Async: true},
 			want:   providers.ToolResultStatusUnresolved,
 		},
 		{name: "nil unresolved", want: providers.ToolResultStatusUnresolved},
@@ -236,7 +237,7 @@ func TestToolResultContextStatus(t *testing.T) {
 
 func TestPipelineToolResultJournalFailureLeavesDurableUnresolvedIntent(t *testing.T) {
 	registry := tools.NewToolRegistry()
-	tool := &steeringSafetyTestTool{name: "side-effect", safety: tools.SteeringSafetyNonCancellable}
+	tool := &steeringSafetyTestTool{name: "side-effect", safety: toolshared.SteeringSafetyNonCancellable}
 	registry.Register(tool)
 	baseStore := session.NewSessionManager("")
 	journalErr := errors.New("tool result fsync failed")
@@ -275,31 +276,31 @@ func TestPipelineToolResultJournalFailureLeavesDurableUnresolvedIntent(t *testin
 func TestPipelineToolResultJournalFailurePreventsEveryDeliveryMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		result func() *tools.ToolResult
+		result func() *toolshared.ToolResult
 		hook   bool
 	}{
 		{
 			name: "normal for-user",
-			result: func() *tools.ToolResult {
-				return &tools.ToolResult{ForLLM: "normal result", ForUser: "normal delivery"}
+			result: func() *toolshared.ToolResult {
+				return &toolshared.ToolResult{ForLLM: "normal result", ForUser: "normal delivery"}
 			},
 		},
 		{
 			name: "response handled",
-			result: func() *tools.ToolResult {
-				return (&tools.ToolResult{ForLLM: "handled result", ForUser: "handled delivery"}).WithResponseHandled()
+			result: func() *toolshared.ToolResult {
+				return (&toolshared.ToolResult{ForLLM: "handled result", ForUser: "handled delivery"}).WithResponseHandled()
 			},
 		},
 		{
 			name: "immediate delivery",
-			result: func() *tools.ToolResult {
-				return (&tools.ToolResult{ForLLM: "immediate result", ForUser: "immediate delivery"}).WithImmediateDelivery()
+			result: func() *toolshared.ToolResult {
+				return (&toolshared.ToolResult{ForLLM: "immediate result", ForUser: "immediate delivery"}).WithImmediateDelivery()
 			},
 		},
 		{
 			name: "hook response",
-			result: func() *tools.ToolResult {
-				return &tools.ToolResult{ForLLM: "hook result", ForUser: "hook delivery"}
+			result: func() *toolshared.ToolResult {
+				return &toolshared.ToolResult{ForLLM: "hook result", ForUser: "hook delivery"}
 			},
 			hook: true,
 		},
@@ -370,8 +371,8 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 	)
 	store := session.NewSessionManager("")
 	commitCalls := 0
-	result := tools.NewToolResult(`{"artifact":{"ref":"transfer-artifact://opaque"}}`).
-		WithOutboundDelivery(tools.OutboundDelivery{
+	result := toolshared.NewToolResult(`{"artifact":{"ref":"transfer-artifact://opaque"}}`).
+		WithOutboundDelivery(toolshared.OutboundDelivery{
 			Media: []bus.MediaPart{{
 				Type: "image", Ref: mediaRef, Filename: "browser-screenshot.png", ContentType: "image/png",
 			}},
@@ -412,7 +413,7 @@ func TestPipelineDeliveryOnlyArtifactStaysOutOfProviderHistory(t *testing.T) {
 	delivery := &syncToolResultDelivery{deliverToUser: func(
 		deliveryCtx context.Context,
 		_ *turnState,
-		got *tools.ToolResult,
+		got *toolshared.ToolResult,
 		_ string,
 	) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 		deliveryCalls++
@@ -458,13 +459,13 @@ func TestPipelineSuppressedToolDeliveryRetainsHandledAndImmediateMedia(t *testin
 		{name: "hook immediate", immediate: true, hook: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			result := (&tools.ToolResult{
+			result := (&toolshared.ToolResult{
 				ForLLM:  "media result",
 				ForUser: "media delivery",
 				Media:   []string{"media://suppressed-result"},
 			}).WithResponseHandled()
 			if tc.immediate {
-				result = (&tools.ToolResult{
+				result = (&toolshared.ToolResult{
 					ForLLM:  "media result",
 					ForUser: "media delivery",
 					Media:   []string{"media://suppressed-result"},
@@ -531,7 +532,7 @@ func TestPipelineSuppressedToolDeliveryRetainsHandledAndImmediateMedia(t *testin
 
 func TestPipelineToolCallIntentJournalFailurePreventsExecution(t *testing.T) {
 	registry := tools.NewToolRegistry()
-	tool := &steeringSafetyTestTool{name: "must-not-run", safety: tools.SteeringSafetyNonCancellable}
+	tool := &steeringSafetyTestTool{name: "must-not-run", safety: toolshared.SteeringSafetyNonCancellable}
 	registry.Register(tool)
 	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
 	ts := &turnState{agent: agent, opts: processOptions{Dispatch: DispatchRequest{SessionKey: "intent-fail"}}}
@@ -659,7 +660,7 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 		t.Fatalf("NewRequestUserInputTool() error = %v", err)
 	}
 	deferredTool := &steeringSafetyTestTool{
-		name: "deferred-write", safety: tools.SteeringSafetyCancellable,
+		name: "deferred-write", safety: toolshared.SteeringSafetyCancellable,
 	}
 	registry.Register(requestTool)
 	registry.Register(deferredTool)
@@ -735,7 +736,7 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 
 func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 	newTool := func(called chan interactions.Outcome) *fixedToolResultTool {
-		return &fixedToolResultTool{name: "domain_suspension", result: &tools.ToolResult{
+		return &fixedToolResultTool{name: "domain_suspension", result: &toolshared.ToolResult{
 			Silent: true,
 			Suspension: &interactions.SuspensionRequest{
 				Kind: interactions.KindQuestion, PromptSummary: "Release browser control", Timeout: time.Minute,
@@ -877,8 +878,8 @@ func TestPipelineForwardsAndCancelsSuspensionDomainResolution(t *testing.T) {
 			Kind: interactions.KindApproval, PromptSummary: "Injected prompt", Timeout: time.Hour,
 		}
 		injectedCalled := false
-		current := &tools.ToolResult{Suspension: trusted}
-		replacement := &tools.ToolResult{
+		current := &toolshared.ToolResult{Suspension: trusted}
+		replacement := &toolshared.ToolResult{
 			Suspension: injected,
 			SuspensionResolution: func(context.Context, interactions.Outcome) error {
 				injectedCalled = true
@@ -1091,7 +1092,7 @@ type pipelineLoopGuardReadTool struct {
 
 type steeringSafetyTestTool struct {
 	name       string
-	safety     tools.SteeringSafety
+	safety     toolshared.SteeringSafety
 	executions int
 }
 
@@ -1101,13 +1102,13 @@ func (t *steeringSafetyTestTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *steeringSafetyTestTool) ToolSteeringSafety(map[string]any) tools.SteeringSafety {
+func (t *steeringSafetyTestTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return t.safety
 }
 
-func (t *steeringSafetyTestTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+func (t *steeringSafetyTestTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.executions++
-	return tools.SilentResult(t.name + " complete")
+	return toolshared.SilentResult(t.name + " complete")
 }
 
 type unknownSteeringSafetyTestTool struct {
@@ -1120,9 +1121,9 @@ func (*unknownSteeringSafetyTestTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *unknownSteeringSafetyTestTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+func (t *unknownSteeringSafetyTestTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.executions++
-	return tools.SilentResult("unknown complete")
+	return toolshared.SilentResult("unknown complete")
 }
 
 func (t *pipelineLoopGuardReadTool) Name() string        { return "loop_hook_test" }
@@ -1138,10 +1139,10 @@ func (t *pipelineLoopGuardReadTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (t *pipelineLoopGuardReadTool) Execute(_ context.Context, args map[string]any) *tools.ToolResult {
+func (t *pipelineLoopGuardReadTool) Execute(_ context.Context, args map[string]any) *toolshared.ToolResult {
 	t.executions++
 	text, _ := args["text"].(string)
-	return tools.SilentResult(text)
+	return toolshared.SilentResult(text)
 }
 
 type capturedRuntimeEvent struct {
@@ -1195,9 +1196,9 @@ func (t *pipelineLoopGuardTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (t *pipelineLoopGuardTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+func (t *pipelineLoopGuardTool) Execute(context.Context, map[string]any) *toolshared.ToolResult {
 	t.executions++
-	return tools.ErrorResult("stable pipeline failure")
+	return toolshared.ErrorResult("stable pipeline failure")
 }
 
 func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
@@ -1389,7 +1390,7 @@ func TestPipelineEmergencyHaltPreservesReasonForResponseHandledTool(t *testing.T
 
 	tool := &fixedToolResultTool{
 		name:   "handled-loop",
-		result: tools.SilentResult("same successful result").WithResponseHandled(),
+		result: toolshared.SilentResult("same successful result").WithResponseHandled(),
 	}
 	agent.Tools.Register(tool)
 	agent.ToolLoopDetection = loopguard.DefaultConfig()
@@ -1793,11 +1794,11 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 
 func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testing.T) {
 	registry := tools.NewToolRegistry()
-	readOnly := &steeringSafetyTestTool{name: "read", safety: tools.SteeringSafetyReadOnly}
-	cancellable := &steeringSafetyTestTool{name: "write", safety: tools.SteeringSafetyCancellable}
-	nonCancellable := &steeringSafetyTestTool{name: "commit", safety: tools.SteeringSafetyNonCancellable}
+	readOnly := &steeringSafetyTestTool{name: "read", safety: toolshared.SteeringSafetyReadOnly}
+	cancellable := &steeringSafetyTestTool{name: "write", safety: toolshared.SteeringSafetyCancellable}
+	nonCancellable := &steeringSafetyTestTool{name: "commit", safety: toolshared.SteeringSafetyNonCancellable}
 	unknown := &unknownSteeringSafetyTestTool{}
-	for _, tool := range []tools.Tool{readOnly, cancellable, nonCancellable, unknown} {
+	for _, tool := range []toolshared.Tool{readOnly, cancellable, nonCancellable, unknown} {
 		registry.Register(tool)
 	}
 	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
@@ -1865,15 +1866,15 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 	}
 	if len(decisions) != 4 || decisions["call-read"].Decision != "finish" ||
 		decisions["call-write"].Decision != "skip" || decisions["call-commit"].Decision != "finish" ||
-		decisions["call-unknown"].Classification != string(tools.SteeringSafetyUnknown) {
+		decisions["call-unknown"].Classification != string(toolshared.SteeringSafetyUnknown) {
 		t.Fatalf("decisions = %#v", decisions)
 	}
 }
 
 func TestPipelineSteeringArrivingDuringBatchDoesNotCancelCompletedCall(t *testing.T) {
 	registry := tools.NewToolRegistry()
-	first := &steeringSafetyTestTool{name: "first-write", safety: tools.SteeringSafetyCancellable}
-	second := &steeringSafetyTestTool{name: "second-write", safety: tools.SteeringSafetyCancellable}
+	first := &steeringSafetyTestTool{name: "first-write", safety: toolshared.SteeringSafetyCancellable}
+	second := &steeringSafetyTestTool{name: "second-write", safety: toolshared.SteeringSafetyCancellable}
 	registry.Register(first)
 	registry.Register(second)
 	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
@@ -1910,9 +1911,9 @@ func TestToolLoopRunnerAppendPendingSubTurnResult_PersistsAndIngests(t *testing.
 			Sessions: sessionStore,
 		},
 		sessionKey:     "session-subturn-result",
-		pendingResults: make(chan *tools.ToolResult, 1),
+		pendingResults: make(chan *toolshared.ToolResult, 1),
 	}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "child result"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "child result"}
 	runner := &toolLoopRunner{
 		p:       pipeline,
 		turnCtx: context.Background(),
@@ -1983,9 +1984,9 @@ func (t *repeatingFatalTool) Parameters() map[string]any {
 	}
 }
 
-func (t *repeatingFatalTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *repeatingFatalTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	err := `MCP tool execution failed: failed to call tool: connection closed: calling "tools/call": client is closing: invalid character 'ð' looking for beginning of value`
-	return tools.ErrorResult(err)
+	return toolshared.ErrorResult(err)
 }
 
 func TestRunAgentLoop_AbortsRepeatedFatalToolTransportErrors(t *testing.T) {
@@ -2074,9 +2075,9 @@ func (t *fatalMCPServerTool) Parameters() map[string]any {
 	}
 }
 func (t *fatalMCPServerTool) MCPServerName() string { return "gpt_researcher" }
-func (t *fatalMCPServerTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *fatalMCPServerTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	err := `MCP tool execution failed: failed to call tool: connection closed: calling "tools/call": client is closing: invalid character 'ð' looking for beginning of value`
-	return tools.ErrorResult(err)
+	return toolshared.ErrorResult(err)
 }
 
 func TestRunAgentLoop_AbortsFatalMCPServerTransportErrorImmediately(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // Test constants (use defaults from subturn.go)
@@ -88,7 +89,7 @@ func TestSpawnSubTurn(t *testing.T) {
 			parentDepth: 0,
 			config: SubTurnConfig{
 				Model: "gpt-4o-mini",
-				Tools: []tools.Tool{}, // At least one tool
+				Tools: []toolshared.Tool{}, // At least one tool
 			},
 			wantErr:   nil,
 			wantSpawn: true,
@@ -99,7 +100,7 @@ func TestSpawnSubTurn(t *testing.T) {
 			parentDepth: 1,
 			config: SubTurnConfig{
 				Model: "gpt-4o-mini",
-				Tools: []tools.Tool{},
+				Tools: []toolshared.Tool{},
 			},
 			wantErr:   nil,
 			wantSpawn: true,
@@ -110,7 +111,7 @@ func TestSpawnSubTurn(t *testing.T) {
 			parentDepth: 3,
 			config: SubTurnConfig{
 				Model: "gpt-4o-mini",
-				Tools: []tools.Tool{},
+				Tools: []toolshared.Tool{},
 			},
 			wantErr:       ErrDepthLimitExceeded,
 			wantSpawn:     false,
@@ -122,7 +123,7 @@ func TestSpawnSubTurn(t *testing.T) {
 			parentDepth: 0,
 			config: SubTurnConfig{
 				Model: "",
-				Tools: []tools.Tool{},
+				Tools: []toolshared.Tool{},
 			},
 			wantErr:   ErrInvalidSubTurnConfig,
 			wantSpawn: false,
@@ -142,7 +143,7 @@ func TestSpawnSubTurn(t *testing.T) {
 				turnID:         "parent-1",
 				depth:          tt.parentDepth,
 				childTurnIDs:   []string{},
-				pendingResults: make(chan *tools.ToolResult, 10),
+				pendingResults: make(chan *toolshared.ToolResult, 10),
 				session:        &ephemeralSessionStore{},
 				agent:          al.registry.GetDefaultAgent(),
 			}
@@ -251,7 +252,7 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 		al.newTurnEventScope(agent.ID, agent.Workspace, "owner-session", newTurnContext(inbound, nil, nil)),
 	)
 	parent.ctx = t.Context()
-	parent.pendingResults = make(chan *tools.ToolResult, 4)
+	parent.pendingResults = make(chan *toolshared.ToolResult, 4)
 	parent.concurrencySem = make(chan struct{}, defaultMaxConcurrentSubTurns)
 
 	result, err := spawnSubTurn(t.Context(), al, parent, SubTurnConfig{
@@ -419,7 +420,7 @@ func TestDurableTaskSubTurnWaitsForHumanApproval(t *testing.T) {
 		),
 	)
 	parent.ctx = t.Context()
-	parent.pendingResults = make(chan *tools.ToolResult, 4)
+	parent.pendingResults = make(chan *toolshared.ToolResult, 4)
 	parent.concurrencySem = make(chan struct{}, defaultMaxConcurrentSubTurns)
 	result, err := spawnSubTurn(t.Context(), al, parent, SubTurnConfig{
 		Model: agent.Model, SystemPrompt: "deploy", TaskID: "subagent-approval", Critical: true,
@@ -479,7 +480,7 @@ func TestSpawnSubTurnInheritsSameAgentAdmission(t *testing.T) {
 		turnID:         "parent-with-admission",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 10),
+		pendingResults: make(chan *toolshared.ToolResult, 10),
 		session:        &ephemeralSessionStore{},
 		agent:          parentAgent,
 	}
@@ -531,7 +532,7 @@ func TestSpawnSubTurnRetainsAdmissionAfterParentRelease(t *testing.T) {
 	parent := &turnState{
 		ctx:            parentCtx,
 		turnID:         "parent-released-before-child",
-		pendingResults: make(chan *tools.ToolResult, 10),
+		pendingResults: make(chan *toolshared.ToolResult, 10),
 		session:        &ephemeralSessionStore{},
 		agent:          parentAgent,
 	}
@@ -589,12 +590,12 @@ func TestSpawnSubTurn_EphemeralSessionIsolation(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-1",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        parentSession,
 	}
 
-	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}}
+	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []toolshared.Tool{}}
 
 	originalParentLen := len(parentSession.GetHistory(""))
 
@@ -629,12 +630,12 @@ func TestSpawnSubTurn_ResultDelivery(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-1",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 1),
+		pendingResults: make(chan *toolshared.ToolResult, 1),
 		session:        &ephemeralSessionStore{},
 	}
 
 	// Set Async=true to test async result delivery via pendingResults channel
-	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}, Async: true}
+	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []toolshared.Tool{}, Async: true}
 
 	_, _ = spawnSubTurn(context.Background(), al, parent, cfg)
 
@@ -659,12 +660,12 @@ func TestSpawnSubTurn_ResultDeliverySync(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-sync-1",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 1),
+		pendingResults: make(chan *toolshared.ToolResult, 1),
 		session:        &ephemeralSessionStore{},
 	}
 
 	// Sync call (Async=false, the default) - result should be returned directly
-	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}, Async: false}
+	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []toolshared.Tool{}, Async: false}
 
 	result, err := spawnSubTurn(context.Background(), al, parent, cfg)
 	if err != nil {
@@ -700,7 +701,7 @@ func TestSpawnSubTurn_OrphanResultRouting(t *testing.T) {
 		cancelFunc:     cancelParent,
 		turnID:         "parent-1",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 1),
+		pendingResults: make(chan *toolshared.ToolResult, 1),
 		session:        &ephemeralSessionStore{},
 	}
 
@@ -708,7 +709,7 @@ func TestSpawnSubTurn_OrphanResultRouting(t *testing.T) {
 	parent.Finish(false)
 
 	// Call deliverSubTurnResult directly to simulate a delayed child
-	deliverSubTurnResult(al, parent, "delayed-child", &tools.ToolResult{ForLLM: "late result"})
+	deliverSubTurnResult(al, parent, "delayed-child", &toolshared.ToolResult{ForLLM: "late result"})
 
 	time.Sleep(10 * time.Millisecond) // let event goroutine flush
 	// Verify Orphan event is emitted
@@ -732,11 +733,11 @@ func TestSubTurnResultChannelRegistration(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-reg-1",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		session:        &ephemeralSessionStore{},
 	}
 
-	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}}
+	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []toolshared.Tool{}}
 
 	// Before spawn: channel should not be registered
 	if results := al.dequeuePendingSubTurnResults(parent.turnID); results != nil {
@@ -767,16 +768,16 @@ func TestDequeuePendingSubTurnResults(t *testing.T) {
 		sessionKey:     sessionKey,
 		depth:          0,
 		session:        &ephemeralSessionStore{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 	}
 	scope := ts.runtimeSessionScope()
 	al.activeTurnStates.Store(scope, ts)
 	defer al.activeTurnStates.Delete(scope)
 
 	// Put 3 results in
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-1"}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-2"}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-3"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "result-1"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "result-2"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "result-3"}
 
 	results := al.dequeuePendingSubTurnResults(sessionKey)
 	if len(results) != 3 {
@@ -808,12 +809,12 @@ func TestSubTurnConcurrencySemaphore(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-concurrency",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 10),
+		pendingResults: make(chan *toolshared.ToolResult, 10),
 		session:        &ephemeralSessionStore{},
 		concurrencySem: make(chan struct{}, 2), // Only allow 2 concurrent children
 	}
 
-	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}}
+	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []toolshared.Tool{}}
 
 	// Spawn 2 children — should succeed immediately
 	done := make(chan bool, 3)
@@ -858,7 +859,7 @@ func TestHardAbortCascading(t *testing.T) {
 		sessionKey:     sessionKey,
 		depth:          0,
 		session:        &ephemeralSessionStore{},
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, 5),
 		al:             al,
 	}
@@ -876,7 +877,7 @@ func TestHardAbortCascading(t *testing.T) {
 		cancelFunc:     childCancel,
 		turnID:         childID,
 		workspace:      cfg.Agents.Defaults.Workspace,
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		al:             al,
 	}
 	childScope := newRuntimeSubTurnScope(childTS.workspace, childID)
@@ -948,7 +949,7 @@ func TestHardAbortSessionRollback(t *testing.T) {
 		depth:                0,
 		session:              sess,
 		initialHistoryLength: 2, // Snapshot: 2 messages
-		pendingResults:       make(chan *tools.ToolResult, 16),
+		pendingResults:       make(chan *toolshared.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, 5),
 	}
 	rootTS.captureCanonicalRestorePoint(sess.GetHistory(""), sess.GetSummary(""))
@@ -1026,7 +1027,7 @@ func TestNestedSubTurnHierarchy(t *testing.T) {
 		turnID:         "root-turn",
 		depth:          0,
 		session:        rootSession,
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, 5),
 	}
 
@@ -1064,7 +1065,7 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-deadlock-test",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 2),
+		pendingResults: make(chan *toolshared.ToolResult, 2),
 	}
 
 	// Simulate multiple child turns delivering results concurrently.
@@ -1075,7 +1076,7 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			result := &tools.ToolResult{ForLLM: fmt.Sprintf("result-%d", id)}
+			result := &toolshared.ToolResult{ForLLM: fmt.Sprintf("result-%d", id)}
 			deliverSubTurnResult(nil, parent, fmt.Sprintf("child-%d", id), result)
 		}(i)
 	}
@@ -1144,7 +1145,7 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 		depth:                0,
 		session:              sess,
 		initialHistoryLength: 1, // Snapshot: 1 message
-		pendingResults:       make(chan *tools.ToolResult, 16),
+		pendingResults:       make(chan *toolshared.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, 5),
 	}
 	rootTS.captureCanonicalRestorePoint(sess.GetHistory("")[:1], sess.GetSummary(""))
@@ -1187,7 +1188,7 @@ func TestFinishedChannelClosedState(t *testing.T) {
 		cancelFunc:     cancel,
 		turnID:         "test-finished-channel",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 2),
+		pendingResults: make(chan *toolshared.ToolResult, 2),
 	}
 
 	// Verify Finished channel is blocking initially
@@ -1215,7 +1216,7 @@ func TestFinishedChannelClosedState(t *testing.T) {
 	ts.Finish(false) // Should not panic
 
 	// A writable channel must not let delivery bypass the finished state.
-	result := &tools.ToolResult{ForLLM: "late result"}
+	result := &toolshared.ToolResult{ForLLM: "late result"}
 	deliverSubTurnResult(nil, ts, "child-1", result)
 	select {
 	case <-ts.pendingResults:
@@ -1241,15 +1242,15 @@ func TestFinalPollCapturesLateResults(t *testing.T) {
 		sessionKey:     sessionKey,
 		depth:          0,
 		session:        &ephemeralSessionStore{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 	}
 	scope := ts.runtimeSessionScope()
 	al.activeTurnStates.Store(scope, ts)
 	defer al.activeTurnStates.Delete(scope)
 
 	// Simulate results arriving after last iteration poll
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result 1"}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result 2"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "result 1"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "result 2"}
 
 	// Dequeue should capture both results
 	results := al.dequeuePendingSubTurnResults(sessionKey)
@@ -1268,9 +1269,9 @@ func TestFinalPollCapturesLateResults(t *testing.T) {
 func TestSealOrDrainPendingResultsPreventsTerminalGapDelivery(t *testing.T) {
 	ts := &turnState{
 		turnID:         "terminal-gap",
-		pendingResults: make(chan *tools.ToolResult, 2),
+		pendingResults: make(chan *toolshared.ToolResult, 2),
 	}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "queued"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "queued"}
 
 	results, sealed := ts.sealOrDrainPendingResults()
 	if sealed || len(results) != 1 || results[0].ForLLM != "queued" {
@@ -1282,7 +1283,7 @@ func TestSealOrDrainPendingResultsPreventsTerminalGapDelivery(t *testing.T) {
 		t.Fatalf("second terminal check = (%v, %v), want empty sealed queue", results, sealed)
 	}
 
-	deliverSubTurnResult(nil, ts, "late-child", &tools.ToolResult{ForLLM: "late"})
+	deliverSubTurnResult(nil, ts, "late-child", &toolshared.ToolResult{ForLLM: "late"})
 	select {
 	case result := <-ts.pendingResults:
 		t.Fatalf("sealed result queue accepted late delivery: %#v", result)
@@ -1293,10 +1294,10 @@ func TestSealOrDrainPendingResultsPreventsTerminalGapDelivery(t *testing.T) {
 func TestPendingSubTurnResultForcesIterationAtLoopLimit(t *testing.T) {
 	pipeline := &Pipeline{}
 	ts := &turnState{
-		pendingResults: make(chan *tools.ToolResult, 1),
+		pendingResults: make(chan *toolshared.ToolResult, 1),
 		iteration:      3,
 	}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "boundary result"}
+	ts.pendingResults <- &toolshared.ToolResult{ForLLM: "boundary result"}
 	exec := &turnExecution{}
 
 	if !pipeline.continueWithPendingSubTurnResults(ts, exec) {
@@ -1309,7 +1310,7 @@ func TestPendingSubTurnResultForcesIterationAtLoopLimit(t *testing.T) {
 	if pipeline.continueWithPendingSubTurnResults(ts, exec) {
 		t.Fatal("empty terminal queue requested another iteration")
 	}
-	deliverSubTurnResult(nil, ts, "after-limit", &tools.ToolResult{ForLLM: "too late"})
+	deliverSubTurnResult(nil, ts, "after-limit", &toolshared.ToolResult{ForLLM: "too late"})
 	if got := len(ts.pendingResults); got != 0 {
 		t.Fatalf("sealed terminal queue accepted %d late results", got)
 	}
@@ -1317,8 +1318,8 @@ func TestPendingSubTurnResultForcesIterationAtLoopLimit(t *testing.T) {
 
 func TestEmptyPendingSubTurnResultDoesNotResumeTerminalTurn(t *testing.T) {
 	pipeline := &Pipeline{}
-	ts := &turnState{pendingResults: make(chan *tools.ToolResult, 1)}
-	ts.pendingResults <- &tools.ToolResult{}
+	ts := &turnState{pendingResults: make(chan *toolshared.ToolResult, 1)}
+	ts.pendingResults <- &toolshared.ToolResult{}
 	exec := &turnExecution{}
 
 	if pipeline.continueWithPendingSubTurnResults(ts, exec) {
@@ -1327,7 +1328,7 @@ func TestEmptyPendingSubTurnResultDoesNotResumeTerminalTurn(t *testing.T) {
 	if len(exec.pendingMessages) != 0 {
 		t.Fatalf("empty subturn result appended pending messages: %#v", exec.pendingMessages)
 	}
-	deliverSubTurnResult(nil, ts, "after-empty", &tools.ToolResult{ForLLM: "too late"})
+	deliverSubTurnResult(nil, ts, "after-empty", &toolshared.ToolResult{ForLLM: "too late"})
 	if got := len(ts.pendingResults); got != 0 {
 		t.Fatalf("terminal queue accepted %d results after empty batch", got)
 	}
@@ -1354,7 +1355,7 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-panic",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 1),
+		pendingResults: make(chan *toolshared.ToolResult, 1),
 		session:        &ephemeralSessionStore{},
 	}
 
@@ -1362,7 +1363,7 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 	defer collectCleanup()
 
 	// Test async call - result should still be delivered via channel
-	asyncCfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}, Async: true}
+	asyncCfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []toolshared.Tool{}, Async: true}
 	result, err := spawnSubTurn(context.Background(), al, parent, asyncCfg)
 
 	// Should return error from panic recovery
@@ -1454,7 +1455,7 @@ func TestGetActiveTurn(t *testing.T) {
 		depth:          0,
 		childTurnIDs:   []string{},
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
@@ -1515,7 +1516,7 @@ func TestGetActiveTurn_WithChildren(t *testing.T) {
 		depth:          0,
 		childTurnIDs:   []string{"child-1", "child-2"},
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
@@ -1549,7 +1550,7 @@ func TestTurnStateInfo_ThreadSafety(t *testing.T) {
 		depth:          1,
 		childTurnIDs:   []string{},
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
@@ -1670,7 +1671,7 @@ func TestInterruptHard_Alias(t *testing.T) {
 		depth:                0,
 		session:              newEphemeralSession(nil),
 		initialHistoryLength: 0,
-		pendingResults:       make(chan *tools.ToolResult, 16),
+		pendingResults:       make(chan *toolshared.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
@@ -1697,7 +1698,7 @@ func TestFinish_ConcurrentCalls(t *testing.T) {
 		ctx:            ctx,
 		turnID:         "parent-concurrent-finish",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -1737,7 +1738,7 @@ func TestFinish_ConcurrentCalls(t *testing.T) {
 	// Child goroutines may still retain send access, so Finish must not close
 	// pendingResults. Lifecycle completion is signaled through Finished().
 	select {
-	case parentTS.pendingResults <- &tools.ToolResult{ForLLM: "after-finish"}:
+	case parentTS.pendingResults <- &toolshared.ToolResult{ForLLM: "after-finish"}:
 	case <-time.After(time.Second):
 		t.Fatal("pendingResults should remain open after Finish")
 	}
@@ -1777,7 +1778,7 @@ func TestDeliverSubTurnResult_RaceWithFinish(t *testing.T) {
 		ctx:            ctx,
 		turnID:         "parent-race-test",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -1798,7 +1799,7 @@ func TestDeliverSubTurnResult_RaceWithFinish(t *testing.T) {
 	for i := 0; i < numResults; i++ {
 		go func(id int) {
 			defer wg.Done()
-			result := &tools.ToolResult{
+			result := &toolshared.ToolResult{
 				ForLLM: fmt.Sprintf("result-%d", id),
 			}
 			// This should not panic, even if Finish() is called concurrently
@@ -1853,16 +1854,16 @@ func (m *subturnMediaTool) Parameters() map[string]any {
 	}
 }
 
-func (m *subturnMediaTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (m *subturnMediaTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	ref, err := m.store.Store(m.path, media.MediaMeta{
 		Filename:    filepath.Base(m.path),
 		ContentType: "image/png",
 		Source:      "test:subturn_media_tool",
 	}, "test:subturn_media")
 	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
-	return tools.MediaResult("Created media artifact.", []string{ref})
+	return toolshared.MediaResult("Created media artifact.", []string{ref})
 }
 
 type subturnToolThenFinalProvider struct {
@@ -1952,7 +1953,7 @@ func TestSpawnSubTurn_DefaultSyncDeliveryRemovesUserDeliveryTools(t *testing.T) 
 		turnID:         "parent-default-sync-delivery",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
@@ -2003,7 +2004,7 @@ func TestSpawnSubTurn_TargetAgentIDRemovesNodeFileTools(t *testing.T) {
 	parent := &turnState{
 		ctx:            context.Background(),
 		turnID:         "parent-cross-agent-file-tools",
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
@@ -2072,7 +2073,7 @@ func TestSpawnSubTurn_InheritsSuppressToolFeedback(t *testing.T) {
 		turnID:         "parent-suppress-tool-feedback",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          parentAgent,
@@ -2151,7 +2152,7 @@ func TestSpawnSubTurn_DurableTaskDismissesPublishedToolFeedbackSession(t *testin
 		turnID:         "parent-durable-tool-feedback",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          parentAgent,
@@ -2230,7 +2231,7 @@ func TestSpawnSubTurn_ReturnsStructuredCompletionWithMedia(t *testing.T) {
 		agent:          agent,
 		agentID:        "main",
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		opts: processOptions{
 			Dispatch: DispatchRequest{
@@ -2250,7 +2251,7 @@ func TestSpawnSubTurn_ReturnsStructuredCompletionWithMedia(t *testing.T) {
 	result, err := spawnSubTurn(ctx, al, parentTS, SubTurnConfig{
 		SystemPrompt: "make artifact",
 		Model:        "test-model",
-		DeliveryMode: tools.AsyncDeliveryParentOnly,
+		DeliveryMode: toolshared.AsyncDeliveryParentOnly,
 	})
 	if err != nil {
 		t.Fatalf("spawnSubTurn failed: %v", err)
@@ -2312,7 +2313,7 @@ func TestConcurrencySemaphore_Timeout(t *testing.T) {
 		turnID:         "parent-timeout-test",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -2412,7 +2413,7 @@ func TestContextWrapping_SingleLayer(t *testing.T) {
 		turnID:         "parent-context-test",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -2458,7 +2459,7 @@ func TestSyncSubTurn_NoChannelDelivery(t *testing.T) {
 		turnID:         "parent-sync-test",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -2515,7 +2516,7 @@ func TestAsyncSubTurn_ChannelDelivery(t *testing.T) {
 		turnID:         "parent-async-test",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -2584,7 +2585,7 @@ func TestGrandchildAbort_CascadingCancellation(t *testing.T) {
 		sessionKey:     "grandparent",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		childTurnIDs:   []string{"parent"},
 		al:             al,
@@ -2640,7 +2641,7 @@ func TestNestedSubTurn_GracefulFinishSignalsDirectChildren(t *testing.T) {
 		ctx:            parentCtx,
 		turnID:         "parent-graceful",
 		depth:          1,
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(parentCtx)
 
@@ -2649,7 +2650,7 @@ func TestNestedSubTurn_GracefulFinishSignalsDirectChildren(t *testing.T) {
 		turnID:          "child-graceful",
 		depth:           2,
 		parentTurnState: parentTS,
-		pendingResults:  make(chan *tools.ToolResult, 16),
+		pendingResults:  make(chan *toolshared.ToolResult, 16),
 	}
 
 	if childTS.IsParentEnded() {
@@ -2717,13 +2718,13 @@ func TestAsyncSubTurn_ParentWaitsForChild(t *testing.T) {
 		turnID:         "parent-wait",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
 	var subTurnErr error
-	var subTurnResult *tools.ToolResult
+	var subTurnResult *toolshared.ToolResult
 	var wg sync.WaitGroup
 
 	// Spawn async SubTurn in a goroutine
@@ -2785,7 +2786,7 @@ func TestFinish_GracefulVsHard(t *testing.T) {
 			ctx:            ctx,
 			turnID:         "graceful-test",
 			depth:          0,
-			pendingResults: make(chan *tools.ToolResult, 16),
+			pendingResults: make(chan *toolshared.ToolResult, 16),
 		}
 		ts.ctx, ts.cancelFunc = context.WithCancel(ctx)
 
@@ -2813,7 +2814,7 @@ func TestFinish_GracefulVsHard(t *testing.T) {
 			ctx:            ctx,
 			turnID:         "hard-test",
 			depth:          0,
-			pendingResults: make(chan *tools.ToolResult, 16),
+			pendingResults: make(chan *toolshared.ToolResult, 16),
 		}
 		ts.ctx, ts.cancelFunc = context.WithCancel(ctx)
 
@@ -2837,7 +2838,7 @@ func TestFinish_GracefulVsHard(t *testing.T) {
 			ctx:            ctx,
 			turnID:         "parent-isended-test",
 			depth:          0,
-			pendingResults: make(chan *tools.ToolResult, 16),
+			pendingResults: make(chan *toolshared.ToolResult, 16),
 		}
 		parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -2846,7 +2847,7 @@ func TestFinish_GracefulVsHard(t *testing.T) {
 			turnID:          "child-isended-test",
 			depth:           1,
 			parentTurnState: parentTS,
-			pendingResults:  make(chan *tools.ToolResult, 16),
+			pendingResults:  make(chan *toolshared.ToolResult, 16),
 		}
 
 		// Before parent finishes
@@ -2884,7 +2885,7 @@ func TestSubTurn_IndependentContext(t *testing.T) {
 		turnID:         "parent-independent",
 		depth:          0,
 		session:        newEphemeralSession(nil),
-		pendingResults: make(chan *tools.ToolResult, 16),
+		pendingResults: make(chan *toolshared.ToolResult, 16),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
@@ -3016,7 +3017,7 @@ func TestSpawnSubTurn_TargetAgentID_UsesTargetAgent(t *testing.T) {
 		turnID:         "parent-alpha",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
@@ -3051,7 +3052,7 @@ func TestSpawnSubTurn_TargetAgentID_NotFound(t *testing.T) {
 		turnID:         "parent-alpha",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
@@ -3157,7 +3158,7 @@ func TestSpawnSubTurn_TargetAgentID_EmptyModelAccepted(t *testing.T) {
 		turnID:         "parent-alpha",
 		depth:          0,
 		childTurnIDs:   []string{},
-		pendingResults: make(chan *tools.ToolResult, 4),
+		pendingResults: make(chan *toolshared.ToolResult, 4),
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
@@ -3217,7 +3218,7 @@ func TestDurableSyncDelegateUserOnlyPublishesExactlyOnce(t *testing.T) {
 				Arguments: map[string]any{
 					"agent_id":      "beta",
 					"task":          "answer the user",
-					"delivery_mode": string(tools.AsyncDeliveryUserOnly),
+					"delivery_mode": string(toolshared.AsyncDeliveryUserOnly),
 				},
 			}},
 		},
@@ -3303,7 +3304,7 @@ func TestDurableSyncDelegateFailureRejectsRecoveredParentFinal(t *testing.T) {
 				Arguments: map[string]any{
 					"agent_id":      "beta",
 					"task":          "answer the user",
-					"delivery_mode": string(tools.AsyncDeliveryUserOnly),
+					"delivery_mode": string(toolshared.AsyncDeliveryUserOnly),
 				},
 			}},
 		},

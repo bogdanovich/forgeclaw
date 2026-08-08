@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/bogdanovich/mintclaw/pkg/logger"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
@@ -36,11 +37,11 @@ func (t *RegexSearchTool) Description() string {
 	return "Search available hidden tools on-demand using a regex pattern. Returns JSON schemas of discovered tools."
 }
 
-func (t *RegexSearchTool) PromptMetadata() PromptMetadata {
-	return PromptMetadata{
-		Layer:  ToolPromptLayerCapability,
-		Slot:   ToolPromptSlotTooling,
-		Source: ToolPromptSourceDiscovery,
+func (t *RegexSearchTool) PromptMetadata() toolshared.PromptMetadata {
+	return toolshared.PromptMetadata{
+		Layer:  toolshared.ToolPromptLayerCapability,
+		Slot:   toolshared.ToolPromptSlotTooling,
+		Source: toolshared.ToolPromptSourceDiscovery,
 	}
 }
 
@@ -57,17 +58,17 @@ func (t *RegexSearchTool) Parameters() map[string]any {
 	}
 }
 
-func (t *RegexSearchTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *RegexSearchTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	pattern, ok := args["pattern"].(string)
 	if !ok || strings.TrimSpace(pattern) == "" {
 		// An empty string regex (?i) will match every hidden tool,
 		// dumping massive payloads into the context and burning tokens.
-		return ErrorResult("Missing or invalid 'pattern' argument. Must be a non-empty string.")
+		return toolshared.ErrorResult("Missing or invalid 'pattern' argument. Must be a non-empty string.")
 	}
 
 	if len(pattern) > MaxRegexPatternLength {
 		logger.WarnCF("discovery", "Regex pattern rejected (too long)", map[string]any{"len": len(pattern)})
-		return ErrorResult(fmt.Sprintf("Pattern too long: max %d characters allowed", MaxRegexPatternLength))
+		return toolshared.ErrorResult(fmt.Sprintf("Pattern too long: max %d characters allowed", MaxRegexPatternLength))
 	}
 
 	logger.DebugCF("discovery", "Regex search", map[string]any{"pattern": pattern})
@@ -75,7 +76,9 @@ func (t *RegexSearchTool) Execute(ctx context.Context, args map[string]any) *Too
 	res, err := t.registry.SearchRegex(pattern, t.maxSearchResults)
 	if err != nil {
 		logger.WarnCF("discovery", "Invalid regex pattern", map[string]any{"pattern": pattern, "error": err.Error()})
-		return ErrorResult(fmt.Sprintf("Invalid regex pattern syntax: %v. Please fix your regex and try again.", err))
+		return toolshared.ErrorResult(
+			fmt.Sprintf("Invalid regex pattern syntax: %v. Please fix your regex and try again.", err),
+		)
 	}
 
 	logger.InfoCF("discovery", "Regex search completed", map[string]any{"pattern": pattern, "results": len(res)})
@@ -105,11 +108,11 @@ func (t *BM25SearchTool) Description() string {
 	return "Search available hidden tools on-demand using natural language query describing the action you need to perform. Returns JSON schemas of discovered tools."
 }
 
-func (t *BM25SearchTool) PromptMetadata() PromptMetadata {
-	return PromptMetadata{
-		Layer:  ToolPromptLayerCapability,
-		Slot:   ToolPromptSlotTooling,
-		Source: ToolPromptSourceDiscovery,
+func (t *BM25SearchTool) PromptMetadata() toolshared.PromptMetadata {
+	return toolshared.PromptMetadata{
+		Layer:  toolshared.ToolPromptLayerCapability,
+		Slot:   toolshared.ToolPromptSlotTooling,
+		Source: toolshared.ToolPromptSourceDiscovery,
 	}
 }
 
@@ -126,12 +129,12 @@ func (t *BM25SearchTool) Parameters() map[string]any {
 	}
 }
 
-func (t *BM25SearchTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *BM25SearchTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	query, ok := args["query"].(string)
 	if !ok || strings.TrimSpace(query) == "" {
 		// An empty string query will match every hidden tool,
 		// dumping massive payloads into the context and burning tokens.
-		return ErrorResult("Missing or invalid 'query' argument. Must be a non-empty string.")
+		return toolshared.ErrorResult("Missing or invalid 'query' argument. Must be a non-empty string.")
 	}
 
 	logger.DebugCF("discovery", "BM25 search", map[string]any{"query": query})
@@ -139,13 +142,13 @@ func (t *BM25SearchTool) Execute(ctx context.Context, args map[string]any) *Tool
 	cached := t.getOrBuildEngine()
 	if cached == nil {
 		logger.DebugCF("discovery", "BM25 search: no hidden tools available", nil)
-		return SilentResult("No tools found matching the query.")
+		return toolshared.SilentResult("No tools found matching the query.")
 	}
 
 	ranked := cached.engine.Search(query, t.maxSearchResults)
 	if len(ranked) == 0 {
 		logger.DebugCF("discovery", "BM25 search: no matches", map[string]any{"query": query})
-		return SilentResult("No tools found matching the query.")
+		return toolshared.SilentResult("No tools found matching the query.")
 	}
 
 	results := make([]ToolSearchResult, len(ranked))
@@ -206,9 +209,9 @@ func (r *ToolRegistry) SearchRegex(pattern string, maxSearchResults int) ([]Tool
 	return results, nil
 }
 
-func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult, ttl int) *ToolResult {
+func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult, ttl int) *toolshared.ToolResult {
 	if len(results) == 0 {
-		return SilentResult("No tools found matching the query.")
+		return toolshared.SilentResult("No tools found matching the query.")
 	}
 
 	names := make([]string, len(results))
@@ -220,7 +223,7 @@ func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult,
 
 	b, err := json.Marshal(results)
 	if err != nil {
-		return ErrorResult("Failed to format search results: " + err.Error())
+		return toolshared.ErrorResult("Failed to format search results: " + err.Error())
 	}
 
 	msg := fmt.Sprintf(
@@ -229,7 +232,7 @@ func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult,
 		string(b),
 	)
 
-	return SilentResult(msg)
+	return toolshared.SilentResult(msg)
 }
 
 // Lightweight internal type used as corpus document for BM25.

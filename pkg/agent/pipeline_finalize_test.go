@@ -6,7 +6,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestNewFinalizationContextCapturesTerminalSnapshot(t *testing.T) {
@@ -29,7 +29,7 @@ func TestNewFinalizationContextCapturesTerminalSnapshot(t *testing.T) {
 			llmModelName:     "fallback-model",
 			defaultModelName: "primary-model",
 		},
-		completionMedia:        []tools.CompletionMedia{{Ref: "media://result"}},
+		completionMedia:        []toolshared.CompletionMedia{{Ref: "media://result"}},
 		sawAdditionalUserInput: true,
 	}
 	llm := &LLMIterationState{

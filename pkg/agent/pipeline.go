@@ -12,7 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // Pipeline holds the runtime dependencies used by Pipeline methods.
@@ -247,9 +247,9 @@ type syncToolResultDeliveryManager interface {
 	applySyncToolResultDelivery(
 		ctx context.Context,
 		ts *turnState,
-		result *tools.ToolResult,
+		result *toolshared.ToolResult,
 		toolName string,
-	) ([]providers.Attachment, *tools.ToolResult)
+	) ([]providers.Attachment, *toolshared.ToolResult)
 }
 
 type toolFeedbackManager interface {

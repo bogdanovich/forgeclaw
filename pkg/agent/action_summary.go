@@ -8,7 +8,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type TurnActionRecord struct {
@@ -51,7 +51,7 @@ func appendTurnActionRecord(
 	return append(records, rec)
 }
 
-func hasVerifiedWriteAudit(audit []tools.WriteAuditEntry) bool {
+func hasVerifiedWriteAudit(audit []toolshared.WriteAuditEntry) bool {
 	for _, entry := range audit {
 		if !entry.Success {
 			continue
@@ -193,10 +193,10 @@ func shouldSuppressUnverifiedWriteOutcome(
 }
 
 func appendTurnWriteAudit(
-	records []tools.WriteAuditEntry,
+	records []toolshared.WriteAuditEntry,
 	toolName string,
-	audit []tools.WriteAuditEntry,
-) []tools.WriteAuditEntry {
+	audit []toolshared.WriteAuditEntry,
+) []toolshared.WriteAuditEntry {
 	for _, entry := range audit {
 		entry.Kind = strings.TrimSpace(entry.Kind)
 		entry.Target = strings.TrimSpace(entry.Target)

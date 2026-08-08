@@ -8,6 +8,7 @@ import (
 	"time"
 
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const taskStatusActiveStaleAfter = 30 * time.Minute
@@ -70,43 +71,43 @@ func (t *TaskStatusTool) Parameters() map[string]any {
 	}
 }
 
-func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	if t == nil || t.registry == nil {
-		return ErrorResult("task registry not configured")
+		return toolshared.ErrorResult("task registry not configured")
 	}
 	if _, err := t.registry.MarkStaleActiveLost(
 		taskStatusActiveStaleAfter,
 		"active task did not report progress before task_status stale timeout",
 	); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to reconcile stale active tasks: %v", err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("failed to reconcile stale active tasks: %v", err)).WithError(err)
 	}
 	taskID, err := optionalTaskStatusStringArg(args, "task_id")
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 	taskKind, err := optionalTaskStatusStringArg(args, "task_kind")
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 	includeEvents, err := optionalTaskStatusBoolArg(args, "include_events")
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 	includeDeliverable, err := optionalTaskStatusBoolArg(args, "include_deliverable")
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 	if includeDeliverable && taskID == "" {
-		return ErrorResult("include_deliverable requires task_id")
+		return toolshared.ErrorResult("include_deliverable requires task_id")
 	}
-	callerChannel := ToolChannel(ctx)
-	callerChatID := ToolChatID(ctx)
-	callerTopicID := ToolTopicID(ctx)
+	callerChannel := toolshared.ToolChannel(ctx)
+	callerChatID := toolshared.ToolChatID(ctx)
+	callerTopicID := toolshared.ToolTopicID(ctx)
 
 	if taskID != "" {
 		rec, ok := t.registry.Get(taskID)
 		if !ok || !taskRecordVisibleToCaller(rec, callerChannel, callerChatID, callerTopicID) {
-			return ErrorResult(fmt.Sprintf("No task found with task ID: %s", taskID))
+			return toolshared.ErrorResult(fmt.Sprintf("No task found with task ID: %s", taskID))
 		}
 		out := formatTaskRecord(rec)
 		if includeDeliverable {
@@ -115,11 +116,11 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		if includeEvents {
 			out = out + "\n" + formatTaskEvents(t.registry.ListEvents(taskID))
 		}
-		return NewToolResult(out)
+		return toolshared.NewToolResult(out)
 	}
 	limit, err := optionalTaskStatusLimitArg(args)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	records := t.registry.List()
@@ -135,9 +136,9 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	}
 	if len(filtered) == 0 {
 		if taskKind != "" {
-			return NewToolResult(fmt.Sprintf("No visible tasks found for task_kind %q.", taskKind))
+			return toolshared.NewToolResult(fmt.Sprintf("No visible tasks found for task_kind %q.", taskKind))
 		}
-		return NewToolResult("No visible durable tasks are registered for this conversation.")
+		return toolshared.NewToolResult("No visible durable tasks are registered for this conversation.")
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
@@ -187,7 +188,7 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 			omitted,
 		))
 	}
-	return NewToolResult(strings.TrimSpace(sb.String()))
+	return toolshared.NewToolResult(strings.TrimSpace(sb.String()))
 }
 
 func formatCompleteTaskDeliverable(rec taskregistry.Record) string {

@@ -15,7 +15,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -138,13 +138,13 @@ func (r *LLMHookResponse) Clone() *LLMHookResponse {
 }
 
 type ToolCallHookRequest struct {
-	Meta       HookMeta          `json:"meta"`
-	Context    *TurnContext      `json:"context,omitempty"`
-	Tool       string            `json:"tool"`
-	Arguments  map[string]any    `json:"arguments,omitempty"`
-	Channel    string            `json:"channel,omitempty"`
-	ChatID     string            `json:"chat_id,omitempty"`
-	HookResult *tools.ToolResult `json:"hook_result,omitempty"` // Result returned directly by hook (for respond action). Media is supported - see Media handling section in docs.
+	Meta       HookMeta               `json:"meta"`
+	Context    *TurnContext           `json:"context,omitempty"`
+	Tool       string                 `json:"tool"`
+	Arguments  map[string]any         `json:"arguments,omitempty"`
+	Channel    string                 `json:"channel,omitempty"`
+	ChatID     string                 `json:"chat_id,omitempty"`
+	HookResult *toolshared.ToolResult `json:"hook_result,omitempty"` // Result returned directly by hook (for respond action). Media is supported - see Media handling section in docs.
 }
 
 func (r *ToolCallHookRequest) Clone() *ToolCallHookRequest {
@@ -178,12 +178,12 @@ func (r *ToolApprovalRequest) Clone() *ToolApprovalRequest {
 }
 
 type ToolResultHookResponse struct {
-	Meta      HookMeta          `json:"meta"`
-	Context   *TurnContext      `json:"context,omitempty"`
-	Tool      string            `json:"tool"`
-	Arguments map[string]any    `json:"arguments,omitempty"`
-	Result    *tools.ToolResult `json:"result,omitempty"`
-	Duration  time.Duration     `json:"duration"`
+	Meta      HookMeta               `json:"meta"`
+	Context   *TurnContext           `json:"context,omitempty"`
+	Tool      string                 `json:"tool"`
+	Arguments map[string]any         `json:"arguments,omitempty"`
+	Result    *toolshared.ToolResult `json:"result,omitempty"`
+	Duration  time.Duration          `json:"duration"`
 }
 
 func (r *ToolResultHookResponse) Clone() *ToolResultHookResponse {
@@ -942,7 +942,7 @@ func cloneStringAnyMap(src map[string]any) map[string]any {
 	return cloned
 }
 
-func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
+func cloneToolResult(result *toolshared.ToolResult) *toolshared.ToolResult {
 	if result == nil {
 		return nil
 	}
@@ -955,7 +955,7 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 		cloned.ArtifactTags = append([]string(nil), result.ArtifactTags...)
 	}
 	if result.Outbound != nil {
-		cloned.Outbound = &tools.OutboundDelivery{
+		cloned.Outbound = &toolshared.OutboundDelivery{
 			Channel: result.Outbound.Channel, ChatID: result.Outbound.ChatID,
 			ReplyToMessageID: result.Outbound.ReplyToMessageID, Text: result.Outbound.Text,
 			Media: append([]bus.MediaPart(nil), result.Outbound.Media...),
@@ -966,16 +966,16 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 		}
 	}
 	if result.Completion != nil {
-		cloned.Completion = &tools.CompletionResult{
+		cloned.Completion = &toolshared.CompletionResult{
 			Text:  result.Completion.Text,
-			Media: append([]tools.CompletionMedia(nil), result.Completion.Media...),
+			Media: append([]toolshared.CompletionMedia(nil), result.Completion.Media...),
 		}
 	}
 	if result.Deliverable != nil {
-		cloned.Deliverable = &tools.DeliverableResult{
+		cloned.Deliverable = &toolshared.DeliverableResult{
 			Text: result.Deliverable.Text,
 			Artifacts: append(
-				[]tools.DeliverableItem(nil),
+				[]toolshared.DeliverableItem(nil),
 				result.Deliverable.Artifacts...,
 			),
 			Report: cloneToolDeliverableReport(result.Deliverable.Report),
@@ -994,11 +994,11 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 	return &cloned
 }
 
-func cloneToolDeliverableReport(report *tools.DeliverableReport) *tools.DeliverableReport {
+func cloneToolDeliverableReport(report *toolshared.DeliverableReport) *toolshared.DeliverableReport {
 	if report == nil {
 		return nil
 	}
-	cloned := &tools.DeliverableReport{
+	cloned := &toolshared.DeliverableReport{
 		SchemaVersion: report.SchemaVersion,
 		ReportID:      report.ReportID,
 		ContentHash:   report.ContentHash,
@@ -1009,9 +1009,9 @@ func cloneToolDeliverableReport(report *tools.DeliverableReport) *tools.Delivera
 		Extra:         cloneHookAnyMap(report.Extra),
 	}
 	if len(report.Claims) > 0 {
-		cloned.Claims = make([]tools.ReportClaim, len(report.Claims))
+		cloned.Claims = make([]toolshared.ReportClaim, len(report.Claims))
 		for i, claim := range report.Claims {
-			cloned.Claims[i] = tools.ReportClaim{
+			cloned.Claims[i] = toolshared.ReportClaim{
 				Kind:       claim.Kind,
 				Text:       claim.Text,
 				Confidence: claim.Confidence,
@@ -1021,7 +1021,7 @@ func cloneToolDeliverableReport(report *tools.DeliverableReport) *tools.Delivera
 		}
 	}
 	if len(report.FieldDeltas) > 0 {
-		cloned.FieldDeltas = append([]tools.ReportFieldDelta(nil), report.FieldDeltas...)
+		cloned.FieldDeltas = append([]toolshared.ReportFieldDelta(nil), report.FieldDeltas...)
 	}
 	return cloned
 }

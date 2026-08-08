@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestNewToolResult(t *testing.T) {
-	result := NewToolResult("test content")
+	result := toolshared.NewToolResult("test content")
 
 	if result.ForLLM != "test content" {
 		t.Errorf("Expected ForLLM 'test content', got '%s'", result.ForLLM)
@@ -25,7 +27,7 @@ func TestNewToolResult(t *testing.T) {
 }
 
 func TestSilentResult(t *testing.T) {
-	result := SilentResult("silent operation")
+	result := toolshared.SilentResult("silent operation")
 
 	if result.ForLLM != "silent operation" {
 		t.Errorf("Expected ForLLM 'silent operation', got '%s'", result.ForLLM)
@@ -42,7 +44,7 @@ func TestSilentResult(t *testing.T) {
 }
 
 func TestDiffResult(t *testing.T) {
-	result := DiffResult("pkg/tools/fs/edit.go", []byte("hello world\n"), []byte("hello universe\n"))
+	result := toolshared.DiffResult("pkg/tools/fs/edit.go", []byte("hello world\n"), []byte("hello universe\n"))
 
 	if result.Silent {
 		t.Error("Expected Silent to be false")
@@ -75,7 +77,7 @@ func TestDiffResult(t *testing.T) {
 }
 
 func TestDiffResult_NormalizesAbsolutePathsAndHandlesNoOpChanges(t *testing.T) {
-	result := DiffResult("/tmp/test.txt", []byte("same\n"), []byte("same\n"))
+	result := toolshared.DiffResult("/tmp/test.txt", []byte("same\n"), []byte("same\n"))
 
 	if !strings.Contains(result.ForUser, "File edited: /tmp/test.txt") {
 		t.Fatalf("Expected original path in output, got %q", result.ForUser)
@@ -89,7 +91,7 @@ func TestDiffResult_NormalizesAbsolutePathsAndHandlesNoOpChanges(t *testing.T) {
 }
 
 func TestAsyncResult(t *testing.T) {
-	result := AsyncResult("async task started")
+	result := toolshared.AsyncResult("async task started")
 
 	if result.ForLLM != "async task started" {
 		t.Errorf("Expected ForLLM 'async task started', got '%s'", result.ForLLM)
@@ -109,15 +111,15 @@ func TestAsyncResult(t *testing.T) {
 }
 
 func TestToolResultWithAsyncDelivery(t *testing.T) {
-	result := AsyncResult("async task started").WithAsyncDelivery(AsyncDeliveryUserOnly)
+	result := toolshared.AsyncResult("async task started").WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 
-	if result.AsyncDelivery != AsyncDeliveryUserOnly {
-		t.Fatalf("AsyncDelivery = %q, want %q", result.AsyncDelivery, AsyncDeliveryUserOnly)
+	if result.AsyncDelivery != toolshared.AsyncDeliveryUserOnly {
+		t.Fatalf("AsyncDelivery = %q, want %q", result.AsyncDelivery, toolshared.AsyncDeliveryUserOnly)
 	}
 }
 
 func TestToolResultWithAsyncTaskID(t *testing.T) {
-	result := AsyncResult("async task started").WithAsyncTaskID(" subagent-7 ")
+	result := toolshared.AsyncResult("async task started").WithAsyncTaskID(" subagent-7 ")
 
 	if result.AsyncTaskID != "subagent-7" {
 		t.Fatalf("AsyncTaskID = %q, want subagent-7", result.AsyncTaskID)
@@ -125,9 +127,9 @@ func TestToolResultWithAsyncTaskID(t *testing.T) {
 }
 
 func TestToolResultContentForLLMIncludesCompletion(t *testing.T) {
-	result := NewToolResult("child finished").WithCompletion(&CompletionResult{
+	result := toolshared.NewToolResult("child finished").WithCompletion(&toolshared.CompletionResult{
 		Text: "recipe text",
-		Media: []CompletionMedia{
+		Media: []toolshared.CompletionMedia{
 			{
 				Ref:         "media://video",
 				Type:        "video",
@@ -162,9 +164,9 @@ func TestToolResultContentForLLMIncludesCompletion(t *testing.T) {
 }
 
 func TestToolResultContentForLLMIncludesDeliverable(t *testing.T) {
-	result := NewToolResult("tool finished").WithDeliverable(&DeliverableResult{
+	result := toolshared.NewToolResult("tool finished").WithDeliverable(&toolshared.DeliverableResult{
 		Text: "saved recipe",
-		Artifacts: []DeliverableItem{
+		Artifacts: []toolshared.DeliverableItem{
 			{
 				Ref:         "file:/tmp/recipe.md",
 				Kind:        "file",
@@ -191,12 +193,12 @@ func TestToolResultContentForLLMIncludesDeliverable(t *testing.T) {
 }
 
 func TestToolResultContentForLLMIncludesDeliverableReport(t *testing.T) {
-	result := NewToolResult("tool finished").WithDeliverable(&DeliverableResult{
-		Report: &DeliverableReport{
+	result := toolshared.NewToolResult("tool finished").WithDeliverable(&toolshared.DeliverableResult{
+		Report: &toolshared.DeliverableReport{
 			SchemaVersion: "deliverable_report.v1",
 			ReportID:      "review-1",
 			Summary:       "No high-confidence issues found",
-			Claims: []ReportClaim{{
+			Claims: []toolshared.ReportClaim{{
 				Kind:       "negative_evidence",
 				Text:       "No correctness issues found",
 				Confidence: "high",
@@ -219,7 +221,7 @@ func TestToolResultContentForLLMIncludesDeliverableReport(t *testing.T) {
 }
 
 func TestMediaResultCreatesDeliverable(t *testing.T) {
-	result := MediaResult("media ready", []string{"media://one", "media://two"})
+	result := toolshared.MediaResult("media ready", []string{"media://one", "media://two"})
 
 	if result.Deliverable == nil {
 		t.Fatal("expected media result to include deliverable")
@@ -233,7 +235,7 @@ func TestMediaResultCreatesDeliverable(t *testing.T) {
 }
 
 func TestErrorResult(t *testing.T) {
-	result := ErrorResult("operation failed")
+	result := toolshared.ErrorResult("operation failed")
 
 	if result.ForLLM != "operation failed" {
 		t.Errorf("Expected ForLLM 'operation failed', got '%s'", result.ForLLM)
@@ -251,7 +253,7 @@ func TestErrorResult(t *testing.T) {
 
 func TestUserResult(t *testing.T) {
 	content := "user visible message"
-	result := UserResult(content)
+	result := toolshared.UserResult(content)
 
 	if result.ForLLM != content {
 		t.Errorf("Expected ForLLM '%s', got '%s'", content, result.ForLLM)
@@ -273,27 +275,27 @@ func TestUserResult(t *testing.T) {
 func TestToolResultJSONSerialization(t *testing.T) {
 	tests := []struct {
 		name   string
-		result *ToolResult
+		result *toolshared.ToolResult
 	}{
 		{
 			name:   "basic result",
-			result: NewToolResult("basic content"),
+			result: toolshared.NewToolResult("basic content"),
 		},
 		{
 			name:   "silent result",
-			result: SilentResult("silent content"),
+			result: toolshared.SilentResult("silent content"),
 		},
 		{
 			name:   "async result",
-			result: AsyncResult("async content"),
+			result: toolshared.AsyncResult("async content"),
 		},
 		{
 			name:   "error result",
-			result: ErrorResult("error content"),
+			result: toolshared.ErrorResult("error content"),
 		},
 		{
 			name:   "user result",
-			result: UserResult("user content"),
+			result: toolshared.UserResult("user content"),
 		},
 	}
 
@@ -306,7 +308,7 @@ func TestToolResultJSONSerialization(t *testing.T) {
 			}
 
 			// Unmarshal back
-			var decoded ToolResult
+			var decoded toolshared.ToolResult
 			if err := json.Unmarshal(data, &decoded); err != nil {
 				t.Fatalf("Failed to unmarshal: %v", err)
 			}
@@ -333,7 +335,7 @@ func TestToolResultJSONSerialization(t *testing.T) {
 
 func TestToolResultWithErrors(t *testing.T) {
 	err := errors.New("underlying error")
-	result := ErrorResult("error message").WithError(err)
+	result := toolshared.ErrorResult("error message").WithError(err)
 
 	if result.Err == nil {
 		t.Error("Expected Err to be set")
@@ -348,7 +350,7 @@ func TestToolResultWithErrors(t *testing.T) {
 		t.Fatalf("Failed to marshal: %v", marshalErr)
 	}
 
-	var decoded ToolResult
+	var decoded toolshared.ToolResult
 	if unmarshalErr := json.Unmarshal(data, &decoded); unmarshalErr != nil {
 		t.Fatalf("Failed to unmarshal: %v", unmarshalErr)
 	}
@@ -359,7 +361,7 @@ func TestToolResultWithErrors(t *testing.T) {
 }
 
 func TestToolResultJSONStructure(t *testing.T) {
-	result := UserResult("test content")
+	result := toolshared.UserResult("test content")
 
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -404,27 +406,27 @@ func TestToolResultJSONStructure(t *testing.T) {
 }
 
 func TestToolResultContentForLLM_AppendsHandledDeliveryNote(t *testing.T) {
-	result := MediaResult("Screenshot attached.", []string{"media://example"}).WithResponseHandled()
+	result := toolshared.MediaResult("Screenshot attached.", []string{"media://example"}).WithResponseHandled()
 
 	content := result.ContentForLLM()
 	if !strings.Contains(content, "Screenshot attached.") {
 		t.Fatalf("expected original content in ContentForLLM, got %q", content)
 	}
-	if !strings.Contains(content, handledToolLLMNote) {
+	if !strings.Contains(content, toolshared.HandledToolLLMNote) {
 		t.Fatalf("expected handled delivery note in ContentForLLM, got %q", content)
 	}
 }
 
 func TestToolResultContentForLLM_UsesHandledDeliveryNoteWhenEmpty(t *testing.T) {
-	result := (&ToolResult{}).WithResponseHandled()
+	result := (&toolshared.ToolResult{}).WithResponseHandled()
 
-	if got := result.ContentForLLM(); got != handledToolLLMNote {
-		t.Fatalf("ContentForLLM() = %q, want %q", got, handledToolLLMNote)
+	if got := result.ContentForLLM(); got != toolshared.HandledToolLLMNote {
+		t.Fatalf("ContentForLLM() = %q, want %q", got, toolshared.HandledToolLLMNote)
 	}
 }
 
 func TestToolResultContentForLLM_AppendsArtifactPaths(t *testing.T) {
-	result := &ToolResult{
+	result := &toolshared.ToolResult{
 		ForLLM:       "Artifact created.",
 		ArtifactTags: []string{"[file:/tmp/example.png]"},
 	}
@@ -436,7 +438,7 @@ func TestToolResultContentForLLM_AppendsArtifactPaths(t *testing.T) {
 	if !strings.Contains(content, "Local artifact paths: [file:/tmp/example.png]") {
 		t.Fatalf("expected artifact path note in ContentForLLM, got %q", content)
 	}
-	if !strings.Contains(content, artifactPathsLLMNote) {
+	if !strings.Contains(content, toolshared.ArtifactPathsLLMNote) {
 		t.Fatalf("expected artifact guidance note in ContentForLLM, got %q", content)
 	}
 }

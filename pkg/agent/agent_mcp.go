@@ -16,6 +16,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/mcp"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
 )
 
 type mcpRuntime struct {
@@ -166,7 +167,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 						continue
 					}
 
-					mcpTool := tools.NewMCPTool(mcpManager, serverName, tool)
+					mcpTool := integrationtools.NewMCPTool(mcpManager, serverName, tool)
 					toolName := mcpTool.Name()
 					mcpTool.SetWorkspace(agent.Workspace)
 					mcpTool.SetMaxInlineTextRunes(al.cfg.Tools.MCP.GetMaxInlineTextChars())

@@ -14,6 +14,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type NodeDiscoverySource interface {
@@ -181,7 +182,7 @@ func (*NodeDiscoveryTool) Parameters() map[string]any {
 	}
 }
 
-func (tool *NodeDiscoveryTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeDiscoveryTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	action, _ := args["action"].(string)
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case "list":
@@ -191,7 +192,7 @@ func (tool *NodeDiscoveryTool) Execute(ctx context.Context, args map[string]any)
 		command, _ := args["command"].(string)
 		return tool.describe(ctx, strings.TrimSpace(target), strings.TrimSpace(command))
 	default:
-		return ErrorResult("action must be list or describe")
+		return toolshared.ErrorResult("action must be list or describe")
 	}
 }
 
@@ -199,17 +200,17 @@ func (*NodeDiscoveryTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (*NodeDiscoveryTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyReadOnly
+func (*NodeDiscoveryTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyReadOnly
 }
 
-func (tool *NodeDiscoveryTool) list(ctx context.Context) *ToolResult {
-	names, defaultTarget := tool.access.visibleTargets(ToolAgentID(ctx))
+func (tool *NodeDiscoveryTool) list(ctx context.Context) *toolshared.ToolResult {
+	names, defaultTarget := tool.access.visibleTargets(toolshared.ToolAgentID(ctx))
 	entries := make([]nodeListEntry, 0, len(names))
 	for _, name := range names {
 		entry, err := tool.access.listEntry(name, defaultTarget)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("list node target %q: %v", name, err))
+			return toolshared.ErrorResult(fmt.Sprintf("list node target %q: %v", name, err))
 		}
 		entries = append(entries, entry)
 	}
@@ -223,17 +224,17 @@ func (tool *NodeDiscoveryTool) describe(
 	ctx context.Context,
 	target string,
 	command string,
-) *ToolResult {
+) *toolshared.ToolResult {
 	if target == "" {
-		return ErrorResult("target is required for describe")
+		return toolshared.ErrorResult("target is required for describe")
 	}
-	names, defaultTarget := tool.access.visibleTargets(ToolAgentID(ctx))
+	names, defaultTarget := tool.access.visibleTargets(toolshared.ToolAgentID(ctx))
 	if !containsSorted(names, target) {
-		return ErrorResult(fmt.Sprintf("target %q is not visible to this agent", target))
+		return toolshared.ErrorResult(fmt.Sprintf("target %q is not visible to this agent", target))
 	}
 	entry, snapshot, registration, err := tool.access.resolve(target, defaultTarget)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("describe node target %q: %v", target, err))
+		return toolshared.ErrorResult(fmt.Sprintf("describe node target %q: %v", target, err))
 	}
 	description := nodeDescription{
 		nodeListEntry: entry,
@@ -241,7 +242,7 @@ func (tool *NodeDiscoveryTool) describe(
 	}
 	if snapshot == nil {
 		if command != "" {
-			return ErrorResult("command is unavailable on this target")
+			return toolshared.ErrorResult("command is unavailable on this target")
 		}
 		return nodeJSONResult(description)
 	}
@@ -260,7 +261,7 @@ func (tool *NodeDiscoveryTool) describe(
 	}
 	descriptor, ok := visibleNodeCommand(snapshot.Catalog, registration, command)
 	if !ok || entry.RequiresReapproval {
-		return ErrorResult("command is unavailable on this target")
+		return toolshared.ErrorResult("command is unavailable on this target")
 	}
 	descriptor, ok = projectDescriptorForTarget(
 		descriptor,
@@ -269,18 +270,18 @@ func (tool *NodeDiscoveryTool) describe(
 		binding.UpdateProfile,
 	)
 	if !ok {
-		return ErrorResult("command is unavailable on this target")
+		return toolshared.ErrorResult("command is unavailable on this target")
 	}
 	contractDescriptor := projectServiceApprovalForTarget(
 		descriptor,
 		tool.access.bypassesApproval(target),
 	)
 	if !commandProjectionFits(contractDescriptor) {
-		return ErrorResult("command discovery is incomplete because its safe projection exceeds limits")
+		return toolshared.ErrorResult("command discovery is incomplete because its safe projection exceeds limits")
 	}
 	contract := projectedNodeCommandContract(contractDescriptor, entry.Availability)
 	revision, revisionErr := tool.access.discoveryRevision(
-		ToolAgentID(ctx),
+		toolshared.ToolAgentID(ctx),
 		target,
 		command,
 		*snapshot,
@@ -289,7 +290,7 @@ func (tool *NodeDiscoveryTool) describe(
 		entry.liveConnected,
 	)
 	if revisionErr != nil {
-		return ErrorResult("command discovery is temporarily unavailable")
+		return toolshared.ErrorResult("command discovery is temporarily unavailable")
 	}
 	return nodeJSONResult(nodeCommandDescription{
 		nodeListEntry:     entry,
@@ -874,10 +875,10 @@ func containsSorted(values []string, value string) bool {
 	return index < len(values) && values[index] == value
 }
 
-func nodeJSONResult(value any) *ToolResult {
+func nodeJSONResult(value any) *toolshared.ToolResult {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("encode node discovery result: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("encode node discovery result: %v", err))
 	}
-	return NewToolResult(string(data))
+	return toolshared.NewToolResult(string(data))
 }

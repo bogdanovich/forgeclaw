@@ -15,7 +15,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/isolation"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -93,8 +93,8 @@ type processHookAfterLLMResponse struct {
 
 type processHookBeforeToolResponse struct {
 	processHookDecisionResponse
-	Call   *ToolCallHookRequest `json:"call,omitempty"`
-	Result *tools.ToolResult    `json:"result,omitempty"` // Result returned directly by hook (for respond action)
+	Call   *ToolCallHookRequest   `json:"call,omitempty"`
+	Result *toolshared.ToolResult `json:"result,omitempty"` // Result returned directly by hook (for respond action)
 }
 
 type processHookAfterToolResponse struct {

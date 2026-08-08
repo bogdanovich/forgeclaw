@@ -19,7 +19,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const answerCommand = "/answer"
@@ -1270,13 +1270,13 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	if stateErr != nil {
 		return fmt.Errorf("begin task interaction delivery: %w", stateErr)
 	}
-	mode := tools.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode))
+	mode := toolshared.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode))
 	switch mode {
-	case tools.AsyncDeliveryParentOnly, tools.AsyncDeliveryUserOnly, tools.AsyncDeliveryUserAndParent:
+	case toolshared.AsyncDeliveryParentOnly, toolshared.AsyncDeliveryUserOnly, toolshared.AsyncDeliveryUserAndParent:
 	default:
-		mode = tools.AsyncDeliveryUserOnly
+		mode = toolshared.AsyncDeliveryUserOnly
 	}
-	if mode == tools.AsyncDeliveryParentOnly && record.Kind == interactions.KindApproval &&
+	if mode == toolshared.AsyncDeliveryParentOnly && record.Kind == interactions.KindApproval &&
 		strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") {
 		if err := al.deliverApprovalControlsRemoved(ctx, record, inbound); err != nil {
 			_, recordErr := registry.CompleteFinalDelivery(
@@ -1292,11 +1292,11 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 			return err
 		}
 	}
-	result := (&tools.ToolResult{ForLLM: content, ForUser: content}).
+	result := (&toolshared.ToolResult{ForLLM: content, ForUser: content}).
 		WithAsyncTaskID(taskID).
 		WithAsyncDelivery(mode)
 	if strings.TrimSpace(content) != "" {
-		result.WithCompletion(&tools.CompletionResult{Text: content})
+		result.WithCompletion(&toolshared.CompletionResult{Text: content})
 	}
 	agent := al.interactionContinuationAgent(record, nil)
 	turnState := &turnState{
@@ -1331,7 +1331,7 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	detail := task.DeliveryError
 	ambiguous := !success
 	if task.DeliveryStatus == taskregistry.DeliveryParentMissing &&
-		mode == tools.AsyncDeliveryParentOnly {
+		mode == toolshared.AsyncDeliveryParentOnly {
 		ambiguous = false
 	}
 	updated, stateErr := registry.CompleteFinalDelivery(
@@ -1394,7 +1394,7 @@ func (al *AgentLoop) interactionContinuationExpectsUserDelivery(
 	if !ok {
 		return true
 	}
-	return tools.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode)) != tools.AsyncDeliveryParentOnly
+	return toolshared.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode)) != toolshared.AsyncDeliveryParentOnly
 }
 
 func (al *AgentLoop) completeInteractionTask(

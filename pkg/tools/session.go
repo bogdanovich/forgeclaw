@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const maxOutputBufferSize = 1 * 1024 * 1024 // 1MB
@@ -155,11 +157,11 @@ func (s *ProcessSession) Read() string {
 	return data
 }
 
-func (s *ProcessSession) ToSessionInfo() SessionInfo {
+func (s *ProcessSession) ToSessionInfo() toolshared.SessionInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return SessionInfo{
+	return toolshared.SessionInfo{
 		ID:        s.ID,
 		Command:   s.Command,
 		Status:    s.Status,
@@ -244,11 +246,11 @@ func (sm *SessionManager) Remove(sessionID string) {
 	delete(sm.sessions, sessionID)
 }
 
-func (sm *SessionManager) List() []SessionInfo {
+func (sm *SessionManager) List() []toolshared.SessionInfo {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	result := make([]SessionInfo, 0, len(sm.sessions))
+	result := make([]toolshared.SessionInfo, 0, len(sm.sessions))
 	for _, session := range sm.sessions {
 		result = append(result, session.ToSessionInfo())
 	}

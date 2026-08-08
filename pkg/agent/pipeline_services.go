@@ -7,7 +7,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type turnAdmissionError struct {
@@ -194,9 +194,9 @@ func (p *Pipeline) publishToolFeedbackForCall(
 func (p *Pipeline) applySyncToolResultDelivery(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
-) ([]providers.Attachment, *tools.ToolResult) {
+) ([]providers.Attachment, *toolshared.ToolResult) {
 	if p == nil || p.Interaction.SyncToolDelivery == nil {
 		return nil, result
 	}

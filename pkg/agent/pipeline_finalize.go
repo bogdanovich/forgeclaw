@@ -7,7 +7,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type finalResponseDisposition uint8
@@ -45,7 +45,7 @@ type FinalizationContext struct {
 	modelName        string
 	defaultModelName string
 	usage            finalizationUsage
-	completionMedia  []tools.CompletionMedia
+	completionMedia  []toolshared.CompletionMedia
 	followUps        []bus.InboundMessage
 	historyMessage   *providers.Message
 	stream           finalizationStream
@@ -87,7 +87,7 @@ func newFinalizationContext(
 			outputTokens: outputTokens,
 			totalTokens:  totalTokens,
 		},
-		completionMedia: append([]tools.CompletionMedia(nil), exec.completionMedia...),
+		completionMedia: append([]toolshared.CompletionMedia(nil), exec.completionMedia...),
 		followUps:       append([]bus.InboundMessage(nil), ts.followUps...),
 		historyMessage:  historyMessage,
 		stream: finalizationStream{
@@ -177,7 +177,7 @@ func (f *FinalizationContext) result(includeCompaction bool) turnResult {
 		usageInputTokens:       f.usage.inputTokens,
 		usageOutputTokens:      f.usage.outputTokens,
 		usageTotalTokens:       f.usage.totalTokens,
-		completionMedia:        append([]tools.CompletionMedia(nil), f.completionMedia...),
+		completionMedia:        append([]toolshared.CompletionMedia(nil), f.completionMedia...),
 		status:                 f.status,
 		followUps:              append([]bus.InboundMessage(nil), f.followUps...),
 		preferNewOutboundReply: f.delivery.preferNewOutboundReply,

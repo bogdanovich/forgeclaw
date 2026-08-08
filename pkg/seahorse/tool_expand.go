@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/bogdanovich/mintclaw/pkg/tools"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -80,10 +80,10 @@ func (t *ExpandTool) Parameters() map[string]any {
 	}
 }
 
-func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	idsRaw, ok := args["message_ids"].([]any)
 	if !ok || len(idsRaw) == 0 {
-		return tools.ErrorResult(
+		return toolshared.ErrorResult(
 			"Missing required 'message_ids' argument. " +
 				"Example: {\"message_ids\": [\"10\", \"25\"]}")
 	}
@@ -95,7 +95,7 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 		case string:
 			var n int64
 			if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-				return tools.ErrorResult(fmt.Sprintf("Invalid message_id %q: %v", v, err))
+				return toolshared.ErrorResult(fmt.Sprintf("Invalid message_id %q: %v", v, err))
 			}
 			messageIDs = append(messageIDs, n)
 		case float64:
@@ -105,22 +105,22 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 
 	retrievalScope, err := parseRetrievalScope(args["retrieval_scope"])
 	if err != nil {
-		return tools.ErrorResult("Expand failed: " + err.Error())
+		return toolshared.ErrorResult("Expand failed: " + err.Error())
 	}
 	conversationIDs, err := resolveToolConversationIDs(ctx, t.engine, retrievalScope)
 	if err != nil {
-		return tools.ErrorResult("Expand failed: resolve retrieval scope: " + err.Error())
+		return toolshared.ErrorResult("Expand failed: resolve retrieval scope: " + err.Error())
 	}
 
 	result, err := t.engine.ExpandMessagesScoped(ctx, messageIDs, conversationIDs)
 	if err != nil {
-		return tools.ErrorResult("Expand failed: " + err.Error())
+		return toolshared.ErrorResult("Expand failed: " + err.Error())
 	}
 
 	return expandJSONResult(result)
 }
 
-func expandJSONResult(result *ExpandMessagesResult) *tools.ToolResult {
+func expandJSONResult(result *ExpandMessagesResult) *toolshared.ToolResult {
 	messages := make([]map[string]any, 0, len(result.Messages))
 	includedMessageTokens := make([]int, 0, len(result.Messages))
 	includedTokens := 0
@@ -190,7 +190,7 @@ func expandJSONResult(result *ExpandMessagesResult) *tools.ToolResult {
 
 	data, err := json.Marshal(buildOutput())
 	if err != nil {
-		return tools.ErrorResult(fmt.Sprintf("failed to marshal expand result: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to marshal expand result: %v", err))
 	}
 	for (len(data) > expandToolMaxForLLMBytes || estimateRetrievalResultTokens(data) > retrievalToolMaxTokens) &&
 		len(messages) > 0 {
@@ -201,8 +201,8 @@ func expandJSONResult(result *ExpandMessagesResult) *tools.ToolResult {
 		omittedMessages++
 		data, err = json.Marshal(buildOutput())
 		if err != nil {
-			return tools.ErrorResult(fmt.Sprintf("failed to marshal expand result: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to marshal expand result: %v", err))
 		}
 	}
-	return tools.NewToolResult(string(data))
+	return toolshared.NewToolResult(string(data))
 }
