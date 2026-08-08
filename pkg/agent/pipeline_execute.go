@@ -261,6 +261,40 @@ type toolLoopRunner struct {
 	journalOwnershipTransferred bool
 }
 
+type toolCallDisposition uint8
+
+const (
+	toolCallProceed toolCallDisposition = iota
+	toolCallSkip
+	toolCallStopBatch
+)
+
+type toolCallStageResult struct {
+	disposition toolCallDisposition
+	outcome     ToolLoopOutcome
+}
+
+func stopToolBatch(outcome ToolLoopOutcome) toolCallStageResult {
+	return toolCallStageResult{disposition: toolCallStopBatch, outcome: outcome}
+}
+
+func skipToolCall() toolCallStageResult {
+	return toolCallStageResult{disposition: toolCallSkip}
+}
+
+type toolCallState struct {
+	index            int
+	request          providers.ToolCall
+	name             string
+	arguments        map[string]any
+	executionContext context.Context
+	trustedExecution *tools.TrustedToolExecution
+	result           *toolshared.ToolResult
+	duration         time.Duration
+	loopSemantics    loopguard.Semantics
+	mcpServerName    string
+}
+
 const queuedSteeringDeferredToolResult = "Deferred without execution because a newer user message arrived. " +
 	"Reconcile this operation after reading the newer message: reissue it if it is still requested, " +
 	"update it if the user corrected it, and omit it only if the user canceled or replaced it."
@@ -278,7 +312,6 @@ func (p *Pipeline) ExecuteTools(
 	exec *turnExecution,
 	llm *LLMIterationState,
 ) (outcome ToolLoopOutcome) {
-	iteration := llm.iteration
 	normalizedToolCalls := llm.normalizedToolCalls
 	runner := &toolLoopRunner{
 		p:         p,
@@ -307,26 +340,237 @@ func (p *Pipeline) ExecuteTools(
 	ts.setPhase(TurnPhaseTools)
 	runner.captureSteering(false)
 
-toolLoop:
 	for i, tc := range normalizedToolCalls {
-		if runner.journalErr != nil {
-			break toolLoop
+		result := runner.executeToolCall(ctx, i, tc)
+		if result.disposition == toolCallStopBatch {
+			return result.outcome
 		}
-		if ts.hardAbortRequested() {
-			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
-		}
+	}
+	return runner.completeToolBatch(ctx)
+}
 
-		toolName := tc.Name
-		toolArgs := cloneStringAnyMap(tc.Arguments)
-		if p.Interaction.Hooks == nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
-			continue
+func (runner *toolLoopRunner) executeToolCall(
+	ctx context.Context,
+	i int,
+	tc providers.ToolCall,
+) toolCallStageResult {
+	ts := runner.ts
+
+	if runner.journalErr != nil {
+		return stopToolBatch(ToolLoopOutcome{})
+	}
+	if ts.hardAbortRequested() {
+		return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard})
+	}
+	call := &toolCallState{
+		index:     i,
+		request:   tc,
+		name:      tc.Name,
+		arguments: cloneStringAnyMap(tc.Arguments),
+	}
+	if result := runner.admitToolCall(ctx, call); result.disposition != toolCallProceed {
+		return result
+	}
+	if result := runner.approveToolCall(ctx, call); result.disposition != toolCallProceed {
+		return result
+	}
+	if result := runner.invokeToolCall(ctx, call); result.disposition != toolCallProceed {
+		return result
+	}
+	return runner.persistToolCallResult(ctx, call)
+}
+
+func (runner *toolLoopRunner) admitToolCall(
+	ctx context.Context,
+	call *toolCallState,
+) toolCallStageResult {
+	p := runner.p
+	turnCtx := runner.turnCtx
+	ts := runner.ts
+	exec := runner.exec
+	llm := runner.llm
+	iteration := llm.iteration
+	i := call.index
+	tc := call.request
+
+	toolName := call.name
+	toolArgs := call.arguments
+	if p.Interaction.Hooks == nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
+		return skipToolCall()
+	}
+	denyByTurnProfile := func() bool {
+		if turnProfileToolAllowed(ts.profile, toolName) {
+			return false
 		}
-		denyByTurnProfile := func() bool {
-			if turnProfileToolAllowed(ts.profile, toolName) {
-				return false
+		llm.allResponsesHandled = false
+		denyContent := fmt.Sprintf("Tool %q is not allowed by the active turn profile.", toolName)
+		p.emitEvent(
+			runtimeevents.KindAgentToolExecSkipped,
+			ts.eventMeta("runTurn", "turn.tool.skipped"),
+			ToolExecSkippedPayload{
+				ToolCallID: tc.ID,
+				Tool:       toolName,
+				Reason:     denyContent,
+			},
+		)
+		deniedMsg := providers.Message{
+			Role:       "tool",
+			Content:    denyContent,
+			ToolCallID: tc.ID,
+		}
+		runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
+		return true
+	}
+
+	if denyByTurnProfile() {
+		return skipToolCall()
+	}
+	if p.Interaction.Hooks != nil {
+		toolReq, decision := p.Interaction.Hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
+			Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
+			Context:   cloneTurnContext(ts.turnCtx),
+			Tool:      toolName,
+			Arguments: toolArgs,
+		})
+		switch decision.normalizedAction() {
+		case HookActionContinue, HookActionModify:
+			if toolReq != nil {
+				toolName = toolReq.Tool
+				toolArgs = toolReq.Arguments
 			}
+		case HookActionRespond:
+			if toolReq != nil && toolReq.HookResult != nil {
+				if !ts.tryMarkToolExecutionStarted() {
+					return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard})
+				}
+				hookResult := normalizeToolResultForSyncDelivery(ts, toolReq.HookResult)
+				runner.recordCommittedHookResponseDecision(tc, toolName)
+
+				argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
+				argsPreview := utils.Truncate(string(argsJSON), 200)
+				logger.InfoCF("agent", fmt.Sprintf("Tool call (hook respond): %s(%s)", toolName, argsPreview),
+					map[string]any{
+						"agent_id":  ts.agent.ID,
+						"tool":      toolName,
+						"iteration": iteration,
+					})
+
+				p.emitEvent(
+					runtimeevents.KindAgentToolExecStart,
+					ts.eventMeta("runTurn", "turn.tool.start"),
+					ToolExecStartPayload{
+						ToolCallID: tc.ID,
+						Tool:       toolName,
+						Arguments:  cloneEventArguments(toolArgs),
+					},
+				)
+
+				p.publishToolFeedbackForCall(turnCtx, ts, llm.response, tc, toolName, toolArgs, runner.messages)
+
+				toolDuration := time.Duration(0)
+
+				verifiedWrite := hasVerifiedWriteAudit(hookResult.WriteAudit)
+				exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, hookResult.WriteAudit)
+				recordFinalRenderToolCall(exec, tc.ID, toolName, verifiedWrite)
+				if bindErr := bindNodeFileMediaOwner(
+					p.Context.MediaResolver,
+					ts,
+					hookResult.Media,
+				); bindErr != nil {
+					logger.WarnCF("media", "Failed to bind tool media ownership", map[string]any{
+						"tool":        toolName,
+						"media_count": len(hookResult.Media),
+					})
+				}
+				var toolResultMedia []string
+				if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
+					recordCompletionMedia(exec, p.Context.MediaResolver, hookResult.Media)
+					hookResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, hookResult.Media)
+					toolResultMedia = append(toolResultMedia, hookResult.Media...)
+				}
+				contentForLLM := p.filterToolContentForLLM(hookResult.ContentForLLM())
+				_, semantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
+				loopDecision := p.afterToolLoopDecision(
+					ts, exec, toolName, toolArgs, hookResult, contentForLLM, semantics,
+				)
+				contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
+				toolResultMsg := providers.Message{
+					Role:             "tool",
+					Content:          contentForLLM,
+					ToolCallID:       tc.ID,
+					ToolResultStatus: toolResultContextStatus(hookResult),
+					Media:            toolResultMedia,
+				}
+				if err := runner.commitToolResult(toolResultMsg); err != nil {
+					return stopToolBatch(ToolLoopOutcome{})
+				}
+
+				attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
+				hookResult = deliveredResult
+				runner.handledAttachments = append(runner.handledAttachments, attachments...)
+
+				shouldSendForUser := !hookResult.ResponseHandled &&
+					!ts.opts.SuppressToolUserDelivery &&
+					!hookResult.Silent &&
+					hookResult.ForUser != "" &&
+					ts.opts.SendResponse
+				if shouldSendForUser {
+					p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
+				}
+
+				if !hookResult.ResponseHandled {
+					llm.allResponsesHandled = false
+				}
+
+				p.emitEvent(
+					runtimeevents.KindAgentToolExecEnd,
+					ts.eventMeta("runTurn", "turn.tool.end"),
+					ToolExecEndPayload{
+						ToolCallID: tc.ID,
+						Tool:       toolName,
+						Duration:   toolDuration,
+						ForLLMLen:  len(contentForLLM),
+						ForUserLen: len(hookResult.ForUser),
+						IsError:    hookResult.IsError,
+						Async:      hookResult.Async,
+						ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
+						DiagnosticResult: diagnosticTextPreview(
+							p.Cfg, contentForLLM, diagnosticToolResultBytes,
+						),
+					},
+				)
+				ts.recordToolExecution(
+					toolName,
+					!hookResult.IsError,
+					toolErrorSummary(hookResult),
+					inferSkillNamesFromToolCall(ts, toolName, toolArgs),
+				)
+
+				if loopDecision.Action == loopguard.ActionHalt {
+					runner.appendSkippedToolMessages(
+						i+1,
+						"tool loop emergency halt",
+						"Skipped because tool-loop protection stopped the current turn.",
+					)
+					exec.messages = runner.messages
+					return stopToolBatch(ToolLoopOutcome{
+						Control: ToolControlHalt, FinalContent: loopDecision.Message,
+					})
+				}
+
+				runner.captureAfterToolSteering(true)
+
+				return skipToolCall()
+			}
+			logger.WarnCF("agent", "Hook returned respond action but no HookResult provided",
+				map[string]any{
+					"agent_id": ts.agent.ID,
+					"tool":     toolName,
+					"action":   "respond",
+				})
+		case HookActionDenyTool:
 			llm.allResponsesHandled = false
-			denyContent := fmt.Sprintf("Tool %q is not allowed by the active turn profile.", toolName)
+			denyContent := hookDeniedToolContent("Tool execution denied by hook", decision.Reason)
 			p.emitEvent(
 				runtimeevents.KindAgentToolExecSkipped,
 				ts.eventMeta("runTurn", "turn.tool.skipped"),
@@ -342,748 +586,36 @@ toolLoop:
 				ToolCallID: tc.ID,
 			}
 			runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
-			return true
+			return skipToolCall()
+		case HookActionAbortTurn:
+			return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook})
+		case HookActionHardAbort:
+			_ = ts.requestHardAbort()
+			return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard})
 		}
+	}
+	if p.Interaction.Hooks != nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
+		return skipToolCall()
+	}
+	if denyByTurnProfile() {
+		return skipToolCall()
+	}
 
-		if denyByTurnProfile() {
-			continue
-		}
-		if p.Interaction.Hooks != nil {
-			toolReq, decision := p.Interaction.Hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
-				Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
-				Context:   cloneTurnContext(ts.turnCtx),
-				Tool:      toolName,
-				Arguments: toolArgs,
-			})
-			switch decision.normalizedAction() {
-			case HookActionContinue, HookActionModify:
-				if toolReq != nil {
-					toolName = toolReq.Tool
-					toolArgs = toolReq.Arguments
-				}
-			case HookActionRespond:
-				if toolReq != nil && toolReq.HookResult != nil {
-					if !ts.tryMarkToolExecutionStarted() {
-						return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
-					}
-					hookResult := normalizeToolResultForSyncDelivery(ts, toolReq.HookResult)
-					runner.recordCommittedHookResponseDecision(tc, toolName)
-
-					argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
-					argsPreview := utils.Truncate(string(argsJSON), 200)
-					logger.InfoCF("agent", fmt.Sprintf("Tool call (hook respond): %s(%s)", toolName, argsPreview),
-						map[string]any{
-							"agent_id":  ts.agent.ID,
-							"tool":      toolName,
-							"iteration": iteration,
-						})
-
-					p.emitEvent(
-						runtimeevents.KindAgentToolExecStart,
-						ts.eventMeta("runTurn", "turn.tool.start"),
-						ToolExecStartPayload{
-							ToolCallID: tc.ID,
-							Tool:       toolName,
-							Arguments:  cloneEventArguments(toolArgs),
-						},
-					)
-
-					p.publishToolFeedbackForCall(turnCtx, ts, llm.response, tc, toolName, toolArgs, runner.messages)
-
-					toolDuration := time.Duration(0)
-
-					verifiedWrite := hasVerifiedWriteAudit(hookResult.WriteAudit)
-					exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, hookResult.WriteAudit)
-					recordFinalRenderToolCall(exec, tc.ID, toolName, verifiedWrite)
-					if bindErr := bindNodeFileMediaOwner(
-						p.Context.MediaResolver,
-						ts,
-						hookResult.Media,
-					); bindErr != nil {
-						logger.WarnCF("media", "Failed to bind tool media ownership", map[string]any{
-							"tool":        toolName,
-							"media_count": len(hookResult.Media),
-						})
-					}
-					var toolResultMedia []string
-					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
-						recordCompletionMedia(exec, p.Context.MediaResolver, hookResult.Media)
-						hookResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, hookResult.Media)
-						toolResultMedia = append(toolResultMedia, hookResult.Media...)
-					}
-					contentForLLM := p.filterToolContentForLLM(hookResult.ContentForLLM())
-					_, semantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
-					loopDecision := p.afterToolLoopDecision(
-						ts, exec, toolName, toolArgs, hookResult, contentForLLM, semantics,
-					)
-					contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
-					toolResultMsg := providers.Message{
-						Role:             "tool",
-						Content:          contentForLLM,
-						ToolCallID:       tc.ID,
-						ToolResultStatus: toolResultContextStatus(hookResult),
-						Media:            toolResultMedia,
-					}
-					if err := runner.commitToolResult(toolResultMsg); err != nil {
-						return ToolLoopOutcome{}
-					}
-
-					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
-					hookResult = deliveredResult
-					runner.handledAttachments = append(runner.handledAttachments, attachments...)
-
-					shouldSendForUser := !hookResult.ResponseHandled &&
-						!ts.opts.SuppressToolUserDelivery &&
-						!hookResult.Silent &&
-						hookResult.ForUser != "" &&
-						ts.opts.SendResponse
-					if shouldSendForUser {
-						p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
-					}
-
-					if !hookResult.ResponseHandled {
-						llm.allResponsesHandled = false
-					}
-
-					p.emitEvent(
-						runtimeevents.KindAgentToolExecEnd,
-						ts.eventMeta("runTurn", "turn.tool.end"),
-						ToolExecEndPayload{
-							ToolCallID: tc.ID,
-							Tool:       toolName,
-							Duration:   toolDuration,
-							ForLLMLen:  len(contentForLLM),
-							ForUserLen: len(hookResult.ForUser),
-							IsError:    hookResult.IsError,
-							Async:      hookResult.Async,
-							ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
-							DiagnosticResult: diagnosticTextPreview(
-								p.Cfg, contentForLLM, diagnosticToolResultBytes,
-							),
-						},
-					)
-					ts.recordToolExecution(
-						toolName,
-						!hookResult.IsError,
-						toolErrorSummary(hookResult),
-						inferSkillNamesFromToolCall(ts, toolName, toolArgs),
-					)
-
-					if loopDecision.Action == loopguard.ActionHalt {
-						runner.appendSkippedToolMessages(
-							i+1,
-							"tool loop emergency halt",
-							"Skipped because tool-loop protection stopped the current turn.",
-						)
-						exec.messages = runner.messages
-						return ToolLoopOutcome{
-							Control: ToolControlHalt, FinalContent: loopDecision.Message,
-						}
-					}
-
-					runner.captureAfterToolSteering(true)
-
-					continue
-				}
-				logger.WarnCF("agent", "Hook returned respond action but no HookResult provided",
-					map[string]any{
-						"agent_id": ts.agent.ID,
-						"tool":     toolName,
-						"action":   "respond",
-					})
-			case HookActionDenyTool:
-				llm.allResponsesHandled = false
-				denyContent := hookDeniedToolContent("Tool execution denied by hook", decision.Reason)
-				p.emitEvent(
-					runtimeevents.KindAgentToolExecSkipped,
-					ts.eventMeta("runTurn", "turn.tool.skipped"),
-					ToolExecSkippedPayload{
-						ToolCallID: tc.ID,
-						Tool:       toolName,
-						Reason:     denyContent,
-					},
-				)
-				deniedMsg := providers.Message{
-					Role:       "tool",
-					Content:    denyContent,
-					ToolCallID: tc.ID,
-				}
-				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
-				continue
-			case HookActionAbortTurn:
-				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook}
-			case HookActionHardAbort:
-				_ = ts.requestHardAbort()
-				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
-			}
-		}
-		if p.Interaction.Hooks != nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
-			continue
-		}
-		if denyByTurnProfile() {
-			continue
-		}
-
-		loopDecision, toolSemantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
-		if !loopDecision.AllowsExecution() {
-			p.emitToolLoopDecision(ts, loopDecision)
-			blockedResult := blockedToolLoopResult(loopDecision)
-			blockedContent := p.filterToolContentForLLM(blockedResult.ContentForLLM())
-			p.emitEvent(
-				runtimeevents.KindAgentToolExecSkipped,
-				ts.eventMeta("runTurn", "turn.tool.skipped"),
-				ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: loopDecision.Code},
-			)
-			runner.appendToolMessage(providers.Message{
-				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
-			}, toolMessagePersistAndIngest)
-			llm.allResponsesHandled = false
-			runner.captureAfterToolSteering(false)
-			if loopDecision.Action == loopguard.ActionHalt {
-				runner.appendSkippedToolMessages(
-					i+1,
-					"tool loop emergency halt",
-					"Skipped because tool-loop protection stopped the current turn.",
-				)
-				exec.messages = runner.messages
-				return ToolLoopOutcome{
-					Control: ToolControlHalt, FinalContent: loopDecision.Message,
-				}
-			}
-			continue
-		}
-
-		execCtx := toolshared.WithToolInboundContext(
-			turnCtx,
-			ts.channel,
-			ts.chatID,
-			ts.opts.Dispatch.MessageID(),
-			ts.opts.Dispatch.ReplyToMessageID(),
-		)
-		if ts.opts.Dispatch.InboundContext != nil {
-			execCtx = toolshared.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
-		}
-		execCtx = toolshared.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
-		execCtx = toolshared.WithToolSessionContext(
-			execCtx,
-			ts.agent.ID,
-			ts.sessionKey,
-			ts.opts.Dispatch.SessionScope,
-		)
-		execCtx = toolshared.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
-		execCtx = toolshared.WithToolCallID(execCtx, tc.ID)
-		executionID := effectiveToolExecutionID(ts)
-		execCtx = toolshared.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		approvalBypass, trustedExecution := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
-		execCtx = toolshared.WithToolApprovalContinuation(
-			execCtx,
-			ts.opts.ApprovalGrant != nil && !approvalBypass,
-		)
-		execCtx = toolshared.WithToolApprovalBypass(execCtx, approvalBypass)
-
-		if (!approvalBypass && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
-			approval := ApprovalDecision{Approved: true}
-			if !approvalBypass && p.Interaction.Hooks != nil {
-				approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
-					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
-					Context:   cloneTurnContext(ts.turnCtx),
-					Tool:      toolName,
-					Arguments: toolArgs,
-				})
-			} else if !approvalBypass {
-				approval = ApprovalDecision{Reason: "approval policy is no longer available"}
-			}
-			interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)
-			if interactionWorkspace == "" {
-				interactionWorkspace = ts.workspace
-			}
-			approvalArgs := toolArgs
-			var approvalArgsErr error
-			approvalCanProceed := approval.Approved || approval.RequireHuman
-			if (ts.opts.ApprovalGrant != nil || approval.RequireHuman) && approvalCanProceed {
-				approvalArgsErr = ts.agent.Tools.ValidateArguments(toolName, toolArgs)
-				if approvalArgsErr == nil {
-					approvalArgs, approvalArgsErr = ts.agent.Tools.ApprovalArguments(
-						execCtx,
-						toolName,
-						toolArgs,
-					)
-				}
-			}
-			if approval.RequireHuman && approvalArgsErr == nil {
-				var fileAction string
-				var isFileAction bool
-				fileAction, isFileAction, approvalArgsErr = tools.NodeFileApprovalAction(
-					toolName,
-					approvalArgs,
-				)
-				if approvalArgsErr == nil && isFileAction {
-					approval.ActionSummary = fileAction
-				}
-			}
-			if denial, safe := tools.SafeApprovalDenialResult(approvalArgsErr); safe {
-				ts.opts.ApprovalGrant = nil
-				llm.allResponsesHandled = false
-				denyContent := denial.ContentForLLM()
-				p.emitEvent(
-					runtimeevents.KindAgentToolExecSkipped,
-					ts.eventMeta("runTurn", "turn.tool.skipped"),
-					ToolExecSkippedPayload{
-						ToolCallID: tc.ID,
-						Tool:       toolName,
-						Reason:     denyContent,
-					},
-				)
-				runner.appendToolMessage(providers.Message{
-					Role: "tool", Content: denyContent, ToolCallID: tc.ID,
-				}, toolMessagePersistOnly)
-				continue
-			}
-			if grant := ts.opts.ApprovalGrant; grant != nil {
-				var consumeErr error
-				if !approval.Approved && !approval.RequireHuman {
-					consumeErr = fmt.Errorf("current approval policy denied execution: %s", approval.Reason)
-				} else if p.Interaction.Suspension == nil {
-					consumeErr = fmt.Errorf("human interaction suspension is unavailable in this runtime")
-				} else if approvalArgsErr != nil {
-					consumeErr = approvalArgsErr
-				} else {
-					var argumentHash string
-					if approvalBypass {
-						// ApprovalArguments above still validates current tool
-						// state. This transition consumes the original durable
-						// binding, not a newly prepared time-bound node plan.
-						argumentHash = strings.TrimSpace(grant.OriginArgumentHash)
-						if argumentHash == "" {
-							consumeErr = fmt.Errorf(
-								"originating approval argument hash is unavailable",
-							)
-						}
-					} else {
-						argumentHash, consumeErr = interactions.HashArguments(
-							interactionWorkspace,
-							approvalArgs,
-						)
-					}
-					if consumeErr == nil {
-						consumeErr = p.Interaction.Suspension.ConsumeApproval(
-							ctx,
-							ToolApprovalConsumptionRequest{
-								Workspace: interactionWorkspace, InteractionID: grant.InteractionID,
-								Revision: grant.Revision,
-								Origin: interactions.Origin{
-									ToolCallID: tc.ID, ToolName: toolName, ArgumentHash: argumentHash,
-								},
-							},
-						)
-					}
-				}
-				if consumeErr != nil {
-					approval = ApprovalDecision{Reason: "one-time human approval was rejected: " + consumeErr.Error()}
-				} else {
-					ts.opts.ApprovalGrant = nil
-					approval = ApprovalDecision{Approved: true}
-				}
-			}
-			if approval.RequireHuman {
-				hashErr := approvalArgsErr
-				argumentHash := ""
-				if hashErr == nil {
-					argumentHash, hashErr = interactions.HashArguments(
-						interactionWorkspace,
-						approvalArgs,
-					)
-				}
-				if hashErr == nil {
-					displayErr := validateApprovalDisplay(
-						toolName,
-						approval.ActionSummary,
-					)
-					if displayErr != nil {
-						hashErr = displayErr
-					} else {
-						control, suspended, fallback := runner.trySuspendToolCall(
-							ctx,
-							i,
-							tc,
-							toolName,
-							0,
-							&toolshared.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
-								Kind: interactions.KindApproval, PromptSummary: approval.ActionSummary,
-								Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
-							}},
-							argumentHash,
-							approval.ActionSummary,
-						)
-						if suspended {
-							return ToolLoopOutcome{
-								Control:                control,
-								SuspendedInteractionID: runner.suspendedInteractionID,
-							}
-						}
-						if fallback != nil {
-							hashErr = errors.New(fallback.ContentForLLM())
-						}
-					}
-				}
-				llm.allResponsesHandled = false
-				denyContent := hookDeniedToolContent(
-					"Tool execution denied because human approval could not be requested",
-					errString(hashErr),
-				)
-				p.emitEvent(
-					runtimeevents.KindAgentToolExecSkipped,
-					ts.eventMeta("runTurn", "turn.tool.skipped"),
-					ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: denyContent},
-				)
-				runner.appendToolMessage(providers.Message{
-					Role: "tool", Content: denyContent, ToolCallID: tc.ID,
-				}, toolMessagePersistOnly)
-				continue
-			}
-			if !approval.Approved {
-				llm.allResponsesHandled = false
-				denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
-				p.emitEvent(
-					runtimeevents.KindAgentToolExecSkipped,
-					ts.eventMeta("runTurn", "turn.tool.skipped"),
-					ToolExecSkippedPayload{
-						ToolCallID: tc.ID,
-						Tool:       toolName,
-						Reason:     denyContent,
-					},
-				)
-				deniedMsg := providers.Message{
-					Role:       "tool",
-					Content:    denyContent,
-					ToolCallID: tc.ID,
-				}
-				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
-				continue
-			}
-		}
-
-		argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
-		argsPreview := utils.Truncate(string(argsJSON), 200)
-		logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
-			map[string]any{
-				"agent_id":  ts.agent.ID,
-				"tool":      toolName,
-				"iteration": iteration,
-			})
+	loopDecision, toolSemantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
+	if !loopDecision.AllowsExecution() {
+		p.emitToolLoopDecision(ts, loopDecision)
+		blockedResult := blockedToolLoopResult(loopDecision)
+		blockedContent := p.filterToolContentForLLM(blockedResult.ContentForLLM())
 		p.emitEvent(
-			runtimeevents.KindAgentToolExecStart,
-			ts.eventMeta("runTurn", "turn.tool.start"),
-			ToolExecStartPayload{
-				ToolCallID: tc.ID,
-				Tool:       toolName,
-				Arguments:  cloneEventArguments(toolArgs),
-			},
+			runtimeevents.KindAgentToolExecSkipped,
+			ts.eventMeta("runTurn", "turn.tool.skipped"),
+			ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: loopDecision.Code},
 		)
-
-		p.publishToolFeedbackForCall(turnCtx, ts, llm.response, tc, toolName, toolArgs, runner.messages)
-
-		toolCallID := tc.ID
-		asyncToolName := toolName
-		mcpServerName := mcpServerNameForTool(ts, toolName)
-		var asyncAckDelivery AsyncDeliveryDecision
-		if tool, ok := ts.agent.Tools.Get(toolName); ok {
-			if _, isAsync := tool.(toolshared.AsyncExecutor); isAsync {
-				if deliveryMode, err := asyncDeliveryModeFromToolArgs(toolName, toolArgs); err == nil {
-					asyncAckDelivery = decideAsyncToolResultDelivery(
-						toolshared.AsyncResult("").WithAsyncDelivery(deliveryMode),
-					)
-				}
-			}
-		}
-		asyncCallback := func(_ context.Context, result *toolshared.ToolResult) {
-			completionID := asyncCompletionID(ts.turnID, toolCallID, asyncToolName)
-			delivery := decideAsyncToolResultDelivery(result)
-			p.emitEvent(
-				runtimeevents.KindAgentAsyncCompletion,
-				ts.scope.meta(iteration, "runTurn", "turn.async.completion"),
-				AsyncCompletionPayload{
-					SourceTool:   asyncToolName,
-					CompletionID: completionID,
-					TaskID:       delivery.TaskID,
-					DeliveryMode: string(delivery.DeliveryMode),
-					ContentLen:   delivery.ContentLen,
-					ForUserLen:   delivery.ForUserLen,
-					MediaCount:   delivery.MediaCount,
-					IsError:      delivery.IsError,
-					WillUser:     delivery.PublishToUser,
-					WillParent:   delivery.QueueParent,
-				},
-			)
-			if result != nil && result.IsError {
-				p.deliverAsyncToolCompletion(AsyncDeliveryRequest{
-					TurnState:    ts,
-					ToolName:     asyncToolName,
-					CompletionID: completionID,
-					Result:       result,
-					Decision:     delivery,
-				})
-				return
-			}
-			p.deliverAsyncToolCompletion(AsyncDeliveryRequest{
-				TurnState:    ts,
-				ToolName:     asyncToolName,
-				CompletionID: completionID,
-				Result:       result,
-				Decision:     delivery,
-			})
-		}
-
-		toolStart := time.Now()
-		if !ts.tryMarkToolExecutionStarted() {
-			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
-		}
-		var toolResult *toolshared.ToolResult
-		if trustedExecution != nil {
-			toolResult = ts.agent.Tools.ExecuteTrustedWithContext(
-				execCtx,
-				trustedExecution,
-				toolArgs,
-				ts.channel,
-				ts.chatID,
-				asyncCallback,
-			)
-		} else {
-			toolResult = ts.agent.Tools.ExecuteWithContext(
-				execCtx,
-				toolName,
-				toolArgs,
-				ts.channel,
-				ts.chatID,
-				asyncCallback,
-			)
-		}
-		if toolResult != nil && toolResult.Async && asyncAckDelivery.ParentHandled {
-			toolResult.ResponseHandled = true
-		}
-		toolDuration := time.Since(toolStart)
-
-		if ts.hardAbortRequested() {
-			resolveCanceledToolSuspension(execCtx, toolResult)
-			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
-		}
-
-		if p.Interaction.Hooks != nil {
-			toolResp, decision := p.Interaction.Hooks.AfterTool(turnCtx, &ToolResultHookResponse{
-				Meta:      ts.eventMeta("runTurn", "turn.tool.after"),
-				Context:   cloneTurnContext(ts.turnCtx),
-				Tool:      toolName,
-				Arguments: toolArgs,
-				Result:    toolResult,
-				Duration:  toolDuration,
-			})
-			switch decision.normalizedAction() {
-			case HookActionContinue, HookActionModify:
-				if toolResp != nil {
-					if toolResp.Tool != "" {
-						toolName = toolResp.Tool
-					}
-					if toolResp.Result != nil {
-						if toolResp.Result != toolResult {
-							if !transferToolSuspensionResolution(toolResult, toolResp.Result) {
-								resolveCanceledToolSuspension(execCtx, toolResult)
-								if toolResult != nil && toolResult.Suspension != nil &&
-									toolResp.Result.Suspension == nil {
-									toolResp.Result.SuspensionResolution = nil
-								}
-							}
-						}
-						toolResult = toolResp.Result
-					}
-				}
-			case HookActionAbortTurn:
-				resolveCanceledToolSuspension(execCtx, toolResult)
-				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook}
-			case HookActionHardAbort:
-				resolveCanceledToolSuspension(execCtx, toolResult)
-				_ = ts.requestHardAbort()
-				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
-			}
-		}
-
-		if toolResult == nil {
-			toolResult = toolshared.ErrorResult("hook returned nil tool result")
-		}
-		if toolResult.Suspension != nil {
-			argumentHash, approvalAction, approvalErr := runner.prepareToolApprovalSuspension(
-				execCtx,
-				toolName,
-				toolArgs,
-				toolResult,
-			)
-			if approvalErr != nil {
-				resolveCanceledToolSuspension(execCtx, toolResult)
-				if denial, safe := tools.SafeApprovalDenialResult(approvalErr); safe {
-					toolResult = denial
-				} else {
-					toolResult = toolshared.ErrorResult(
-						"Tool execution denied because approval authority could not be prepared.",
-					)
-				}
-			}
-			control, suspended, fallback := runner.trySuspendToolCall(
-				ctx,
-				i,
-				tc,
-				toolName,
-				toolDuration,
-				toolResult,
-				argumentHash,
-				approvalAction,
-			)
-			if suspended {
-				return ToolLoopOutcome{
-					Control:                control,
-					SuspendedInteractionID: runner.suspendedInteractionID,
-				}
-			}
-			toolResult = fallback
-		}
-		if toolResult != nil && toolResult.Suspension == nil {
-			resolveCanceledToolSuspension(execCtx, toolResult)
-		}
-		toolResult = normalizeToolResultForSyncDelivery(ts, toolResult)
-
-		verifiedWrite := hasVerifiedWriteAudit(toolResult.WriteAudit)
-		toolSummary := strings.TrimSpace(toolResult.ForUser)
-		if toolSummary != "" {
-			exec.actionLog = appendTurnActionRecord(
-				exec.actionLog,
-				"tool_result",
-				toolName,
-				toolSummary,
-				toolResult.IsError,
-				verifiedWrite,
-			)
-		}
-
-		exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, toolResult.WriteAudit)
-		recordFinalRenderToolCall(exec, toolCallID, toolName, verifiedWrite)
-		if bindErr := bindNodeFileMediaOwner(
-			p.Context.MediaResolver,
-			ts,
-			toolResult.Media,
-		); bindErr != nil {
-			logger.WarnCF("media", "Failed to bind tool media ownership", map[string]any{
-				"tool":        toolName,
-				"media_count": len(toolResult.Media),
-			})
-		}
-		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
-			recordCompletionMedia(exec, p.Context.MediaResolver, toolResult.Media)
-			toolResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, toolResult.Media)
-		}
-		contentForLLM := p.filterToolContentForLLM(toolResult.ContentForLLM())
-		loopDecision = p.afterToolLoopDecision(
-			ts, exec, toolName, toolArgs, toolResult, contentForLLM, toolSemantics,
-		)
-		contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
-
-		toolResultMsg := providers.Message{
-			Role:             "tool",
-			Content:          contentForLLM,
-			ToolCallID:       toolCallID,
-			ToolResultStatus: toolResultContextStatus(toolResult),
-		}
-		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
-			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
-		}
-		if err := runner.commitToolResult(toolResultMsg); err != nil {
-			return ToolLoopOutcome{}
-		}
-
-		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
-		toolResult = deliveredResult
-		runner.handledAttachments = append(runner.handledAttachments, attachments...)
-
-		if !toolResult.ResponseHandled {
-			llm.allResponsesHandled = false
-		}
-
-		shouldSendForUser := !toolResult.ResponseHandled &&
-			!ts.opts.SuppressToolUserDelivery &&
-			!toolResult.Silent &&
-			toolResult.ForUser != "" &&
-			ts.opts.SendResponse
-		if shouldSendForUser {
-			p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
-			logger.DebugCF("agent", "Sent tool result to user",
-				map[string]any{
-					"tool":        toolName,
-					"content_len": len(toolResult.ForUser),
-				})
-		}
-		p.emitEvent(
-			runtimeevents.KindAgentToolExecEnd,
-			ts.eventMeta("runTurn", "turn.tool.end"),
-			ToolExecEndPayload{
-				ToolCallID: toolCallID,
-				Tool:       toolName,
-				Duration:   toolDuration,
-				ForLLMLen:  len(contentForLLM),
-				ForUserLen: len(toolResult.ForUser),
-				IsError:    toolResult.IsError,
-				Async:      toolResult.Async,
-				ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
-				DiagnosticResult: diagnosticTextPreview(
-					p.Cfg, contentForLLM, diagnosticToolResultBytes,
-				),
-			},
-		)
-		ts.recordToolExecution(
-			toolName,
-			!toolResult.IsError,
-			toolErrorSummary(toolResult),
-			inferSkillNamesFromToolCall(ts, toolName, toolArgs),
-		)
-
-		if toolResult.IsError {
-			errSummary := toolErrorSummary(toolResult)
-			if isFatalMCPTransportErrorSummary(errSummary) {
-				if mcpServerName != "" {
-					logger.WarnCF("agent", "Fatal MCP server transport error; aborting turn to avoid workaround loop",
-						map[string]any{
-							"agent_id":   ts.agent.ID,
-							"iteration":  iteration,
-							"tool":       toolName,
-							"mcp_server": mcpServerName,
-							"error":      errSummary,
-							"session_id": ts.sessionKey,
-						})
-					llm.allResponsesHandled = false
-					exec.messages = runner.messages
-					return ToolLoopOutcome{
-						Control:      ToolControlBreak,
-						FinalContent: fatalMCPServerErrorReply(mcpServerName, toolName),
-					}
-				}
-				streak := ts.recentToolExecutionErrorStreak(toolName, func(rec ToolExecutionRecord) bool {
-					return isFatalMCPTransportErrorSummary(rec.ErrorSummary)
-				})
-				if streak >= repeatedFatalToolErrorStreakLimit {
-					logger.WarnCF("agent", "Repeated fatal tool transport errors; aborting turn to avoid retry loop",
-						map[string]any{
-							"agent_id":   ts.agent.ID,
-							"iteration":  iteration,
-							"tool":       toolName,
-							"error":      errSummary,
-							"streak":     streak,
-							"session_id": ts.sessionKey,
-						})
-					llm.allResponsesHandled = false
-					exec.messages = runner.messages
-					return ToolLoopOutcome{
-						Control:      ToolControlBreak,
-						FinalContent: repeatedFatalToolErrorReply(toolName),
-					}
-				}
-			}
-		}
+		runner.appendToolMessage(providers.Message{
+			Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
+		}, toolMessagePersistAndIngest)
+		llm.allResponsesHandled = false
+		runner.captureAfterToolSteering(false)
 		if loopDecision.Action == loopguard.ActionHalt {
 			runner.appendSkippedToolMessages(
 				i+1,
@@ -1091,13 +623,631 @@ toolLoop:
 				"Skipped because tool-loop protection stopped the current turn.",
 			)
 			exec.messages = runner.messages
-			return ToolLoopOutcome{
+			return stopToolBatch(ToolLoopOutcome{
 				Control: ToolControlHalt, FinalContent: loopDecision.Message,
+			})
+		}
+		return skipToolCall()
+	}
+	call.name = toolName
+	call.arguments = toolArgs
+	call.loopSemantics = toolSemantics
+	return toolCallStageResult{}
+}
+
+func (runner *toolLoopRunner) approveToolCall(
+	ctx context.Context,
+	call *toolCallState,
+) toolCallStageResult {
+	p := runner.p
+	turnCtx := runner.turnCtx
+	ts := runner.ts
+	llm := runner.llm
+	i := call.index
+	tc := call.request
+	toolName := call.name
+	toolArgs := call.arguments
+
+	execCtx := toolshared.WithToolInboundContext(
+		turnCtx,
+		ts.channel,
+		ts.chatID,
+		ts.opts.Dispatch.MessageID(),
+		ts.opts.Dispatch.ReplyToMessageID(),
+	)
+	if ts.opts.Dispatch.InboundContext != nil {
+		execCtx = toolshared.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
+	}
+	execCtx = toolshared.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
+	execCtx = toolshared.WithToolSessionContext(
+		execCtx,
+		ts.agent.ID,
+		ts.sessionKey,
+		ts.opts.Dispatch.SessionScope,
+	)
+	execCtx = toolshared.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
+	execCtx = toolshared.WithToolCallID(execCtx, tc.ID)
+	executionID := effectiveToolExecutionID(ts)
+	execCtx = toolshared.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
+	approvalBypass, trustedExecution := toolApprovalBypass(p.Cfg, ts.agent.Tools, toolName, toolArgs)
+	execCtx = toolshared.WithToolApprovalContinuation(
+		execCtx,
+		ts.opts.ApprovalGrant != nil && !approvalBypass,
+	)
+	execCtx = toolshared.WithToolApprovalBypass(execCtx, approvalBypass)
+
+	if (!approvalBypass && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
+		approval := ApprovalDecision{Approved: true}
+		if !approvalBypass && p.Interaction.Hooks != nil {
+			approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
+				Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
+				Context:   cloneTurnContext(ts.turnCtx),
+				Tool:      toolName,
+				Arguments: toolArgs,
+			})
+		} else if !approvalBypass {
+			approval = ApprovalDecision{Reason: "approval policy is no longer available"}
+		}
+		interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)
+		if interactionWorkspace == "" {
+			interactionWorkspace = ts.workspace
+		}
+		approvalArgs := toolArgs
+		var approvalArgsErr error
+		approvalCanProceed := approval.Approved || approval.RequireHuman
+		if (ts.opts.ApprovalGrant != nil || approval.RequireHuman) && approvalCanProceed {
+			approvalArgsErr = ts.agent.Tools.ValidateArguments(toolName, toolArgs)
+			if approvalArgsErr == nil {
+				approvalArgs, approvalArgsErr = ts.agent.Tools.ApprovalArguments(
+					execCtx,
+					toolName,
+					toolArgs,
+				)
 			}
 		}
-
-		runner.captureAfterToolSteering(false)
+		if approval.RequireHuman && approvalArgsErr == nil {
+			var fileAction string
+			var isFileAction bool
+			fileAction, isFileAction, approvalArgsErr = tools.NodeFileApprovalAction(
+				toolName,
+				approvalArgs,
+			)
+			if approvalArgsErr == nil && isFileAction {
+				approval.ActionSummary = fileAction
+			}
+		}
+		if denial, safe := tools.SafeApprovalDenialResult(approvalArgsErr); safe {
+			ts.opts.ApprovalGrant = nil
+			llm.allResponsesHandled = false
+			denyContent := denial.ContentForLLM()
+			p.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{
+					ToolCallID: tc.ID,
+					Tool:       toolName,
+					Reason:     denyContent,
+				},
+			)
+			runner.appendToolMessage(providers.Message{
+				Role: "tool", Content: denyContent, ToolCallID: tc.ID,
+			}, toolMessagePersistOnly)
+			return skipToolCall()
+		}
+		if grant := ts.opts.ApprovalGrant; grant != nil {
+			var consumeErr error
+			if !approval.Approved && !approval.RequireHuman {
+				consumeErr = fmt.Errorf("current approval policy denied execution: %s", approval.Reason)
+			} else if p.Interaction.Suspension == nil {
+				consumeErr = fmt.Errorf("human interaction suspension is unavailable in this runtime")
+			} else if approvalArgsErr != nil {
+				consumeErr = approvalArgsErr
+			} else {
+				var argumentHash string
+				if approvalBypass {
+					// ApprovalArguments above still validates current tool
+					// state. This transition consumes the original durable
+					// binding, not a newly prepared time-bound node plan.
+					argumentHash = strings.TrimSpace(grant.OriginArgumentHash)
+					if argumentHash == "" {
+						consumeErr = fmt.Errorf(
+							"originating approval argument hash is unavailable",
+						)
+					}
+				} else {
+					argumentHash, consumeErr = interactions.HashArguments(
+						interactionWorkspace,
+						approvalArgs,
+					)
+				}
+				if consumeErr == nil {
+					consumeErr = p.Interaction.Suspension.ConsumeApproval(
+						ctx,
+						ToolApprovalConsumptionRequest{
+							Workspace: interactionWorkspace, InteractionID: grant.InteractionID,
+							Revision: grant.Revision,
+							Origin: interactions.Origin{
+								ToolCallID: tc.ID, ToolName: toolName, ArgumentHash: argumentHash,
+							},
+						},
+					)
+				}
+			}
+			if consumeErr != nil {
+				approval = ApprovalDecision{Reason: "one-time human approval was rejected: " + consumeErr.Error()}
+			} else {
+				ts.opts.ApprovalGrant = nil
+				approval = ApprovalDecision{Approved: true}
+			}
+		}
+		if approval.RequireHuman {
+			hashErr := approvalArgsErr
+			argumentHash := ""
+			if hashErr == nil {
+				argumentHash, hashErr = interactions.HashArguments(
+					interactionWorkspace,
+					approvalArgs,
+				)
+			}
+			if hashErr == nil {
+				displayErr := validateApprovalDisplay(
+					toolName,
+					approval.ActionSummary,
+				)
+				if displayErr != nil {
+					hashErr = displayErr
+				} else {
+					control, suspended, fallback := runner.trySuspendToolCall(
+						ctx,
+						i,
+						tc,
+						toolName,
+						0,
+						&toolshared.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
+							Kind: interactions.KindApproval, PromptSummary: approval.ActionSummary,
+							Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
+						}},
+						argumentHash,
+						approval.ActionSummary,
+					)
+					if suspended {
+						return stopToolBatch(ToolLoopOutcome{
+							Control:                control,
+							SuspendedInteractionID: runner.suspendedInteractionID,
+						})
+					}
+					if fallback != nil {
+						hashErr = errors.New(fallback.ContentForLLM())
+					}
+				}
+			}
+			llm.allResponsesHandled = false
+			denyContent := hookDeniedToolContent(
+				"Tool execution denied because human approval could not be requested",
+				errString(hashErr),
+			)
+			p.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: denyContent},
+			)
+			runner.appendToolMessage(providers.Message{
+				Role: "tool", Content: denyContent, ToolCallID: tc.ID,
+			}, toolMessagePersistOnly)
+			return skipToolCall()
+		}
+		if !approval.Approved {
+			llm.allResponsesHandled = false
+			denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
+			p.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{
+					ToolCallID: tc.ID,
+					Tool:       toolName,
+					Reason:     denyContent,
+				},
+			)
+			deniedMsg := providers.Message{
+				Role:       "tool",
+				Content:    denyContent,
+				ToolCallID: tc.ID,
+			}
+			runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
+			return skipToolCall()
+		}
 	}
+	call.executionContext = execCtx
+	call.trustedExecution = trustedExecution
+	return toolCallStageResult{}
+}
+
+func (runner *toolLoopRunner) invokeToolCall(
+	ctx context.Context,
+	call *toolCallState,
+) toolCallStageResult {
+	p := runner.p
+	turnCtx := runner.turnCtx
+	ts := runner.ts
+	llm := runner.llm
+	iteration := llm.iteration
+	i := call.index
+	tc := call.request
+	toolName := call.name
+	toolArgs := call.arguments
+	execCtx := call.executionContext
+	trustedExecution := call.trustedExecution
+
+	argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
+	argsPreview := utils.Truncate(string(argsJSON), 200)
+	logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
+		map[string]any{
+			"agent_id":  ts.agent.ID,
+			"tool":      toolName,
+			"iteration": iteration,
+		})
+	p.emitEvent(
+		runtimeevents.KindAgentToolExecStart,
+		ts.eventMeta("runTurn", "turn.tool.start"),
+		ToolExecStartPayload{
+			ToolCallID: tc.ID,
+			Tool:       toolName,
+			Arguments:  cloneEventArguments(toolArgs),
+		},
+	)
+
+	p.publishToolFeedbackForCall(turnCtx, ts, llm.response, tc, toolName, toolArgs, runner.messages)
+
+	toolCallID := tc.ID
+	asyncToolName := toolName
+	mcpServerName := mcpServerNameForTool(ts, toolName)
+	var asyncAckDelivery AsyncDeliveryDecision
+	if tool, ok := ts.agent.Tools.Get(toolName); ok {
+		if _, isAsync := tool.(toolshared.AsyncExecutor); isAsync {
+			if deliveryMode, err := asyncDeliveryModeFromToolArgs(toolName, toolArgs); err == nil {
+				asyncAckDelivery = decideAsyncToolResultDelivery(
+					toolshared.AsyncResult("").WithAsyncDelivery(deliveryMode),
+				)
+			}
+		}
+	}
+	asyncCallback := func(_ context.Context, result *toolshared.ToolResult) {
+		completionID := asyncCompletionID(ts.turnID, toolCallID, asyncToolName)
+		delivery := decideAsyncToolResultDelivery(result)
+		p.emitEvent(
+			runtimeevents.KindAgentAsyncCompletion,
+			ts.scope.meta(iteration, "runTurn", "turn.async.completion"),
+			AsyncCompletionPayload{
+				SourceTool:   asyncToolName,
+				CompletionID: completionID,
+				TaskID:       delivery.TaskID,
+				DeliveryMode: string(delivery.DeliveryMode),
+				ContentLen:   delivery.ContentLen,
+				ForUserLen:   delivery.ForUserLen,
+				MediaCount:   delivery.MediaCount,
+				IsError:      delivery.IsError,
+				WillUser:     delivery.PublishToUser,
+				WillParent:   delivery.QueueParent,
+			},
+		)
+		if result != nil && result.IsError {
+			p.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+				TurnState:    ts,
+				ToolName:     asyncToolName,
+				CompletionID: completionID,
+				Result:       result,
+				Decision:     delivery,
+			})
+			return
+		}
+		p.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+			TurnState:    ts,
+			ToolName:     asyncToolName,
+			CompletionID: completionID,
+			Result:       result,
+			Decision:     delivery,
+		})
+	}
+
+	toolStart := time.Now()
+	if !ts.tryMarkToolExecutionStarted() {
+		return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard})
+	}
+	var toolResult *toolshared.ToolResult
+	if trustedExecution != nil {
+		toolResult = ts.agent.Tools.ExecuteTrustedWithContext(
+			execCtx,
+			trustedExecution,
+			toolArgs,
+			ts.channel,
+			ts.chatID,
+			asyncCallback,
+		)
+	} else {
+		toolResult = ts.agent.Tools.ExecuteWithContext(
+			execCtx,
+			toolName,
+			toolArgs,
+			ts.channel,
+			ts.chatID,
+			asyncCallback,
+		)
+	}
+	if toolResult != nil && toolResult.Async && asyncAckDelivery.ParentHandled {
+		toolResult.ResponseHandled = true
+	}
+	toolDuration := time.Since(toolStart)
+
+	if ts.hardAbortRequested() {
+		resolveCanceledToolSuspension(execCtx, toolResult)
+		return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard})
+	}
+
+	if p.Interaction.Hooks != nil {
+		toolResp, decision := p.Interaction.Hooks.AfterTool(turnCtx, &ToolResultHookResponse{
+			Meta:      ts.eventMeta("runTurn", "turn.tool.after"),
+			Context:   cloneTurnContext(ts.turnCtx),
+			Tool:      toolName,
+			Arguments: toolArgs,
+			Result:    toolResult,
+			Duration:  toolDuration,
+		})
+		switch decision.normalizedAction() {
+		case HookActionContinue, HookActionModify:
+			if toolResp != nil {
+				if toolResp.Tool != "" {
+					toolName = toolResp.Tool
+				}
+				if toolResp.Result != nil {
+					if toolResp.Result != toolResult {
+						if !transferToolSuspensionResolution(toolResult, toolResp.Result) {
+							resolveCanceledToolSuspension(execCtx, toolResult)
+							if toolResult != nil && toolResult.Suspension != nil &&
+								toolResp.Result.Suspension == nil {
+								toolResp.Result.SuspensionResolution = nil
+							}
+						}
+					}
+					toolResult = toolResp.Result
+				}
+			}
+		case HookActionAbortTurn:
+			resolveCanceledToolSuspension(execCtx, toolResult)
+			return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook})
+		case HookActionHardAbort:
+			resolveCanceledToolSuspension(execCtx, toolResult)
+			_ = ts.requestHardAbort()
+			return stopToolBatch(ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard})
+		}
+	}
+
+	if toolResult == nil {
+		toolResult = toolshared.ErrorResult("hook returned nil tool result")
+	}
+	if toolResult.Suspension != nil {
+		argumentHash, approvalAction, approvalErr := runner.prepareToolApprovalSuspension(
+			execCtx,
+			toolName,
+			toolArgs,
+			toolResult,
+		)
+		if approvalErr != nil {
+			resolveCanceledToolSuspension(execCtx, toolResult)
+			if denial, safe := tools.SafeApprovalDenialResult(approvalErr); safe {
+				toolResult = denial
+			} else {
+				toolResult = toolshared.ErrorResult(
+					"Tool execution denied because approval authority could not be prepared.",
+				)
+			}
+		}
+		control, suspended, fallback := runner.trySuspendToolCall(
+			ctx,
+			i,
+			tc,
+			toolName,
+			toolDuration,
+			toolResult,
+			argumentHash,
+			approvalAction,
+		)
+		if suspended {
+			return stopToolBatch(ToolLoopOutcome{
+				Control:                control,
+				SuspendedInteractionID: runner.suspendedInteractionID,
+			})
+		}
+		toolResult = fallback
+	}
+	if toolResult != nil && toolResult.Suspension == nil {
+		resolveCanceledToolSuspension(execCtx, toolResult)
+	}
+	toolResult = normalizeToolResultForSyncDelivery(ts, toolResult)
+	call.name = toolName
+	call.result = toolResult
+	call.duration = toolDuration
+	call.mcpServerName = mcpServerName
+	return toolCallStageResult{}
+}
+
+func (runner *toolLoopRunner) persistToolCallResult(
+	ctx context.Context,
+	call *toolCallState,
+) toolCallStageResult {
+	p := runner.p
+	ts := runner.ts
+	exec := runner.exec
+	llm := runner.llm
+	iteration := llm.iteration
+	i := call.index
+	tc := call.request
+	toolName := call.name
+	toolArgs := call.arguments
+	toolCallID := tc.ID
+	toolResult := call.result
+	toolDuration := call.duration
+	toolSemantics := call.loopSemantics
+	mcpServerName := call.mcpServerName
+
+	verifiedWrite := hasVerifiedWriteAudit(toolResult.WriteAudit)
+	toolSummary := strings.TrimSpace(toolResult.ForUser)
+	if toolSummary != "" {
+		exec.actionLog = appendTurnActionRecord(
+			exec.actionLog,
+			"tool_result",
+			toolName,
+			toolSummary,
+			toolResult.IsError,
+			verifiedWrite,
+		)
+	}
+
+	exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, toolResult.WriteAudit)
+	recordFinalRenderToolCall(exec, toolCallID, toolName, verifiedWrite)
+	if bindErr := bindNodeFileMediaOwner(
+		p.Context.MediaResolver,
+		ts,
+		toolResult.Media,
+	); bindErr != nil {
+		logger.WarnCF("media", "Failed to bind tool media ownership", map[string]any{
+			"tool":        toolName,
+			"media_count": len(toolResult.Media),
+		})
+	}
+	if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
+		recordCompletionMedia(exec, p.Context.MediaResolver, toolResult.Media)
+		toolResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, toolResult.Media)
+	}
+	contentForLLM := p.filterToolContentForLLM(toolResult.ContentForLLM())
+	loopDecision := p.afterToolLoopDecision(
+		ts, exec, toolName, toolArgs, toolResult, contentForLLM, toolSemantics,
+	)
+	contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
+
+	toolResultMsg := providers.Message{
+		Role:             "tool",
+		Content:          contentForLLM,
+		ToolCallID:       toolCallID,
+		ToolResultStatus: toolResultContextStatus(toolResult),
+	}
+	if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
+		toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
+	}
+	if err := runner.commitToolResult(toolResultMsg); err != nil {
+		return stopToolBatch(ToolLoopOutcome{})
+	}
+
+	attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
+	toolResult = deliveredResult
+	runner.handledAttachments = append(runner.handledAttachments, attachments...)
+
+	if !toolResult.ResponseHandled {
+		llm.allResponsesHandled = false
+	}
+
+	shouldSendForUser := !toolResult.ResponseHandled &&
+		!ts.opts.SuppressToolUserDelivery &&
+		!toolResult.Silent &&
+		toolResult.ForUser != "" &&
+		ts.opts.SendResponse
+	if shouldSendForUser {
+		p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
+		logger.DebugCF("agent", "Sent tool result to user",
+			map[string]any{
+				"tool":        toolName,
+				"content_len": len(toolResult.ForUser),
+			})
+	}
+	p.emitEvent(
+		runtimeevents.KindAgentToolExecEnd,
+		ts.eventMeta("runTurn", "turn.tool.end"),
+		ToolExecEndPayload{
+			ToolCallID: toolCallID,
+			Tool:       toolName,
+			Duration:   toolDuration,
+			ForLLMLen:  len(contentForLLM),
+			ForUserLen: len(toolResult.ForUser),
+			IsError:    toolResult.IsError,
+			Async:      toolResult.Async,
+			ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
+			DiagnosticResult: diagnosticTextPreview(
+				p.Cfg, contentForLLM, diagnosticToolResultBytes,
+			),
+		},
+	)
+	ts.recordToolExecution(
+		toolName,
+		!toolResult.IsError,
+		toolErrorSummary(toolResult),
+		inferSkillNamesFromToolCall(ts, toolName, toolArgs),
+	)
+
+	if toolResult.IsError {
+		errSummary := toolErrorSummary(toolResult)
+		if isFatalMCPTransportErrorSummary(errSummary) {
+			if mcpServerName != "" {
+				logger.WarnCF("agent", "Fatal MCP server transport error; aborting turn to avoid workaround loop",
+					map[string]any{
+						"agent_id":   ts.agent.ID,
+						"iteration":  iteration,
+						"tool":       toolName,
+						"mcp_server": mcpServerName,
+						"error":      errSummary,
+						"session_id": ts.sessionKey,
+					})
+				llm.allResponsesHandled = false
+				exec.messages = runner.messages
+				return stopToolBatch(ToolLoopOutcome{
+					Control:      ToolControlBreak,
+					FinalContent: fatalMCPServerErrorReply(mcpServerName, toolName),
+				})
+			}
+			streak := ts.recentToolExecutionErrorStreak(toolName, func(rec ToolExecutionRecord) bool {
+				return isFatalMCPTransportErrorSummary(rec.ErrorSummary)
+			})
+			if streak >= repeatedFatalToolErrorStreakLimit {
+				logger.WarnCF("agent", "Repeated fatal tool transport errors; aborting turn to avoid retry loop",
+					map[string]any{
+						"agent_id":   ts.agent.ID,
+						"iteration":  iteration,
+						"tool":       toolName,
+						"error":      errSummary,
+						"streak":     streak,
+						"session_id": ts.sessionKey,
+					})
+				llm.allResponsesHandled = false
+				exec.messages = runner.messages
+				return stopToolBatch(ToolLoopOutcome{
+					Control:      ToolControlBreak,
+					FinalContent: repeatedFatalToolErrorReply(toolName),
+				})
+			}
+		}
+	}
+	if loopDecision.Action == loopguard.ActionHalt {
+		runner.appendSkippedToolMessages(
+			i+1,
+			"tool loop emergency halt",
+			"Skipped because tool-loop protection stopped the current turn.",
+		)
+		exec.messages = runner.messages
+		return stopToolBatch(ToolLoopOutcome{
+			Control: ToolControlHalt, FinalContent: loopDecision.Message,
+		})
+	}
+
+	runner.captureAfterToolSteering(false)
+	return toolCallStageResult{}
+}
+
+func (runner *toolLoopRunner) completeToolBatch(ctx context.Context) ToolLoopOutcome {
+	p := runner.p
+	turnCtx := runner.turnCtx
+	ts := runner.ts
+	exec := runner.exec
+	llm := runner.llm
+	iteration := llm.iteration
+	normalizedToolCalls := runner.toolCalls
 
 	exec.messages = runner.messages
 
