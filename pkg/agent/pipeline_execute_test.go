@@ -235,6 +235,79 @@ func TestToolResultContextStatus(t *testing.T) {
 	}
 }
 
+func TestToolCallStagesKeepAdmissionInvocationAndPersistenceSeparate(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &fixedToolResultTool{name: "stage-tool", result: toolshared.NewToolResult("stage result")}
+	registry.Register(tool)
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
+	ts := &turnState{
+		agent:      agent,
+		agentID:    agent.ID,
+		turnID:     "tool-stage-turn",
+		sessionKey: "tool-stage-session",
+		opts: processOptions{
+			NoHistory: true,
+			Dispatch:  DispatchRequest{SessionKey: "tool-stage-session"},
+		},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	llm := newLLMIterationState(1)
+	llm.allResponsesHandled = true
+	runner := &toolLoopRunner{
+		p:       &Pipeline{},
+		turnCtx: t.Context(),
+		ts:      ts,
+		exec:    exec,
+		llm:     llm,
+	}
+	call := &toolCallState{
+		request:   providers.ToolCall{ID: "stage-call", Name: tool.Name(), Arguments: map[string]any{}},
+		name:      tool.Name(),
+		arguments: map[string]any{},
+	}
+
+	if result := runner.admitToolCall(t.Context(), call); result.disposition != toolCallProceed {
+		t.Fatalf("admitToolCall() disposition = %v, outcome = %+v", result.disposition, result.outcome)
+	}
+	if tool.executions != 0 || call.result != nil || len(runner.messages) != 0 {
+		t.Fatalf(
+			"admission leaked later-stage effects: executions=%d result=%+v messages=%+v",
+			tool.executions,
+			call.result,
+			runner.messages,
+		)
+	}
+	if result := runner.approveToolCall(t.Context(), call); result.disposition != toolCallProceed {
+		t.Fatalf("approveToolCall() disposition = %v, outcome = %+v", result.disposition, result.outcome)
+	}
+	if call.executionContext == nil || tool.executions != 0 || len(runner.messages) != 0 {
+		t.Fatalf(
+			"approval state = context:%v executions:%d messages:%+v",
+			call.executionContext != nil,
+			tool.executions,
+			runner.messages,
+		)
+	}
+	if result := runner.invokeToolCall(t.Context(), call); result.disposition != toolCallProceed {
+		t.Fatalf("invokeToolCall() disposition = %v, outcome = %+v", result.disposition, result.outcome)
+	}
+	if tool.executions != 1 || call.result == nil || call.result.ContentForLLM() != "stage result" {
+		t.Fatalf("invocation state = executions:%d result:%+v", tool.executions, call.result)
+	}
+	if len(runner.messages) != 0 {
+		t.Fatalf("invocation persisted transcript early: %+v", runner.messages)
+	}
+	if result := runner.persistToolCallResult(t.Context(), call); result.disposition != toolCallProceed {
+		t.Fatalf("persistToolCallResult() disposition = %v, outcome = %+v", result.disposition, result.outcome)
+	}
+	if len(runner.messages) != 1 || runner.messages[0].Role != "tool" || runner.messages[0].Content != "stage result" {
+		t.Fatalf("persisted messages = %+v", runner.messages)
+	}
+	if llm.allResponsesHandled {
+		t.Fatal("unhandled tool result did not require another model response")
+	}
+}
+
 func TestPipelineToolResultJournalFailureLeavesDurableUnresolvedIntent(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	tool := &steeringSafetyTestTool{name: "side-effect", safety: toolshared.SteeringSafetyNonCancellable}
