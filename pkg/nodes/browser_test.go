@@ -77,6 +77,81 @@ func TestBrowserActSchemaBindsActionsToProfileRevision(t *testing.T) {
 	}
 }
 
+func TestBrowserActSchemaRequiresApprovalOnlyForDownloads(t *testing.T) {
+	descriptors, err := BrowserCommandDescriptors([]BrowserProfileDescriptor{
+		browserProfileDescriptorFixture(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	act := descriptors[3]
+	input := browserActInputFixture()
+	input["action"] = map[string]any{"kind": "navigate", "url": "https://example.com"}
+	if err = validateInvocationInput(act.InputSchema, input); err != nil {
+		t.Fatalf("unapproved navigation input rejected: %v", err)
+	}
+
+	input["action"] = map[string]any{"kind": "download", "ref": "ref_1"}
+	input["effect"] = "download"
+	if err = validateInvocationInput(act.InputSchema, input); err == nil {
+		t.Fatal("download input without approval_digest was accepted")
+	}
+	input["approval_digest"] = strings.Repeat("c", 64)
+	if err = validateInvocationInput(act.InputSchema, input); err != nil {
+		t.Fatalf("approved download input rejected: %v", err)
+	}
+}
+
+func TestBrowserSessionOpenSchemaBindsProfileLimits(t *testing.T) {
+	profile := browserProfileDescriptorFixture()
+	profile.Limits.DownloadBytes = 1024
+	descriptors, err := BrowserCommandDescriptors([]BrowserProfileDescriptor{profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := map[string]any{
+		"session_id": "session_1", "profile": "managed", "profile_revision": "managed-v1",
+		"browser_policy_revision": strings.Repeat("a", 64), "dry_run": true,
+		"limits": browserLimitsValue(profile.Limits),
+	}
+	if err = validateInvocationInput(descriptors[0].InputSchema, input); err != nil {
+		t.Fatalf("profile-bounded open input rejected: %v", err)
+	}
+	input["limits"].(map[string]any)["download_bytes"] = 1025
+	if err = validateInvocationInput(descriptors[0].InputSchema, input); err == nil {
+		t.Fatal("open input above the selected profile's download ceiling was accepted")
+	}
+}
+
+func TestBrowserSemanticValidationUsesUTF8ByteCeilings(t *testing.T) {
+	descriptors, err := BrowserCommandDescriptors([]BrowserProfileDescriptor{
+		browserProfileDescriptorFixture(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := browserActInputFixture()
+	input["action"] = map[string]any{
+		"kind": "navigate", "url": strings.Repeat("🙂", MaxBrowserURLBytes/4),
+	}
+	if err = validateDescriptorInvocationInput(descriptors[3], input); err != nil {
+		t.Fatalf("navigate input at UTF-8 byte ceiling rejected: %v", err)
+	}
+	input["action"].(map[string]any)["url"] = strings.Repeat("🙂", MaxBrowserURLBytes/4+1)
+	if err = validateDescriptorInvocationInput(descriptors[3], input); err == nil {
+		t.Fatal("navigate input above UTF-8 byte ceiling was accepted")
+	}
+
+	observation := map[string]any{
+		"session_id": "session_1", "tab_id": "tab_1", "snapshot_generation": 1,
+		"url": "", "origin": "", "snapshot": strings.Repeat("🙂", MaxBrowserSnapshotBytes/4),
+		"elements": []any{}, "truncated": false,
+	}
+	assertBrowserOutputValid(t, descriptors[2], observation)
+	observation["snapshot"] = strings.Repeat("🙂", MaxBrowserSnapshotBytes/4+1)
+	assertBrowserOutputInvalid(t, descriptors[2], observation)
+}
+
 func TestBrowserDescriptorRejectsProfileOrSchemaBroadening(t *testing.T) {
 	profile := browserProfileDescriptorFixture()
 	descriptors, err := BrowserCommandDescriptors([]BrowserProfileDescriptor{profile})
@@ -190,5 +265,27 @@ func browserProfileDescriptorFixture() BrowserProfileDescriptor {
 			SnapshotRefs: 500, TextInputBytes: MaxBrowserTextInputBytes,
 			ToolResultBytes: MaxBrowserToolResultBytes, RetentionSecs: MaxBrowserRetentionSeconds,
 		},
+	}
+}
+
+func browserActInputFixture() map[string]any {
+	return map[string]any{
+		"session_id": "session_1", "tab_id": "tab_1", "snapshot_generation": 1,
+		"action_invocation_id": "action_1", "effect": "navigation",
+		"prepared_action_hash":    strings.Repeat("a", 64),
+		"browser_policy_revision": strings.Repeat("b", 64),
+		"profile_revision":        "managed-v1",
+	}
+}
+
+func browserLimitsValue(limits BrowserLimits) map[string]any {
+	return map[string]any{
+		"sessions": limits.Sessions, "tabs": limits.Tabs,
+		"session_seconds": limits.SessionSeconds, "idle_seconds": limits.IdleSeconds,
+		"prepared_seconds": limits.PreparedSeconds, "action_seconds": limits.ActionSeconds,
+		"snapshot_bytes": limits.SnapshotBytes, "screenshot_bytes": limits.ScreenshotBytes,
+		"upload_bytes": limits.UploadBytes, "download_bytes": limits.DownloadBytes,
+		"snapshot_refs": limits.SnapshotRefs, "text_input_bytes": limits.TextInputBytes,
+		"tool_result_bytes": limits.ToolResultBytes, "retention_seconds": limits.RetentionSecs,
 	}
 }

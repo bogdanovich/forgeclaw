@@ -231,6 +231,7 @@ func BrowserCommandInputSchema(command string, profiles []BrowserProfileDescript
 			"properties": map[string]any{
 				"profile":          map[string]any{"const": profile.Alias},
 				"profile_revision": map[string]any{"const": profile.Revision},
+				"limits":           browserLimitsSchema(profile.Limits),
 			},
 		})
 		for _, action := range profile.Actions {
@@ -241,8 +242,12 @@ func BrowserCommandInputSchema(command string, profiles []BrowserProfileDescript
 			if action == "download" {
 				effect = "download"
 			}
+			required := []string{"profile_revision", "action", "effect"}
+			if action == "download" {
+				required = append(required, "approval_digest")
+			}
 			actionBranches = append(actionBranches, map[string]any{
-				"required": []string{"profile_revision", "action", "effect"},
+				"required": required,
 				"properties": map[string]any{
 					"profile_revision": map[string]any{"const": profile.Revision},
 					"action":           browserActionSchema([]string{action}),
@@ -273,7 +278,7 @@ func BrowserCommandInputSchema(command string, profiles []BrowserProfileDescript
 		profileConstraint = map[string]any{"oneOf": profileBranches}
 		add("browser_policy_revision", digest)
 		add("dry_run", map[string]any{"const": true})
-		add("limits", browserLimitsSchema())
+		add("limits", browserLimitsSchema(BrowserLimits{}.Effective()))
 	case BrowserCommandSessionStatus, BrowserCommandSessionClose:
 		add("session_id", identifier)
 		add("profile_revision", identifier)
@@ -371,7 +376,7 @@ func BrowserCommandOutputSchema(command string) json.RawMessage {
 	}
 }
 
-func browserLimitsSchema() map[string]any {
+func browserLimitsSchema(maximum BrowserLimits) map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -392,24 +397,24 @@ func browserLimitsSchema() map[string]any {
 			"retention_seconds",
 		},
 		"properties": map[string]any{
-			"sessions":         map[string]any{"const": MaxBrowserSessions},
-			"tabs":             map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserTabs},
-			"session_seconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserSessionSeconds},
-			"idle_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserIdleSeconds},
-			"prepared_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserPreparedSeconds},
-			"action_seconds":   map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserActionSeconds},
-			"snapshot_bytes":   map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserSnapshotBytes},
-			"screenshot_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserScreenshotBytes},
-			"upload_bytes":     map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserUploadBytes},
-			"download_bytes":   map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserDownloadBytes},
-			"snapshot_refs":    map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserSnapshotRefs},
-			"text_input_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserTextInputBytes},
+			"sessions":         map[string]any{"const": maximum.Sessions},
+			"tabs":             map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.Tabs},
+			"session_seconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.SessionSeconds},
+			"idle_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.IdleSeconds},
+			"prepared_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.PreparedSeconds},
+			"action_seconds":   map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.ActionSeconds},
+			"snapshot_bytes":   map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.SnapshotBytes},
+			"screenshot_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.ScreenshotBytes},
+			"upload_bytes":     map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.UploadBytes},
+			"download_bytes":   map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.DownloadBytes},
+			"snapshot_refs":    map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.SnapshotRefs},
+			"text_input_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.TextInputBytes},
 			"tool_result_bytes": map[string]any{
 				"type":    "integer",
 				"minimum": MinBrowserToolResultBytes,
-				"maximum": MaxBrowserToolResultBytes,
+				"maximum": maximum.ToolResultBytes,
 			},
-			"retention_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxBrowserRetentionSeconds},
+			"retention_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maximum.RetentionSecs},
 		},
 	}
 }
@@ -492,6 +497,83 @@ func browserArtifactSchema(maximumBytes int) map[string]any {
 			"content_type": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
 		},
 	}
+}
+
+func validateBrowserInvocationInputBytes(command string, input map[string]any) error {
+	if command != BrowserCommandAct {
+		return nil
+	}
+	action, ok := input["action"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("%w: malformed browser action", ErrInvalidInvocation)
+	}
+	if action["kind"] != "navigate" {
+		return nil
+	}
+	return validateBrowserStringBytes(action, "url", MaxBrowserURLBytes, true)
+}
+
+func validateBrowserInvocationOutputBytes(command string, output map[string]any) error {
+	switch command {
+	case BrowserCommandObserve:
+		return validateBrowserObservationBytes(output)
+	case BrowserCommandAct:
+		observation, present := output["observation"]
+		if !present {
+			return nil
+		}
+		value, ok := observation.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%w: malformed browser observation", ErrInvalidInvocation)
+		}
+		return validateBrowserObservationBytes(value)
+	default:
+		return nil
+	}
+}
+
+func validateBrowserObservationBytes(observation map[string]any) error {
+	for _, field := range []struct {
+		name     string
+		maximum  int
+		required bool
+	}{
+		{"url", MaxBrowserURLBytes, true},
+		{"origin", MaxBrowserURLBytes, true},
+		{"title", MaxBrowserTitleBytes, false},
+		{"snapshot", MaxBrowserSnapshotBytes, true},
+	} {
+		if err := validateBrowserStringBytes(
+			observation,
+			field.name,
+			field.maximum,
+			field.required,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBrowserStringBytes(
+	object map[string]any,
+	field string,
+	maximum int,
+	required bool,
+) error {
+	value, present := object[field]
+	if !present && !required {
+		return nil
+	}
+	text, ok := value.(string)
+	if !present || !ok || len(text) > maximum {
+		return fmt.Errorf(
+			"%w: browser %s is outside byte bounds",
+			ErrInvalidInvocation,
+			field,
+		)
+	}
+	return nil
 }
 
 func rawSchema(data json.RawMessage) map[string]any {

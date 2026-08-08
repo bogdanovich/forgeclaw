@@ -177,7 +177,7 @@ func PrepareExecutionPlan(
 	if err != nil {
 		return ExecutionPlan{}, err
 	}
-	if validationErr := validateInvocationInput(descriptor.InputSchema, value); validationErr != nil {
+	if validationErr := validateDescriptorInvocationInput(descriptor, value); validationErr != nil {
 		return ExecutionPlan{}, validationErr
 	}
 	request.Input = input
@@ -399,7 +399,7 @@ func (policy LocalCommandPolicy) authorize(
 	if err != nil {
 		return err
 	}
-	if err := validateInvocationInput(descriptor.InputSchema, input); err != nil {
+	if err := validateDescriptorInvocationInput(descriptor, input); err != nil {
 		return err
 	}
 	if !slices.Contains(policy.AllowedCommands, plan.Command) ||
@@ -450,6 +450,16 @@ func validateInvocationInput(rawSchema json.RawMessage, input map[string]any) er
 	return validateInvocationValue(rawSchema, input, "input")
 }
 
+func validateDescriptorInvocationInput(descriptor CommandDescriptor, input map[string]any) error {
+	if err := validateInvocationInput(descriptor.InputSchema, input); err != nil {
+		return err
+	}
+	if IsBrowserCommand(descriptor.Name) {
+		return validateBrowserInvocationInputBytes(descriptor.Name, input)
+	}
+	return nil
+}
+
 // ValidateInvocationOutput validates and canonicalizes a command result before
 // it crosses the node transport boundary.
 func ValidateInvocationOutput(
@@ -473,6 +483,11 @@ func ValidateInvocationOutput(
 	}
 	if validationErr := validateInvocationValue(descriptor.OutputSchema, object, "output"); validationErr != nil {
 		return nil, validationErr
+	}
+	if IsBrowserCommand(descriptor.Name) {
+		if validationErr := validateBrowserInvocationOutputBytes(descriptor.Name, object); validationErr != nil {
+			return nil, validationErr
+		}
 	}
 	canonical, err := jsonstrict.Canonical(raw)
 	if err != nil {
