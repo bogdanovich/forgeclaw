@@ -82,10 +82,6 @@ func (*resolvedParent) stageMatches(
 	return false, ErrFileAccessDenied
 }
 
-func (*resolvedParent) finalIdentity() (fileIdentity, os.FileInfo, error) {
-	return fileIdentity{}, nil, ErrFileAccessDenied
-}
-
 func (*resolvedParent) openFinalRegular() (*resolvedFile, error) {
 	return nil, ErrFileAccessDenied
 }

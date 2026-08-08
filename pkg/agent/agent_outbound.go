@@ -63,18 +63,6 @@ const (
 	toolResultDeliveryQueued
 )
 
-func (al *AgentLoop) maybePublishErrorWithPolicy(
-	ctx context.Context,
-	workspace, agentID string,
-	channel, chatID, sessionKey string,
-	err error,
-	policy finalResponseDeliveryPolicy,
-) finalResponseAdmission {
-	return al.maybePublishErrorWithScopes(
-		ctx, workspace, agentID, channel, chatID, sessionKey, err, policy, nil,
-	)
-}
-
 func (al *AgentLoop) maybePublishErrorWithScopes(
 	ctx context.Context,
 	workspace, agentID string,

@@ -16,6 +16,7 @@ import (
 
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	fstools "github.com/bogdanovich/mintclaw/pkg/tools/fs"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
@@ -190,7 +191,7 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	lock.Lock()
 	defer lock.Unlock()
 
-	validatedPath, err := validatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
+	validatedPath, err := fstools.ValidatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
 	if err != nil {
 		return t.failure(ctx, operation, "path_validation_failed", payload, err)
 	}
@@ -218,7 +219,7 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	if mkdirErr := os.MkdirAll(filepath.Dir(validatedPath), 0o755); mkdirErr != nil {
 		return t.failure(ctx, operation, "directory_create_failed", payload, mkdirErr)
 	}
-	validatedPath, err = validatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
+	validatedPath, err = fstools.ValidatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
 	if err != nil {
 		return t.failure(ctx, operation, "path_validation_failed", payload, err)
 	}
@@ -276,7 +277,7 @@ func (t *MemoryTool) appendDaily(
 		return memoryMutationResult(appendDailyMemoryOperation, "duplicate", existingTarget, false)
 	}
 
-	validatedPath, err := validatePathWithAllowPaths(target, t.workspace, true, nil)
+	validatedPath, err := fstools.ValidatePathWithAllowPaths(target, t.workspace, true, nil)
 	if err != nil {
 		return t.failure(ctx, appendDailyMemoryOperation, "path_validation_failed", payload, err)
 	}
@@ -293,7 +294,7 @@ func (t *MemoryTool) appendDaily(
 	if mkdirErr := os.MkdirAll(filepath.Dir(validatedPath), 0o755); mkdirErr != nil {
 		return t.failure(ctx, appendDailyMemoryOperation, "directory_create_failed", payload, mkdirErr)
 	}
-	validatedPath, err = validatePathWithAllowPaths(target, t.workspace, true, nil)
+	validatedPath, err = fstools.ValidatePathWithAllowPaths(target, t.workspace, true, nil)
 	if err != nil {
 		return t.failure(ctx, appendDailyMemoryOperation, "path_validation_failed", payload, err)
 	}
@@ -367,7 +368,7 @@ func dailyAppendMarker(idempotencyKey string) string {
 }
 
 func (t *MemoryTool) findDailyAppendTarget(marker string) (string, bool, error) {
-	memoryRoot, err := validatePathWithAllowPaths("memory", t.workspace, true, nil)
+	memoryRoot, err := fstools.ValidatePathWithAllowPaths("memory", t.workspace, true, nil)
 	if err != nil {
 		return "", false, fmt.Errorf("validate memory directory: %w", err)
 	}
@@ -393,7 +394,7 @@ func (t *MemoryTool) findDailyAppendTarget(marker string) (string, bool, error) 
 		if !isDailyMemoryTarget(target) {
 			return nil
 		}
-		validatedPath, validateErr := validatePathWithAllowPaths(target, t.workspace, true, nil)
+		validatedPath, validateErr := fstools.ValidatePathWithAllowPaths(target, t.workspace, true, nil)
 		if validateErr != nil {
 			return validateErr
 		}

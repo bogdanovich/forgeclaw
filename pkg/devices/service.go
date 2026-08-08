@@ -34,7 +34,7 @@ func NewService(cfg Config, stateMgr *state.Manager) *Service {
 	s := &Service{
 		state:   stateMgr,
 		enabled: cfg.Enabled,
-		sources: make([]EventSource, 0),
+		sources: make([]events.EventSource, 0),
 	}
 
 	if cfg.Enabled && cfg.MonitorUSB {
