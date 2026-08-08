@@ -98,6 +98,24 @@ builds:
       - goos: netbsd
         goarch: arm64
 
+  - id: mintclaw-node
+    binary: mintclaw-node
+    env:
+      - CGO_ENABLED=0
+    tags:
+      - goolm
+      - stdjson
+    ldflags:
+      - -s -w
+      - -X github.com/bogdanovich/mintclaw/cmd/mintclaw-node.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/mintclaw-node
+
 dockers_v2:
   - id: mintclaw
     dockerfile: docker/Dockerfile.goreleaser
@@ -131,7 +149,11 @@ dockers_v2:
       - linux/riscv64
 
 archives:
-  - formats: [tar.gz]
+  - id: mintclaw
+    ids:
+      - mintclaw
+      - mintclaw-launcher
+    formats: [tar.gz]
     # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
@@ -144,6 +166,16 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
+
+  - id: mintclaw-node
+    ids:
+      - mintclaw-node
+    formats: [tar.gz]
+    name_template: >-
+      mintclaw-node_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
 
 nfpms:
   - id: mintclaw
