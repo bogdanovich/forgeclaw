@@ -163,7 +163,7 @@ When public access is enabled:
 
 ### Prerequisites
 
-- Go `1.25+`
+- Go `1.26+`
 - Node.js 20.19+ or 22.13+
 - `pnpm`
 

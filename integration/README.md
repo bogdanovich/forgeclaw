@@ -98,7 +98,7 @@ TEST_COMMAND='go test ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
 ### Prerequisites
 
 - Docker with the `docker compose` plugin for Docker-backed suites
-- Go 1.25+ only if you want to run tagged integration tests directly on your host instead of through Docker
+- Go 1.26+ only if you want to run tagged integration tests directly on your host instead of through Docker
 
 ### Run Everything That CI Runs
 

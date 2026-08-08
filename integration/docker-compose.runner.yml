@@ -1,6 +1,6 @@
 services:
   integration-runner:
-    image: golang:1.25-bookworm
+    image: golang:1.26-bookworm
     working_dir: /workspace
     entrypoint: ["bash", "-c"]
     volumes:

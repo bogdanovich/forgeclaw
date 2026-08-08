@@ -1,6 +1,6 @@
 module github.com/bogdanovich/mintclaw
 
-go 1.25.12
+go 1.26.5
 
 require (
 	fyne.io/systray v1.12.2
