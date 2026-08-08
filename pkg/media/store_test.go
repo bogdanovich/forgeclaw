@@ -1,13 +1,19 @@
 package media
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 func createTempFile(t *testing.T, dir, name string) string {
@@ -770,6 +776,232 @@ func TestPersistentIndexRecoversRefsAfterRestart(t *testing.T) {
 	}
 	if resolvedPath != path || resolvedMeta != meta {
 		t.Fatalf("recovered entry = (%q, %#v), want (%q, %#v)", resolvedPath, resolvedMeta, path, meta)
+	}
+}
+
+func TestPersistentIndexPromotesManagedTempFile(t *testing.T) {
+	workspace := t.TempDir()
+	indexPath := filepath.Join(workspace, "state", "media", "index.json")
+	if err := os.MkdirAll(TempDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sourceDir, err := os.MkdirTemp(TempDir(), "persistent-store-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sourceDir) })
+	source := createTempFile(t, sourceDir, "photo.jpg")
+
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.durableRoot != workspace {
+		t.Fatalf("durable root = %q, want pre-existing workspace %q", store.durableRoot, workspace)
+	}
+	ref, err := store.Store(source, MediaMeta{Source: "telegram"}, "chat:123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("temporary source still exists: %v", err)
+	}
+
+	resolved, err := store.Resolve(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir := filepath.Join(workspace, "state", "media", "files")
+	if filepath.Dir(resolved) != wantDir {
+		t.Fatalf("resolved path = %q, want directory %q", resolved, wantDir)
+	}
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := restarted.Resolve(ref); err != nil || got != resolved {
+		t.Fatalf("Resolve after restart = (%q, %v), want (%q, nil)", got, err, resolved)
+	}
+}
+
+func TestEnsureDurableDirectoryRetriesFromOriginalRoot(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "state", "media", "files")
+	calls := 0
+	mkdir := func(gotRoot, relative string, perm os.FileMode) error {
+		calls++
+		if gotRoot != root || relative != filepath.Join("state", "media", "files") || perm != 0o700 {
+			t.Fatalf("durable mkdir args = (%q, %q, %v)", gotRoot, relative, perm)
+		}
+		if err := os.MkdirAll(filepath.Join(gotRoot, relative), perm); err != nil {
+			return err
+		}
+		if calls == 1 {
+			return &fileutil.CommittedWriteError{Err: errors.New("sync parent")}
+		}
+		return nil
+	}
+
+	if err := ensureDurableDirectory(root, target, mkdir); !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("first ensure error = %v, want committed sync error", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("target was not created before sync error: %v", err)
+	}
+	if err := ensureDurableDirectory(root, target, mkdir); err != nil {
+		t.Fatalf("retry ensure: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("durable mkdir calls = %d, want retry despite existing target", calls)
+	}
+}
+
+func TestPersistentIndexRejectsManagedTempSymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	indexPath := filepath.Join(workspace, "state", "media", "index.json")
+	outside := t.TempDir()
+	outsideFile := createTempFile(t, outside, "outside.jpg")
+
+	if err := os.MkdirAll(TempDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(TempDir(), "persistent-store-link-"+uuid.NewString())
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Store(
+		filepath.Join(link, filepath.Base(outsideFile)),
+		MediaMeta{Source: "telegram"},
+		"chat:123",
+	); err == nil || !strings.Contains(err.Error(), "contains symlink") {
+		t.Fatalf("Store error = %v, want managed-temp symlink rejection", err)
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Fatalf("outside file was changed: %v", err)
+	}
+}
+
+func TestPersistentIndexCleanupReclaimsStalePromotionOrphan(t *testing.T) {
+	workspace := t.TempDir()
+	indexPath := filepath.Join(workspace, "state", "media", "index.json")
+	managedDir := filepath.Join(filepath.Dir(indexPath), "files")
+	if err := os.MkdirAll(managedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orphan := filepath.Join(managedDir, uuid.NewString()+".jpg")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+	freshOrphan := filepath.Join(managedDir, uuid.NewString()+".jpg")
+	if err := os.WriteFile(freshOrphan, []byte("in flight"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewFileMediaStoreWithPersistentIndex(
+		indexPath,
+		MediaCleanerConfig{MaxAge: time.Hour},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.nowFunc = func() time.Time { return now }
+	if removed := store.CleanExpired(); removed != 1 {
+		t.Fatalf("CleanExpired removed = %d, want orphan", removed)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan still exists: %v", err)
+	}
+	if _, err := os.Stat(freshOrphan); err != nil {
+		t.Fatalf("fresh promotion candidate was removed: %v", err)
+	}
+}
+
+func TestCleanExpiredSerializesSamePathRegistration(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{MaxAge: time.Minute})
+	store.nowFunc = func() time.Time { return now.Add(-2 * time.Minute) }
+	path := createTempFile(t, dir, "same-path.jpg")
+	if _, err := store.Store(path, MediaMeta{Source: "telegram"}, "old"); err != nil {
+		t.Fatal(err)
+	}
+	store.nowFunc = func() time.Time { return now }
+
+	store.mu.Lock()
+	cleanupDone := make(chan int, 1)
+	go func() { cleanupDone <- store.CleanExpired() }()
+	deadline := time.Now().Add(time.Second)
+	for store.lifecycleMu.TryLock() {
+		store.lifecycleMu.Unlock()
+		if time.Now().After(deadline) {
+			store.mu.Unlock()
+			t.Fatal("cleanup did not acquire lifecycle lock")
+		}
+		runtime.Gosched()
+	}
+
+	registrationDone := make(chan error, 1)
+	go func() {
+		_, storeErr := store.Store(path, MediaMeta{
+			Source:        "load_image",
+			CleanupPolicy: CleanupPolicyForgetOnly,
+		}, "new")
+		registrationDone <- storeErr
+	}()
+	store.mu.Unlock()
+
+	if removed := <-cleanupDone; removed != 1 {
+		t.Fatalf("CleanExpired removed = %d, want 1", removed)
+	}
+	if err := <-registrationDone; err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("same-path Store error = %v, want missing source after serialized cleanup", err)
+	}
+}
+
+func TestMediaPromotionDoesNotRemoveChangedSource(t *testing.T) {
+	if err := os.MkdirAll(TempDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sourceDir, err := os.MkdirTemp(TempDir(), "promotion-swap-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sourceDir) })
+	source := createTempFile(t, sourceDir, "source.jpg")
+	root, rel, file, info, err := openManagedTempFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	promotion := &mediaPromotion{sourceRoot: root, sourceRel: rel, sourceInfo: info}
+	defer promotion.close()
+
+	original := source + ".original"
+	if err := os.Rename(source, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := promotion.removeSource(); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("removeSource error = %v, want changed-source rejection", err)
+	}
+	if got, err := os.ReadFile(source); err != nil || string(got) != "replacement" {
+		t.Fatalf("replacement source = %q, %v; want preserved", got, err)
 	}
 }
 

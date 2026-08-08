@@ -12,6 +12,8 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg"
 )
 
+const defaultMediaRetentionMinutes = 7 * 24 * 60
+
 // DefaultConfig returns the default configuration for MintClaw.
 func DefaultConfig() *Config {
 	workspacePath := filepath.Join(GetHome(), pkg.WorkspaceName)
@@ -344,7 +346,7 @@ func DefaultConfig() *Config {
 				ToolConfig: ToolConfig{
 					Enabled: true,
 				},
-				MaxAge:   30,
+				MaxAge:   defaultMediaRetentionMinutes,
 				Interval: 5,
 			},
 			Web: WebToolsConfig{
