@@ -1038,7 +1038,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 				"sender":       senderID,
 				"group":        groupIDStr,
 				"is_mentioned": isBotMentioned,
-				"content":      utils.Truncate(content, 103),
+				"content":      truncate(content, 100),
 			})
 			return
 		}
@@ -1058,7 +1058,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 		"chat_id":     chatID,
 		"message_id":  messageID,
 		"length":      len(content),
-		"content":     utils.Truncate(content, 103),
+		"content":     truncate(content, 100),
 		"media_count": len(parsed.Media),
 	})
 
@@ -1116,6 +1116,18 @@ func (c *OneBotChannel) isDuplicate(messageID string) bool {
 	c.dedupIdx = (c.dedupIdx + 1) % len(c.dedupRing)
 
 	return false
+}
+
+// truncate returns s truncated to the first n runes followed by "..." when
+// s exceeds n runes. The content threshold is exact (100-rune content, not
+// utils.Truncate's reserve-3 contract) and is not affected by the global
+// truncation flag.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "..."
 }
 
 // VoiceCapabilities returns the voice capabilities of the channel.

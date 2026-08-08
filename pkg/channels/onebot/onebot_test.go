@@ -124,3 +124,23 @@ func TestParseMessageSegments_StoresDownloadedMediaRef(t *testing.T) {
 		t.Fatalf("meta.Filename = %q, want %q", meta.Filename, "image.png")
 	}
 }
+
+func TestTruncateBoundaries(t *testing.T) {
+	long := func(n int) string { return strings.Repeat("x", n) }
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{long(100), long(100)},         // exactly at threshold: unchanged
+		{long(101), long(100) + "..."}, // over threshold: 100 content + "..."
+		{long(103), long(100) + "..."}, // 103 still truncated to 100 + "..."
+		{long(104), long(100) + "..."}, // well over: same contract
+		{"short", "short"},             // under threshold: unchanged
+		{"你好你好你好你好你好你好你好你好你好你好", "你好你好你好你好你好你好你好你好你好你好"}, // rune-safe
+	}
+	for _, tt := range tests {
+		if got := truncate(tt.in, 100); got != tt.want {
+			t.Errorf("truncate(len=%d) = %q, want %q", len([]rune(tt.in)), got, tt.want)
+		}
+	}
+}
