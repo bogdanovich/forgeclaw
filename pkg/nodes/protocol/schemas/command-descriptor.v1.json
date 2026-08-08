@@ -167,15 +167,47 @@
               "session_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
               "idle_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
               "prepared_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
-	              "action_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
-	              "snapshot_bytes": {"type": "integer", "minimum": 1, "maximum": 262144},
-	              "screenshot_bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
-	              "upload_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
-	              "download_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
-	              "snapshot_refs": {"type": "integer", "minimum": 1, "maximum": 500},
-	              "text_input_bytes": {"type": "integer", "minimum": 1, "maximum": 16384},
-	              "tool_result_bytes": {"type": "integer", "minimum": 65536, "maximum": 327680},
-	              "retention_seconds": {"type": "integer", "minimum": 1, "maximum": 604800}
+              "action_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+              "snapshot_bytes": {"type": "integer", "minimum": 1, "maximum": 262144},
+              "screenshot_bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
+              "upload_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+              "download_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+              "snapshot_refs": {"type": "integer", "minimum": 1, "maximum": 500},
+              "text_input_bytes": {"type": "integer", "minimum": 1, "maximum": 16384},
+              "tool_result_bytes": {"type": "integer", "minimum": 65536, "maximum": 327680},
+              "retention_seconds": {"type": "integer", "minimum": 1, "maximum": 604800}
+            }
+          }
+        }
+      }
+    },
+    "update_profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["alias", "revision", "channel", "approval", "releases"],
+        "properties": {
+          "alias": {"type": "string", "minLength": 1, "maxLength": 64},
+          "revision": {"type": "string", "minLength": 1, "maxLength": 128},
+          "channel": {"enum": ["stable", "nightly"]},
+          "approval": {"const": "required"},
+          "downgrade": {"type": "boolean"},
+          "releases": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["alias", "version"],
+              "properties": {
+                "alias": {"type": "string", "minLength": 1, "maxLength": 64},
+                "version": {"type": "string", "minLength": 1, "maxLength": 64},
+                "description": {"type": "string", "maxLength": 256}
+              }
             }
           }
         }

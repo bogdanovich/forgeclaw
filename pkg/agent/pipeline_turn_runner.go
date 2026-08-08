@@ -32,6 +32,7 @@ func (p *Pipeline) runTurnLoop(
 	maxMediaSize := p.maxMediaSize()
 	finalContent := ""
 	mediaResolver := p.Context.MediaResolver
+	llm := newLLMIterationState(0)
 
 	for {
 		graceful, _ := ts.gracefulInterruptRequested()
@@ -150,7 +151,8 @@ func (p *Pipeline) runTurnLoop(
 
 		// Execute LLM call via Pipeline
 		ts.setPhase(TurnPhaseRunning)
-		llmOutcome, callErr := p.CallLLM(ctx, turnCtx, ts, exec, iteration)
+		llm = newLLMIterationState(iteration)
+		llmOutcome, callErr := p.CallLLM(ctx, turnCtx, ts, exec, llm)
 		if callErr != nil {
 			turnStatus = TurnEndStatusError
 			return turnResult{}, turnStatus, callErr
@@ -184,6 +186,7 @@ func (p *Pipeline) runTurnLoop(
 				turnCtx,
 				ts,
 				exec,
+				llm,
 				turnStatus,
 				finalContent,
 			)
@@ -193,7 +196,7 @@ func (p *Pipeline) runTurnLoop(
 			return result, turnStatus, finalizeErr
 		case ControlToolLoop:
 			// Execute tools via Pipeline
-			toolOutcome := p.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
+			toolOutcome := p.ExecuteTools(ctx, turnCtx, ts, exec, llm)
 			if toolOutcome.JournalErr != nil {
 				turnStatus = TurnEndStatusError
 				return turnResult{}, turnStatus, toolOutcome.JournalErr
@@ -239,7 +242,7 @@ func (p *Pipeline) runTurnLoop(
 					messages = exec.messages
 					continue
 				}
-				result, finalizeErr := p.finalizeTurn(turnCtx, ts, exec, turnStatus, finalContent)
+				result, finalizeErr := p.finalizeTurn(turnCtx, ts, exec, llm, turnStatus, finalContent)
 				if finalizeErr != nil {
 					turnStatus = TurnEndStatusError
 				}
@@ -260,6 +263,7 @@ func (p *Pipeline) runTurnLoop(
 					turnCtx,
 					ts,
 					exec,
+					llm,
 					turnStatus,
 					finalContent,
 				)
@@ -283,7 +287,7 @@ func (p *Pipeline) runTurnLoop(
 				if strings.TrimSpace(toolOutcome.FinalContent) != "" {
 					finalContent = toolOutcome.FinalContent
 				}
-				if exec.allResponsesHandled {
+				if llm.allResponsesHandled {
 					finalContent = ""
 				}
 				if p.continueWithPendingSubTurnResults(ts, exec) {
@@ -295,6 +299,7 @@ func (p *Pipeline) runTurnLoop(
 					turnCtx,
 					ts,
 					exec,
+					llm,
 					turnStatus,
 					finalContent,
 				)
@@ -328,7 +333,7 @@ func (p *Pipeline) runTurnLoop(
 		return result, turnStatus, abortErr
 	}
 
-	result, err := p.finalizeTurn(turnCtx, ts, exec, turnStatus, finalContent)
+	result, err := p.finalizeTurn(turnCtx, ts, exec, llm, turnStatus, finalContent)
 	if err != nil {
 		turnStatus = TurnEndStatusError
 	}

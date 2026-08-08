@@ -13,7 +13,7 @@ func TestValidateExecutionTargetsAcceptsBoundedNodePolicies(t *testing.T) {
 	cfg.Execution.Targets = map[string]ExecutionTarget{
 		"build": {
 			Type: "node", Node: "linux-builder", FileProfile: "project-files",
-			ServiceProfile: "server-services",
+			ServiceProfile: "server-services", UpdateProfile: "stable-node",
 		},
 		"vpn": {Type: "node", Node: "node_0123456789abcdef", Executor: "local"},
 	}
@@ -77,6 +77,14 @@ func TestValidateExecutionTargetsRejectsInvalidDefinitions(t *testing.T) {
 				Type: "node", Node: "builder", ServiceProfile: "Root Services",
 			},
 			want: "invalid service profile",
+		},
+		{
+			name:   "invalid update profile",
+			target: "build",
+			value: ExecutionTarget{
+				Type: "node", Node: "builder", UpdateProfile: "Stable Releases",
+			},
+			want: "invalid update profile",
 		},
 	}
 	for _, test := range tests {

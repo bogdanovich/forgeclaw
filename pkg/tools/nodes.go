@@ -88,6 +88,7 @@ type nodeCommandContract struct {
 	Examples     []json.RawMessage             `json:"examples"`
 	File         *nodeFileCommandContract      `json:"file,omitempty"`
 	Service      *nodeServiceCommandContract   `json:"service,omitempty"`
+	Update       *nodeUpdateCommandContract    `json:"update,omitempty"`
 }
 
 type nodeFileCommandContract struct {
@@ -105,6 +106,12 @@ type nodeServiceCommandContract struct {
 	Services       []nodes.ServiceDescriptor `json:"services"`
 	LogLimits      nodes.ServiceLogLimits    `json:"log_limits"`
 	ActionApproval string                    `json:"action_approval"`
+}
+
+type nodeUpdateCommandContract struct {
+	Channel   string                          `json:"channel"`
+	Releases  []nodes.UpdateReleaseDescriptor `json:"releases"`
+	Downgrade bool                            `json:"downgrade"`
 }
 
 type nodeCommandDescription struct {
@@ -245,6 +252,7 @@ func (tool *NodeDiscoveryTool) describe(
 		entry.Availability,
 		binding.FileProfile,
 		binding.ServiceProfile,
+		binding.UpdateProfile,
 		tool.access.bypassesApproval(target),
 	)
 	if command == "" {
@@ -258,6 +266,7 @@ func (tool *NodeDiscoveryTool) describe(
 		descriptor,
 		binding.FileProfile,
 		binding.ServiceProfile,
+		binding.UpdateProfile,
 	)
 	if !ok {
 		return ErrorResult("command is unavailable on this target")
@@ -341,6 +350,7 @@ func (access *nodeTargetAccess) resolve(
 			targetAvailability,
 			binding.FileProfile,
 			binding.ServiceProfile,
+			binding.UpdateProfile,
 			access.bypassesApproval(target),
 		)
 		entry.CommandCount = len(commands)
@@ -372,6 +382,7 @@ func visibleNodeCommands(
 	targetAvailability string,
 	fileProfile string,
 	serviceProfile string,
+	updateProfile string,
 	approvalBypass bool,
 ) []nodeCommandSummary {
 	if registration == nil || len(registration.AllowedCommands) == 0 {
@@ -391,7 +402,12 @@ func visibleNodeCommands(
 		if _, ok := allowed[descriptor.Name]; !ok {
 			continue
 		}
-		projected, available := projectDescriptorForTarget(descriptor, fileProfile, serviceProfile)
+		projected, available := projectDescriptorForTarget(
+			descriptor,
+			fileProfile,
+			serviceProfile,
+			updateProfile,
+		)
 		if !available {
 			continue
 		}
@@ -429,15 +445,24 @@ func projectDescriptorForTarget(
 	descriptor nodes.CommandDescriptor,
 	fileProfile string,
 	serviceProfile string,
+	updateProfiles ...string,
 ) (nodes.CommandDescriptor, bool) {
 	if nodes.IsBrowserCommand(descriptor.Name) {
 		return nodes.CommandDescriptor{}, false
+	}
+	updateProfile := ""
+	if len(updateProfiles) > 0 {
+		updateProfile = updateProfiles[0]
 	}
 	projected, available := projectFileDescriptorForTarget(descriptor, fileProfile)
 	if !available {
 		return nodes.CommandDescriptor{}, false
 	}
-	return projectServiceDescriptorForTarget(projected, serviceProfile)
+	projected, available = projectServiceDescriptorForTarget(projected, serviceProfile)
+	if !available {
+		return nodes.CommandDescriptor{}, false
+	}
+	return projectUpdateDescriptorForTarget(projected, updateProfile)
 }
 
 func projectFileDescriptorForTarget(
@@ -487,6 +512,34 @@ func projectServiceDescriptorForTarget(
 	serviceProfile string,
 ) (nodes.CommandDescriptor, bool) {
 	return nodes.ProjectServiceDescriptorForProfile(descriptor, serviceProfile)
+}
+
+func projectUpdateDescriptorForTarget(
+	descriptor nodes.CommandDescriptor,
+	updateProfile string,
+) (nodes.CommandDescriptor, bool) {
+	if len(descriptor.UpdateProfiles) == 0 {
+		return descriptor, true
+	}
+	if updateProfile == "" || descriptor.Name != "node.update.v1" || descriptor.ModelContract == nil {
+		return nodes.CommandDescriptor{}, false
+	}
+	for _, profile := range descriptor.UpdateProfiles {
+		if profile.Alias != updateProfile {
+			continue
+		}
+		descriptor.UpdateProfiles = nodes.CloneUpdateProfileDescriptors(
+			[]nodes.UpdateProfileDescriptor{profile},
+		)
+		descriptor.InputSchema = nodes.NodeUpdateInputSchema(descriptor.UpdateProfiles)
+		contract := *descriptor.ModelContract
+		contract.Availability = nodes.ModelAvailable
+		contract.ApprovalMode = "each_command"
+		contract.Constraints.ProfileAliases = nil
+		descriptor.ModelContract = &contract
+		return descriptor, true
+	}
+	return nodes.CommandDescriptor{}, false
 }
 
 func visibleNodeCommand(
@@ -585,6 +638,8 @@ func makeNodeCommandContract(
 		inputSchema = projectedFileToolInputSchema(descriptor.Name)
 	} else if len(descriptor.ServiceProfiles) == 1 {
 		inputSchema = nodes.ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles)
+	} else if len(descriptor.UpdateProfiles) == 1 {
+		inputSchema = nodes.NodeUpdateInputSchema(descriptor.UpdateProfiles)
 	}
 	contract := nodeCommandContract{
 		Name:         descriptor.Name,
@@ -632,6 +687,16 @@ func makeNodeCommandContract(
 			profile.ActionApproval == "operator_bypass_configured" {
 			contract.Execution.Approval = profile.ActionApproval
 		}
+	}
+	if len(descriptor.UpdateProfiles) == 1 {
+		profile := descriptor.UpdateProfiles[0]
+		contract.Constraints.ProfileAliases = nil
+		contract.Update = &nodeUpdateCommandContract{
+			Channel:   profile.Channel,
+			Releases:  append([]nodes.UpdateReleaseDescriptor(nil), profile.Releases...),
+			Downgrade: profile.Downgrade,
+		}
+		contract.Execution.Approval = profile.Approval
 	}
 	return contract
 }
@@ -713,6 +778,7 @@ type discoveryRevisionInput struct {
 	TargetExecutor       string      `json:"target_executor"`
 	TargetFileProfile    string      `json:"target_file_profile,omitempty"`
 	TargetServiceProfile string      `json:"target_service_profile,omitempty"`
+	TargetUpdateProfile  string      `json:"target_update_profile,omitempty"`
 	TargetApprovalBypass bool        `json:"target_approval_bypass,omitempty"`
 	TargetBindingDigest  string      `json:"target_binding_digest"`
 	NodeIdentityDigest   string      `json:"node_identity_digest"`
@@ -759,6 +825,7 @@ func (access *nodeTargetAccess) discoveryRevision(
 		TargetExecutor:       binding.Executor,
 		TargetFileProfile:    binding.FileProfile,
 		TargetServiceProfile: binding.ServiceProfile,
+		TargetUpdateProfile:  binding.UpdateProfile,
 		TargetApprovalBypass: access.bypassesApproval(target),
 		TargetBindingDigest:  base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
 		NodeIdentityDigest:   base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),

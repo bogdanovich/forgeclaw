@@ -1,33 +1,18 @@
 package internal
 
 import (
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 func ResolveTargetHome(override string) (string, error) {
 	if override != "" {
-		return ExpandHome(override), nil
+		return fileutil.ExpandHome(override), nil
 	}
 	return config.GetHome(), nil
-}
-
-func ExpandHome(path string) string {
-	if path == "" {
-		return path
-	}
-	if path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		if len(path) > 1 && path[1] == '/' {
-			return home + path[1:]
-		}
-		return home
-	}
-	return path
 }
 
 func ResolveWorkspace(homeDir string) string {
@@ -134,26 +119,12 @@ func RelPath(path, base string) string {
 	return rel
 }
 
+// CopyFile copies src to dst, preserving the source file's permission bits
+// and committing the write atomically (via fileutil.CopyFile).
 func CopyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
+	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
-
-	info, err := srcFile.Stat()
-	if err != nil {
-		return err
-	}
-
-	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-
-	_, copyErr := io.Copy(dstFile, srcFile)
-	if closeErr := dstFile.Close(); closeErr != nil && copyErr == nil {
-		return fmt.Errorf("close destination file %s: %w", dst, closeErr)
-	}
-	return copyErr
+	return fileutil.CopyFile(src, dst, info.Mode().Perm())
 }

@@ -179,6 +179,9 @@ func cloneCatalog(catalog nodes.CapabilityCatalog) nodes.CapabilityCatalog {
 		result.Commands[index].BrowserProfiles = nodes.CloneBrowserProfileDescriptors(
 			catalog.Commands[index].BrowserProfiles,
 		)
+		result.Commands[index].UpdateProfiles = nodes.CloneUpdateProfileDescriptors(
+			catalog.Commands[index].UpdateProfiles,
+		)
 	}
 	return result
 }

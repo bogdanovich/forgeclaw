@@ -148,7 +148,7 @@ type mediaLimitsProvider interface {
 }
 
 type finalTurnRenderPolicy interface {
-	shouldFinalizeAfterToolLoop(exec *turnExecution) bool
+	shouldFinalizeAfterToolLoop(exec *turnExecution, llm *LLMIterationState) bool
 }
 
 type pipelineModelResolution interface {

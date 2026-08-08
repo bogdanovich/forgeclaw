@@ -19,11 +19,12 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 	ctx context.Context,
 	ts *turnState,
 	exec *turnExecution,
+	llm *LLMIterationState,
 	messagesForCall []providers.Message,
 	toolDefsForCall []providers.ToolDefinition,
 ) (*providers.LLMResponse, bool, error) {
-	exec.streamingPublisher = nil
-	exec.streamingFallback = false
+	llm.streamingPublisher = nil
+	llm.streamingFallback = false
 	if !p.configuredStreamingEligible(ts, exec) {
 		return nil, false, nil
 	}
@@ -73,7 +74,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		"agent_id": ts.agent.ID,
 		"channel":  ts.channel,
 		"chat_id":  ts.chatID,
-		"model":    exec.llmModel,
+		"model":    llm.llmModel,
 	})
 
 	chunkCount := 0
@@ -94,11 +95,11 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 			ctx,
 			messagesForCall,
 			toolDefsForCall,
-			exec.llmModel,
-			exec.llmOpts,
+			llm.llmModel,
+			llm.llmOpts,
 			func(chunk providers.StreamChunk) {
 				recordChunk()
-				if !exec.suppressReasoning && strings.TrimSpace(chunk.ReasoningContent) != "" {
+				if !llm.suppressReasoning && strings.TrimSpace(chunk.ReasoningContent) != "" {
 					publisher.UpdateReasoning(ctx, chunk.ReasoningContent)
 				}
 				if strings.TrimSpace(chunk.Content) != "" {
@@ -111,21 +112,21 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 			ctx,
 			messagesForCall,
 			toolDefsForCall,
-			exec.llmModel,
-			exec.llmOpts,
+			llm.llmModel,
+			llm.llmOpts,
 			func(accumulated string) {
 				recordChunk()
 				publisher.Update(ctx, accumulated)
 			},
 		)
 	}
-	logConfiguredStreamingSummary(ts, exec, chunkCount, firstChunkAt, lastChunkAt, streamErr)
+	logConfiguredStreamingSummary(ts, llm, chunkCount, firstChunkAt, lastChunkAt, streamErr)
 	if streamErr == nil {
 		if updateErr := publisher.Err(); updateErr != nil {
 			logFields := map[string]any{
 				"agent_id": ts.agent.ID,
 				"channel":  ts.channel,
-				"model":    exec.llmModel,
+				"model":    llm.llmModel,
 				"error":    updateErr.Error(),
 			}
 			if publisher.Published() {
@@ -142,11 +143,11 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 				ctx,
 				messagesForCall,
 				toolDefsForCall,
-				exec.llmModel,
-				exec.llmOpts,
+				llm.llmModel,
+				llm.llmOpts,
 			)
 			if err == nil && fallbackResponse != nil {
-				exec.streamingFallback = true
+				llm.streamingFallback = true
 			}
 			return fallbackResponse, true, err
 		}
@@ -159,7 +160,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 				map[string]any{
 					"agent_id": ts.agent.ID,
 					"channel":  ts.channel,
-					"model":    exec.llmModel,
+					"model":    llm.llmModel,
 					"error":    streamErr.Error(),
 				},
 			)
@@ -168,11 +169,11 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 				ctx,
 				messagesForCall,
 				toolDefsForCall,
-				exec.llmModel,
-				exec.llmOpts,
+				llm.llmModel,
+				llm.llmOpts,
 			)
 			if err == nil && fallbackResponse != nil {
-				exec.streamingFallback = true
+				llm.streamingFallback = true
 			}
 			return fallbackResponse, true, err
 		}
@@ -180,7 +181,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 	}
 
 	if response != nil {
-		exec.streamingPublisher = publisher
+		llm.streamingPublisher = publisher
 	}
 
 	return response, true, nil
@@ -188,7 +189,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 
 func logConfiguredStreamingSummary(
 	ts *turnState,
-	exec *turnExecution,
+	llm *LLMIterationState,
 	chunkCount int,
 	firstChunkAt time.Time,
 	lastChunkAt time.Time,
@@ -201,8 +202,8 @@ func logConfiguredStreamingSummary(
 		fields["agent_id"] = ts.agent.ID
 		fields["channel"] = ts.channel
 	}
-	if exec != nil {
-		fields["model"] = exec.llmModel
+	if llm != nil {
+		fields["model"] = llm.llmModel
 	}
 	if !firstChunkAt.IsZero() && !lastChunkAt.IsZero() {
 		fields["chunk_span_ms"] = lastChunkAt.Sub(firstChunkAt).Milliseconds()
@@ -276,12 +277,12 @@ func (s *finalizationStream) cancel(ctx context.Context) {
 	publisher.Cancel(ctx)
 }
 
-func cancelConfiguredStreamingLLM(ctx context.Context, exec *turnExecution) {
-	if exec == nil || exec.streamingPublisher == nil {
+func cancelConfiguredStreamingLLM(ctx context.Context, llm *LLMIterationState) {
+	if llm == nil || llm.streamingPublisher == nil {
 		return
 	}
-	publisher := exec.streamingPublisher
-	exec.streamingPublisher = nil
+	publisher := llm.streamingPublisher
+	llm.streamingPublisher = nil
 	publisher.Cancel(ctx)
 }
 

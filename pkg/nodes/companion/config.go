@@ -66,6 +66,8 @@ type Config struct {
 	ServicePolicies        ServicePolicies                 `json:"node_service_policies,omitempty"`
 	ServiceHelper          *ServiceHelperClientConfig      `json:"service_helper,omitempty"`
 	BrowserProfiles        map[string]BrowserProfilePolicy `json:"browser_profiles,omitempty"`
+	UpdateSources          UpdateSources                   `json:"node_update_sources,omitempty"`
+	UpdatePolicies         UpdatePolicies                  `json:"node_update_policies,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -224,6 +226,13 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 	}
 	if _, err = browserProfileDescriptors(cfg.BrowserProfiles); err != nil {
 		return Config{}, fmt.Errorf("validate browser capability descriptors: %w", err)
+	}
+	cfg.UpdateSources, cfg.UpdatePolicies, err = normalizeUpdateConfiguration(
+		cfg.UpdateSources,
+		cfg.UpdatePolicies,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("validate node update configuration: %w", err)
 	}
 	return cfg, nil
 }

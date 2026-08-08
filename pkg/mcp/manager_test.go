@@ -21,6 +21,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 func TestLoadEnvFile(t *testing.T) {
@@ -153,12 +154,12 @@ func TestExpandHomeCommandPath(t *testing.T) {
 	t.Setenv("USERPROFILE", homeDir)
 
 	want := filepath.Join(homeDir, "bin", "my-mcp")
-	got := expandHomeCommandPath("~" + string(os.PathSeparator) + filepath.Join("bin", "my-mcp"))
+	got := fileutil.ExpandHome("~" + string(os.PathSeparator) + filepath.Join("bin", "my-mcp"))
 	if got != want {
 		t.Fatalf("expandHomeCommandPath() = %q, want %q", got, want)
 	}
 
-	if got := expandHomeCommandPath("npx"); got != "npx" {
+	if got := fileutil.ExpandHome("npx"); got != "npx" {
 		t.Fatalf("expandHomeCommandPath() should leave bare commands unchanged, got %q", got)
 	}
 }

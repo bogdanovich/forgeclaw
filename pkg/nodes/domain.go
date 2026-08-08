@@ -303,6 +303,7 @@ type CommandDescriptor struct {
 	FileProfiles     []FileProfileDescriptor    `json:"file_profiles,omitempty"`
 	ServiceProfiles  []ServiceProfileDescriptor `json:"service_profiles,omitempty"`
 	BrowserProfiles  []BrowserProfileDescriptor `json:"browser_profiles,omitempty"`
+	UpdateProfiles   []UpdateProfileDescriptor  `json:"update_profiles,omitempty"`
 }
 
 func (descriptor CommandDescriptor) Validate() error {
@@ -402,6 +403,9 @@ func (descriptor CommandDescriptor) Validate() error {
 	if err := descriptor.validateBrowserProfiles(); err != nil {
 		return err
 	}
+	if err := descriptor.validateUpdateProfiles(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -447,6 +451,43 @@ func (descriptor CommandDescriptor) validateBrowserProfiles() error {
 	actualOutput, err := canonicalJSON(descriptor.OutputSchema)
 	if err != nil || !bytes.Equal(actualOutput, expectedOutput) {
 		return fmt.Errorf("%w: browser output schema does not match typed contract", ErrInvalidCapability)
+	}
+	return nil
+}
+
+func (descriptor CommandDescriptor) validateUpdateProfiles() error {
+	if len(descriptor.UpdateProfiles) == 0 {
+		if descriptor.Name == "node.update.v1" {
+			return fmt.Errorf("%w: node update command lacks update profiles", ErrInvalidCapability)
+		}
+		return nil
+	}
+	if descriptor.Name != "node.update.v1" || descriptor.Risk != RiskPrivileged ||
+		len(descriptor.UpdateProfiles) > MaxUpdateProfiles {
+		return fmt.Errorf("%w: malformed node update descriptor", ErrInvalidCapability)
+	}
+	priorAlias := ""
+	revisions := make(map[string]struct{}, len(descriptor.UpdateProfiles))
+	for _, profile := range descriptor.UpdateProfiles {
+		if err := profile.Validate(); err != nil {
+			return err
+		}
+		if priorAlias != "" && profile.Alias <= priorAlias {
+			return fmt.Errorf("%w: update profiles are not sorted", ErrInvalidCapability)
+		}
+		if _, duplicate := revisions[profile.Revision]; duplicate {
+			return fmt.Errorf("%w: duplicate update profile revision", ErrInvalidCapability)
+		}
+		revisions[profile.Revision] = struct{}{}
+		priorAlias = profile.Alias
+	}
+	expectedInput, err := canonicalJSON(NodeUpdateInputSchema(descriptor.UpdateProfiles))
+	if err != nil {
+		return err
+	}
+	actualInput, err := canonicalJSON(descriptor.InputSchema)
+	if err != nil || !bytes.Equal(actualInput, expectedInput) {
+		return fmt.Errorf("%w: node update input does not match profile authority", ErrInvalidCapability)
 	}
 	return nil
 }
@@ -553,14 +594,15 @@ func (catalog CapabilityCatalog) Validate() error {
 			totalBytes += len(modelContract)
 		}
 		if len(descriptor.FileProfiles) > 0 || len(descriptor.ServiceProfiles) > 0 ||
-			len(descriptor.BrowserProfiles) > 0 {
+			len(descriptor.BrowserProfiles) > 0 || len(descriptor.UpdateProfiles) > 0 {
 			profiles, err := json.Marshal(struct {
 				File    []FileProfileDescriptor    `json:"file,omitempty"`
 				Service []ServiceProfileDescriptor `json:"service,omitempty"`
 				Browser []BrowserProfileDescriptor `json:"browser,omitempty"`
+				Update  []UpdateProfileDescriptor  `json:"update,omitempty"`
 			}{
 				File: descriptor.FileProfiles, Service: descriptor.ServiceProfiles,
-				Browser: descriptor.BrowserProfiles,
+				Browser: descriptor.BrowserProfiles, Update: descriptor.UpdateProfiles,
 			})
 			if err != nil {
 				return fmt.Errorf("%w: encode command profiles", ErrInvalidCapability)
