@@ -11,7 +11,9 @@ P0, P1, P2, and P3 are complete. P2 deployment evidence is recorded in
 [`node-companion-p2-deployment-evidence.md`](../operations/node-companion-p2-deployment-evidence.md).
 P3 completion evidence is recorded in
 [`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md).
-P4 and later milestones remain unadmitted.
+P4 safe single-node update is admitted for implementation under
+[`node-companion-p4-admission.md`](node-companion-p4-admission.md). P5 and
+later milestones remain unadmitted.
 
 The local interactive client slice of the Future P1 follow-up is complete and
 deployed, with evidence in
@@ -116,7 +118,7 @@ execution or an isolated shell without inheriting an owner's root profile.
 | P1 | Owner-controlled shell and terminal | Operate a personal server through ordinary shell commands and an interactive PTY, including explicit root profiles | P0 and deployed execution MVP |
 | P2 | File transfer and administrator filesystem access | Send files to a node, retrieve files and images, and manage explicitly authorized paths | P0, owner profiles, and deployed execution MVP |
 | P3 | Typed service administration | Inspect logs/status and perform allowlisted service actions without broad shell authority | Privileged helper boundary proven by P2 |
-| P4 | Fleet operations and companion updates | Diagnose, version, update, and roll back companion instances safely | Stable node lifecycle and artifacts |
+| P4 | Safe single-node companion update | Update and roll back one configured Linux or macOS companion safely | Stable node lifecycle and authenticated artifacts |
 | P5 | Additional executors and long-running work | Run contained builds/jobs without confusing placement with isolation | Stable invocation and artifact contracts |
 | P6 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
 | P7 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
@@ -144,7 +146,9 @@ P3 is complete under
 [`node-companion-p3-admission.md`](node-companion-p3-admission.md), with its
 merged and deployed proof recorded in
 [`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md).
-P4 and later work remain unadmitted.
+P4 is admitted under
+[`node-companion-p4-admission.md`](node-companion-p4-admission.md). P5 and
+later work remain unadmitted.
 
 ### Current limitation
 
@@ -654,7 +658,9 @@ delivery order, completion gates, and mandatory stop conditions in
 [`node-companion-p3-admission.md`](node-companion-p3-admission.md). Linux
 systemd is the deployed vertical slice. Its proof is recorded in
 [`node-companion-p3-deployment-evidence.md`](../operations/node-companion-p3-deployment-evidence.md).
-macOS launchd and every later roadmap milestone remain unadmitted.
+macOS launchd remains outside P3. P4 is separately admitted under
+[`node-companion-p4-admission.md`](node-companion-p4-admission.md); P5 and
+later roadmap milestones remain unadmitted.
 
 Add typed commands for:
 
@@ -675,22 +681,27 @@ The deployed operator slice proves bounded reads, exact approved restart,
 post-action verification, recovery without replay, helper isolation,
 fail-closed diagnostics, and reversible rollback. No P4 work is implied.
 
-## P4: Fleet Operations And Companion Updates
+## P4: Safe Single-Node Companion Update
 
-Improve operations only after multiple deployed companions justify it:
+P4 is admitted under the exact scope, platform decision, trust model, delivery
+order, completion gates, and mandatory stop condition in
+[`node-companion-p4-admission.md`](node-companion-p4-admission.md).
 
-- richer `doctor` checks for TLS posture, policy breadth, stale nodes, version
-  compatibility, state permissions, and helper configuration;
-- inventory and bounded health summaries for larger fleets;
-- signed companion release artifacts;
-- explicit staged update, health verification, and rollback;
-- configuration validation and dry-run before restart;
-- safe key rotation and re-pairing procedures;
-- documented backup and disaster-recovery behavior.
+It adds one remotely requested, staged, verified, health-checked, and
+rollback-capable update for a MintClaw-managed companion on Linux systemd or
+macOS launchd. The model selects one configured target and one enumerated
+release alias through the existing node invocation path. It cannot provide a
+URL, digest, signing key, platform, architecture, executable path, service, or
+restart behavior.
 
-An update channel is separate from command execution and file transfer.
-Downloaded binaries require release-signature verification and cannot be
-authorized solely by a model-generated URL or digest.
+P4 requires authenticated slim node release artifacts and a narrow stable
+local coordinator because the payload being replaced cannot prove its own
+failed startup. The deployed default remains deny-all.
+
+Fleet inventory, group targeting, rolling or parallel rollout, scheduled
+updates, key rotation, bootstrap, package-manager integration, and coordinator
+self-update remain unadmitted. Existing `nodes` discovery is sufficient for
+the admitted small-number-of-nodes use case.
 
 ### Future operations follow-up: authenticated live-agent and invocation smoke
 
