@@ -466,13 +466,20 @@ func (p *Pipeline) CallLLM(
 				fullHistory := append(
 					append([]providers.Message(nil), trimmedHistory...),
 					protectedTurnTail...)
-				return p.buildTurnMessages(
+				rebuilt := p.buildTurnMessages(
 					ts,
 					fullHistory,
 					exec.summary,
 					"",
 					nil,
 					contextualSkills,
+				)
+				activeTailCount := matchingTurnMessageTail(rebuilt, protectedTurnTail)
+				return resolveMediaRefs(
+					rebuilt,
+					p.Context.MediaResolver,
+					p.maxMediaSize(),
+					len(rebuilt)-activeTailCount,
 				)
 			}
 			originalHistoryCount := len(exec.history)

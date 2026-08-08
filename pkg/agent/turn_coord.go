@@ -249,10 +249,7 @@ func (al *AgentLoop) askSideQuestion(
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(promptReq)
 
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
-	currentTurnStart := len(messages)
-	if strings.TrimSpace(question) != "" || len(media) > 0 {
-		currentTurnStart = len(messages) - 1
-	}
+	currentTurnStart := promptCurrentTurnStart(messages, question, media)
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize, currentTurnStart)
 
 	execution := effectiveExecutionStateForAgent(agent)
