@@ -89,8 +89,15 @@ func TestIdenticalReadOnlyResultWarnsAndChangedResultResets(t *testing.T) {
 		t.Fatalf("second decision = %#v", got)
 	}
 	observation.ResultText = "changed"
-	if got := controller.After(observation); got.Action != ActionAllow {
-		t.Fatalf("changed result did not reset: %#v", got)
+	if got := controller.After(observation); got.Code != "identical_call_success_warning" {
+		t.Fatalf("changed result did not retain only the signature warning: %#v", got)
+	}
+	if got := controller.Before(
+		observation.Tool,
+		observation.Args,
+		observation.Semantics,
+	); got.Code == "read_only_no_progress_block" {
+		t.Fatalf("changed result did not reset semantic no-progress state: %#v", got)
 	}
 }
 
@@ -138,23 +145,23 @@ func TestSameToolFailureHardStopWithChangingArguments(t *testing.T) {
 	}
 }
 
-func TestMutatingAndUnknownSuccessesNeverNoProgressWarn(t *testing.T) {
-	config := DefaultConfig()
-	config.IdenticalCallHalt = 99
-	controller := New(config)
+func TestMutatingAndUnknownIdenticalSuccessesWarnWithoutSemanticNoProgress(t *testing.T) {
 	for _, semantics := range []Semantics{SemanticsMutating, SemanticsUnknown} {
-		for i := 0; i < 10; i++ {
-			got := controller.After(
-				Observation{
-					Tool:       "write_file",
-					Args:       map[string]any{"path": "x"},
-					ResultText: "same",
-					Semantics:  semantics,
-				},
-			)
-			if got.Action != ActionAllow {
-				t.Fatalf("semantics %q action = %#v", semantics, got)
-			}
+		config := DefaultConfig()
+		config.IdenticalCallHalt = 99
+		controller := New(config)
+		observation := Observation{
+			Tool:       "write_file",
+			Args:       map[string]any{"path": "x"},
+			ResultText: "same",
+			Semantics:  semantics,
+		}
+		if got := controller.After(observation); got.Action != ActionAllow {
+			t.Fatalf("semantics %q first action = %#v", semantics, got)
+		}
+		got := controller.After(observation)
+		if got.Action != ActionWarn || got.Code != "identical_call_success_warning" || !got.AllowsExecution() {
+			t.Fatalf("semantics %q repeat action = %#v", semantics, got)
 		}
 	}
 }
@@ -168,13 +175,34 @@ func TestConsecutiveIdenticalCallsEmergencyHaltForUnknownTool(t *testing.T) {
 		ResultText: "same", Semantics: SemanticsUnknown,
 	}
 	for i := 1; i < config.IdenticalCallHalt; i++ {
-		if got := controller.After(observation); got.Action != ActionAllow {
+		got := controller.After(observation)
+		if i < config.IdenticalCallWarn && got.Action != ActionAllow {
 			t.Fatalf("call %d decision = %#v", i, got)
+		}
+		if i >= config.IdenticalCallWarn &&
+			(got.Action != ActionWarn || got.Code != "identical_call_success_warning") {
+			t.Fatalf("call %d warning = %#v", i, got)
 		}
 	}
 	got := controller.After(observation)
 	if got.Action != ActionHalt || got.Code != "identical_call_emergency_halt" ||
 		got.Count != config.IdenticalCallHalt {
+		t.Fatalf("emergency halt = %#v", got)
+	}
+}
+
+func TestIdenticalSuccessfulCallWarningCanBeDisabledWithoutDisablingEmergencyHalt(t *testing.T) {
+	config := DefaultConfig()
+	config.WarningsEnabled = false
+	config.IdenticalCallHalt = 3
+	controller := New(config)
+	observation := Observation{Tool: "mcp_stats", Args: map[string]any{"recent": 1}}
+	for i := 1; i < config.IdenticalCallHalt; i++ {
+		if got := controller.After(observation); got.Action != ActionAllow {
+			t.Fatalf("call %d decision = %#v", i, got)
+		}
+	}
+	if got := controller.After(observation); got.Action != ActionHalt {
 		t.Fatalf("emergency halt = %#v", got)
 	}
 }
@@ -241,7 +269,8 @@ func TestConfigNormalizationPreservesSwitchesAndOrdersThresholds(t *testing.T) {
 	}
 	if config.ExactFailureBlock < config.ExactFailureWarn ||
 		config.SameToolFailureHalt < config.SameToolFailureWarn ||
-		config.NoProgressBlock < config.NoProgressWarn || config.IdenticalCallHalt <= 0 ||
+		config.NoProgressBlock < config.NoProgressWarn || config.IdenticalCallWarn <= 0 ||
+		config.IdenticalCallHalt <= 0 ||
 		config.MaxSignatures <= 0 {
 		t.Fatalf("invalid normalized thresholds: %#v", config)
 	}

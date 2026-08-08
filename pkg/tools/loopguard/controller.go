@@ -35,6 +35,7 @@ type Config struct {
 	SameToolFailureHalt int
 	NoProgressWarn      int
 	NoProgressBlock     int
+	IdenticalCallWarn   int
 	IdenticalCallHalt   int
 	MaxSignatures       int
 }
@@ -50,6 +51,7 @@ func DefaultConfig() Config {
 		SameToolFailureHalt: 8,
 		NoProgressWarn:      2,
 		NoProgressBlock:     5,
+		IdenticalCallWarn:   2,
 		IdenticalCallHalt:   4,
 		MaxSignatures:       64,
 	}
@@ -74,6 +76,9 @@ func (c Config) Normalized() Config {
 	}
 	if c.NoProgressBlock < c.NoProgressWarn {
 		c.NoProgressBlock = max(defaults.NoProgressBlock, c.NoProgressWarn)
+	}
+	if c.IdenticalCallWarn <= 0 {
+		c.IdenticalCallWarn = defaults.IdenticalCallWarn
 	}
 	if c.IdenticalCallHalt <= 0 {
 		c.IdenticalCallHalt = defaults.IdenticalCallHalt
@@ -283,13 +288,29 @@ func (c *Controller) After(observation Observation) Decision {
 			),
 		)
 	}
+	identicalCallWarning := decision
+	if c.config.WarningsEnabled && c.identicalCallCount >= c.config.IdenticalCallWarn {
+		identicalCallWarning = decisionFor(
+			ActionWarn,
+			"identical_call_success_warning",
+			tool,
+			sig.argsHash,
+			c.identicalCallCount,
+			c.config.IdenticalCallWarn,
+			fmt.Sprintf(
+				"%s succeeded %d consecutive times with identical arguments. The repeated call may not be making progress; reassess the user's request, tool choice, and arguments before continuing.",
+				toolLabel(tool),
+				c.identicalCallCount,
+			),
+		)
+	}
 
 	delete(c.exactFailures, sig.key)
 	c.failureStreakTool = ""
 	c.failureStreakCount = 0
 	if observation.Semantics != SemanticsReadOnlyIdempotent {
 		delete(c.noProgress, sig.key)
-		return decision
+		return identicalCallWarning
 	}
 
 	resultHash := HashText(observation.ResultText)
@@ -315,7 +336,7 @@ func (c *Controller) After(observation Observation) Decision {
 			),
 		)
 	}
-	return decision
+	return identicalCallWarning
 }
 
 func HashArguments(args map[string]any) string {

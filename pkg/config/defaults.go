@@ -339,6 +339,7 @@ func DefaultConfig() *Config {
 				SameToolFailureHalt: 8,
 				NoProgressWarn:      2,
 				NoProgressBlock:     5,
+				IdenticalCallWarn:   2,
 				IdenticalCallHalt:   4,
 				MaxSignatures:       64,
 			},

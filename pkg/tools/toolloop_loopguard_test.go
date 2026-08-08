@@ -56,18 +56,20 @@ type loopGuardScriptedProvider struct {
 }
 
 type emergencyLoopProvider struct {
-	calls int
+	calls     int
+	snapshots [][]providers.Message
 }
 
 func (p *emergencyLoopProvider) GetDefaultModel() string { return "loop-test-model" }
 func (p *emergencyLoopProvider) Chat(
 	_ context.Context,
-	_ []providers.Message,
+	messages []providers.Message,
 	_ []providers.ToolDefinition,
 	_ string,
 	_ map[string]any,
 ) (*providers.LLMResponse, error) {
 	p.calls++
+	p.snapshots = append(p.snapshots, append([]providers.Message(nil), messages...))
 	return &providers.LLMResponse{ToolCalls: []providers.ToolCall{{
 		ID: fmt.Sprintf("emergency-%d", p.calls), Name: "loop_test",
 		Arguments: map[string]any{"value": "same"},
@@ -200,5 +202,9 @@ func TestRunToolLoopEmergencyHaltStopsFurtherLLMCalls(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "Stopped the turn") {
 		t.Fatalf("terminal content = %q", result.Content)
+	}
+	thirdRequest := provider.snapshots[2]
+	if !strings.Contains(thirdRequest[len(thirdRequest)-1].Content, "read_only_no_progress_warning") {
+		t.Fatalf("third request missing recovery guidance: %#v", thirdRequest)
 	}
 }

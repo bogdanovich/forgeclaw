@@ -245,6 +245,8 @@ Required controls:
 - exact-failure warning and block thresholds;
 - same-tool warning and halt thresholds;
 - read-only no-progress warning and block thresholds;
+- a consecutive identical-successful-call warning threshold that applies to
+  every tool classification;
 - an emergency consecutive identical-successful-call halt threshold that
   applies to every tool classification;
 - bounded history/state size if it is not derived from thresholds.
@@ -262,6 +264,7 @@ Initial defaults:
 | same-tool failure halt | 8 |
 | read-only no-progress warn | 2 |
 | read-only no-progress block | 5 |
+| consecutive identical-successful-call warn | 2 |
 | consecutive identical-successful-call emergency halt | 4 |
 
 These follow Hermes' conservative warning-first controller. Change them only
@@ -292,8 +295,8 @@ Required focused coverage:
 - warning and optional hard-stop thresholds;
 - exact-failure, same-tool, success-reset, intervening-tool, and changed-result
   behavior;
-- mutating and unknown successful repeats remain allowed below the emergency
-  consecutive identical-successful-call ceiling;
+- mutating and unknown successful repeats receive guidance but remain allowed
+  below the emergency consecutive identical-successful-call ceiling;
 - blocked calls preserve provider history and all tool-call IDs;
 - hook-modified names, arguments, and results;
 - policy/approval denials do not count as execution failures;
@@ -359,8 +362,9 @@ still bounds an exact consecutive loop.
 Configuration lives under JSON `tools.loop_detection` and environment
 variables. It is excluded from the legacy flattened YAML tools view because
 that format has no nested tools block. Defaults enable detection and warnings,
-leave semantic hard stops opt-in, and enforce the identical-call emergency
-ceiling whenever detection is enabled. Invalid non-positive thresholds are
+leave semantic hard stops opt-in, warn after two identical successful calls,
+and enforce the identical-call emergency ceiling whenever detection is enabled.
+Invalid non-positive thresholds are
 normalized to safe defaults, and block thresholds are never normalized below
 warning thresholds.
 

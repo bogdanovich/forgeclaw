@@ -1273,6 +1273,7 @@ type ToolLoopDetectionConfig struct {
 	SameToolFailureHalt int  `json:"same_tool_failure_halt" yaml:"same_tool_failure_halt" env:"MINTCLAW_TOOLS_LOOP_DETECTION_SAME_TOOL_FAILURE_HALT"`
 	NoProgressWarn      int  `json:"no_progress_warn"       yaml:"no_progress_warn"       env:"MINTCLAW_TOOLS_LOOP_DETECTION_NO_PROGRESS_WARN"`
 	NoProgressBlock     int  `json:"no_progress_block"      yaml:"no_progress_block"      env:"MINTCLAW_TOOLS_LOOP_DETECTION_NO_PROGRESS_BLOCK"`
+	IdenticalCallWarn   int  `json:"identical_call_warn"    yaml:"identical_call_warn"    env:"MINTCLAW_TOOLS_LOOP_DETECTION_IDENTICAL_CALL_WARN"`
 	IdenticalCallHalt   int  `json:"identical_call_halt"    yaml:"identical_call_halt"    env:"MINTCLAW_TOOLS_LOOP_DETECTION_IDENTICAL_CALL_HALT"`
 	MaxSignatures       int  `json:"max_signatures"         yaml:"max_signatures"         env:"MINTCLAW_TOOLS_LOOP_DETECTION_MAX_SIGNATURES"`
 }
