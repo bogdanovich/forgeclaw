@@ -10,6 +10,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type fakeNodeTerminalSource struct {
@@ -212,7 +213,7 @@ func TestNodeTerminalToolBindsApprovalAndAuthenticatedOperatorSession(t *testing
 	if denied["code"] != nodeDenialApprovalRequired || source.opened != 0 {
 		t.Fatalf("unapproved terminal open = %#v; opened=%d", denied, source.opened)
 	}
-	resumed := WithToolApprovalContinuation(ctx, true)
+	resumed := toolshared.WithToolApprovalContinuation(ctx, true)
 	opened := decodeNodeResult(t, tool.Execute(resumed, args))
 	if opened["state"] != string(nodes.GatewayTerminalPendingAttach) ||
 		source.prepared != 1 ||
@@ -235,7 +236,7 @@ func TestNodeTerminalToolBindsApprovalAndAuthenticatedOperatorSession(t *testing
 	bypassArgs := nodeTerminalOpenArgs(t, bypassTool, bypassCtx)
 	bypassed := decodeNodeResult(
 		t,
-		bypassTool.Execute(WithToolApprovalBypass(bypassCtx, true), bypassArgs),
+		bypassTool.Execute(toolshared.WithToolApprovalBypass(bypassCtx, true), bypassArgs),
 	)
 	if bypassed["state"] != string(nodes.GatewayTerminalPendingAttach) ||
 		bypassSource.prepared != 1 ||
@@ -344,7 +345,7 @@ func TestNodeTerminalToolDeniesDifferentOwnerAndNonOperatorRoute(t *testing.T) {
 	if _, err := tool.ApprovalArguments(ctx, args); err != nil {
 		t.Fatal(err)
 	}
-	if result := tool.Execute(WithToolApprovalContinuation(ctx, true), args); result.IsError {
+	if result := tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), args); result.IsError {
 		t.Fatalf("open failed: %s", result.ForLLM)
 	}
 	statusArgs := map[string]any{
@@ -363,7 +364,7 @@ func TestNodeTerminalToolDeniesDifferentOwnerAndNonOperatorRoute(t *testing.T) {
 	}{
 		{
 			name: "agent",
-			ctx: WithToolSessionContext(
+			ctx: toolshared.WithToolSessionContext(
 				ctx,
 				"secondary",
 				"history-session",
@@ -371,10 +372,10 @@ func TestNodeTerminalToolDeniesDifferentOwnerAndNonOperatorRoute(t *testing.T) {
 			),
 			args: statusArgs,
 		},
-		{name: "route session", ctx: WithToolRouteSessionKey(ctx, "other-route"), args: statusArgs},
+		{name: "route session", ctx: toolshared.WithToolRouteSessionKey(ctx, "other-route"), args: statusArgs},
 		{
 			name: "workspace",
-			ctx:  WithToolExecutionIdentity(ctx, "/workspace/other", "execution-1"),
+			ctx:  toolshared.WithToolExecutionIdentity(ctx, "/workspace/other", "execution-1"),
 			args: statusArgs,
 		},
 		{
@@ -425,7 +426,7 @@ func TestNodeTerminalEventsAreRedacted(t *testing.T) {
 	if _, err := tool.ApprovalArguments(ctx, args); err != nil {
 		t.Fatal(err)
 	}
-	_ = tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	_ = tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), args)
 	events := eventBus.snapshot()
 	if len(events) == 0 {
 		t.Fatal("terminal lifecycle event was not published")
@@ -484,15 +485,15 @@ func newFakeNodeTerminalSource(t *testing.T) *fakeNodeTerminalSource {
 }
 
 func nodeTerminalTestContext(actorID, toolCallID string) context.Context {
-	ctx := WithToolSessionContext(context.Background(), "main", "history-session", nil)
-	ctx = WithToolRouteSessionKey(ctx, "route-session")
-	ctx = WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1")
-	ctx = WithToolInboundContext(ctx, "mintclaw", "mintclaw:operator-1", "", "")
-	ctx = WithToolInboundMetadata(ctx, bus.InboundContext{
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "history-session", nil)
+	ctx = toolshared.WithToolRouteSessionKey(ctx, "route-session")
+	ctx = toolshared.WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1")
+	ctx = toolshared.WithToolInboundContext(ctx, "mintclaw", "mintclaw:operator-1", "", "")
+	ctx = toolshared.WithToolInboundMetadata(ctx, bus.InboundContext{
 		Channel: "mintclaw", ChatID: "mintclaw:operator-1",
 		SenderID: actorID, ActorID: actorID,
 	})
-	return WithToolCallID(ctx, toolCallID)
+	return toolshared.WithToolCallID(ctx, toolCallID)
 }
 
 func nodeTerminalOpenArgs(
@@ -521,7 +522,7 @@ func slicesContains(values []string, value string) bool {
 	return false
 }
 
-func decodeNodeTerminalResult(t *testing.T, result *ToolResult) map[string]any {
+func decodeNodeTerminalResult(t *testing.T, result *toolshared.ToolResult) map[string]any {
 	t.Helper()
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(result.ForLLM), &payload); err != nil {

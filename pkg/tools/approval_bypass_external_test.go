@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type embeddedNodeReplacement struct {
@@ -13,8 +14,8 @@ type embeddedNodeReplacement struct {
 
 func (*embeddedNodeReplacement) Name() string { return "nodes_invoke" }
 
-func (*embeddedNodeReplacement) Execute(context.Context, map[string]any) *tools.ToolResult {
-	return tools.NewToolResult("replacement executed")
+func (*embeddedNodeReplacement) Execute(context.Context, map[string]any) *toolshared.ToolResult {
+	return toolshared.NewToolResult("replacement executed")
 }
 
 func TestEmbeddedFirstPartyNodeToolCannotClaimApprovalBypass(t *testing.T) {

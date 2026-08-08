@@ -15,7 +15,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -385,16 +385,16 @@ func browserScreenshotOwners(
 }
 
 func browserScreenshotMediaOwner(ctx context.Context, workspace string) (media.MediaOwner, error) {
-	actorID := strings.TrimSpace(tools.ToolActorID(ctx))
+	actorID := strings.TrimSpace(toolshared.ToolActorID(ctx))
 	if actorID == "" {
-		actorID = strings.TrimSpace(tools.ToolSenderID(ctx))
+		actorID = strings.TrimSpace(toolshared.ToolSenderID(ctx))
 	}
-	routeSession := strings.TrimSpace(tools.ToolRouteSessionKey(ctx))
+	routeSession := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if routeSession == "" {
-		routeSession = strings.TrimSpace(tools.ToolSessionKey(ctx))
+		routeSession = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
 	return media.NewMediaOwner(
-		workspace, tools.ToolAgentID(ctx), actorID, routeSession,
-		tools.ToolChannel(ctx), tools.ToolChatID(ctx), tools.ToolTopicID(ctx),
+		workspace, toolshared.ToolAgentID(ctx), actorID, routeSession,
+		toolshared.ToolChannel(ctx), toolshared.ToolChatID(ctx), toolshared.ToolTopicID(ctx),
 	)
 }

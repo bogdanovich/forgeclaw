@@ -12,11 +12,13 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
-type RuntimeToolFactory func(cfg *config.Config) (tools.Tool, error)
+type RuntimeToolFactory func(cfg *config.Config) (toolshared.Tool, error)
 
-func (al *AgentLoop) RegisterTool(tool tools.Tool) {
+func (al *AgentLoop) RegisterTool(tool toolshared.Tool) {
 	registry := al.GetRegistry()
 	registerToolOnRegistry(registry, tool)
 }
@@ -84,7 +86,7 @@ func sortedRuntimeToolNames(factories map[string]RuntimeToolFactory) []string {
 	return names
 }
 
-func registerToolOnRegistry(registry *AgentRegistry, tool tools.Tool) {
+func registerToolOnRegistry(registry *AgentRegistry, tool toolshared.Tool) {
 	if registry == nil || tool == nil {
 		return
 	}
@@ -137,8 +139,8 @@ func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 			agent.Tools.SetMediaStore(s)
 		}
 	}
-	registry.ForEachTool("send_tts", func(t tools.Tool) {
-		if st, ok := t.(*tools.SendTTSTool); ok {
+	registry.ForEachTool("send_tts", func(t toolshared.Tool) {
+		if st, ok := t.(*integrationtools.SendTTSTool); ok {
 			st.SetMediaStore(s)
 		}
 	})

@@ -17,7 +17,9 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	fstools "github.com/bogdanovich/mintclaw/pkg/tools/fs"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // AgentInstance represents a fully configured agent with its own workspace,
@@ -210,7 +212,7 @@ func newAgentToolInitConfig(
 }
 
 func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolInitConfig) {
-	registerTool := func(tool tools.Tool) {
+	registerTool := func(tool toolshared.Tool) {
 		registerToolWithPolicies(initCfg.toolsRegistry, tool, initCfg.toolPolicy)
 	}
 
@@ -219,7 +221,7 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 		switch cfg.Tools.ReadFile.EffectiveMode() {
 		case config.ReadFileModeLines:
 			registerTool(
-				tools.NewReadFileLinesTool(
+				fstools.NewReadFileLinesTool(
 					workspace,
 					initCfg.readRestrict,
 					maxReadFileSize,
@@ -228,7 +230,7 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 			)
 		default:
 			registerTool(
-				tools.NewReadFileBytesTool(
+				fstools.NewReadFileBytesTool(
 					workspace,
 					initCfg.readRestrict,
 					maxReadFileSize,
@@ -238,12 +240,12 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 		}
 	}
 	if cfg.Tools.IsToolEnabled("append_file") {
-		registerTool(tools.NewAppendFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
+		registerTool(fstools.NewAppendFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
 	// Build write_file's copy from the registered editors so it steers the agent
 	// to append_file only when that tool is actually available.
 	if cfg.Tools.IsToolEnabled("write_file") {
-		writeTool := tools.NewWriteFileTool(workspace, initCfg.restrict, initCfg.allowWrite)
+		writeTool := fstools.NewWriteFileTool(workspace, initCfg.restrict, initCfg.allowWrite)
 		var altTools []string
 		if initCfg.toolsRegistry.HasRegistered("append_file") {
 			altTools = append(altTools, "append_file")
@@ -253,12 +255,12 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 	}
 	if cfg.Tools.IsToolEnabled("list_dir") {
 		registerTool(
-			tools.NewListDirTool(workspace, initCfg.readRestrict, initCfg.allowRead),
+			fstools.NewListDirTool(workspace, initCfg.readRestrict, initCfg.allowRead),
 		)
 	}
 	if cfg.Tools.IsToolEnabled("search_files") {
 		registerTool(
-			tools.NewSearchFilesTool(
+			fstools.NewSearchFilesTool(
 				workspace,
 				initCfg.readRestrict,
 				cfg.Tools.ReadFile.MaxReadFileSize,
@@ -276,7 +278,7 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 		}
 	}
 	if cfg.Tools.IsToolEnabled("apply_patch") {
-		registerTool(tools.NewApplyPatchTool(workspace, initCfg.restrict, initCfg.allowWrite))
+		registerTool(fstools.NewApplyPatchTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
 }
 

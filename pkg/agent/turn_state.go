@@ -17,8 +17,8 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // =============================================================================
@@ -117,7 +117,7 @@ type turnResult struct {
 	usageInputTokens       int
 	usageOutputTokens      int
 	usageTotalTokens       int
-	completionMedia        []tools.CompletionMedia
+	completionMedia        []toolshared.CompletionMedia
 	status                 TurnEndStatus
 	followUps              []bus.InboundMessage
 	preferNewOutboundReply bool
@@ -156,9 +156,9 @@ type turnExecution struct {
 	summary         string
 
 	// Turn output
-	completionMedia        []tools.CompletionMedia
+	completionMedia        []toolshared.CompletionMedia
 	actionLog              []TurnActionRecord
-	writeAudit             []tools.WriteAuditEntry
+	writeAudit             []toolshared.WriteAuditEntry
 	finalRenderToolCalls   map[string]finalRenderToolCallState
 	sawSteering            bool
 	sawAdditionalUserInput bool
@@ -328,16 +328,16 @@ type turnState struct {
 	acceptedSteering        []providers.Message
 
 	// SubTurn support.
-	depth                int                    // SubTurn depth (0 for root turn)
-	parentTurnID         string                 // Parent turn ID (empty for root turn)
-	childTurnIDs         []string               // Child turn IDs
-	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
-	pendingResultCond    *sync.Cond             // Signals result capacity or turn completion
-	pendingResultsSealed bool                   // Prevents commits after terminal drain
-	concurrencySem       chan struct{}          // Semaphore for limiting concurrent SubTurns
-	isFinished           atomic.Bool            // Whether this turn has finished
-	session              session.SessionStore   // Session store reference
-	initialHistoryLength int                    // Snapshot of history length at turn start
+	depth                int                         // SubTurn depth (0 for root turn)
+	parentTurnID         string                      // Parent turn ID (empty for root turn)
+	childTurnIDs         []string                    // Child turn IDs
+	pendingResults       chan *toolshared.ToolResult // Channel for SubTurn results
+	pendingResultCond    *sync.Cond                  // Signals result capacity or turn completion
+	pendingResultsSealed bool                        // Prevents commits after terminal drain
+	concurrencySem       chan struct{}               // Semaphore for limiting concurrent SubTurns
+	isFinished           atomic.Bool                 // Whether this turn has finished
+	session              session.SessionStore        // Session store reference
+	initialHistoryLength int                         // Snapshot of history length at turn start
 
 	// Additional SubTurn fields
 	ctx              context.Context    // Context for this turn
@@ -1054,7 +1054,7 @@ func (ts *turnState) Finish(isHardAbort bool) {
 
 // enqueuePendingResult waits for queue capacity while the turn is active. The
 // shared lock makes committing a result mutually exclusive with Finish.
-func (ts *turnState) enqueuePendingResult(result *tools.ToolResult) bool {
+func (ts *turnState) enqueuePendingResult(result *toolshared.ToolResult) bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
@@ -1075,11 +1075,11 @@ func (ts *turnState) enqueuePendingResult(result *tools.ToolResult) bool {
 // sealOrDrainPendingResults atomically drains queued results or seals an empty
 // queue before terminal finalization. A producer cannot commit between the
 // empty observation and the seal.
-func (ts *turnState) sealOrDrainPendingResults() ([]*tools.ToolResult, bool) {
+func (ts *turnState) sealOrDrainPendingResults() ([]*toolshared.ToolResult, bool) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	var results []*tools.ToolResult
+	var results []*toolshared.ToolResult
 	if ts.pendingResults != nil {
 		for {
 			select {
@@ -1108,7 +1108,7 @@ func (ts *turnState) sealOrDrainPendingResults() ([]*tools.ToolResult, bool) {
 
 // dequeuePendingResult polls one result and wakes a producer waiting for queue
 // capacity. pendingResults remains open for the lifetime of the turn state.
-func (ts *turnState) dequeuePendingResult() (*tools.ToolResult, bool) {
+func (ts *turnState) dequeuePendingResult() (*toolshared.ToolResult, bool) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 

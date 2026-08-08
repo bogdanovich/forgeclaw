@@ -16,6 +16,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type recordingNodeEventBus struct {
@@ -402,7 +403,7 @@ func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.
 	if source.dispatchCalls != 0 {
 		t.Fatalf("shell dispatched without human approval: %d", source.dispatchCalls)
 	}
-	result = tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	result = tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), args)
 	if result.IsError || source.dispatchCalls != 1 {
 		t.Fatalf("approved shell result = %s, dispatches = %d", result.ForLLM, source.dispatchCalls)
 	}
@@ -420,7 +421,7 @@ func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.
 	}
 	bypassTool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), bypassSource)
 	bypassCtx := nodeInvocationTestContext("actor-1", "call-shell-bypass")
-	result = bypassTool.Execute(WithToolApprovalBypass(bypassCtx, true), args)
+	result = bypassTool.Execute(toolshared.WithToolApprovalBypass(bypassCtx, true), args)
 	if result.IsError || bypassSource.prepareCalls != 1 || bypassSource.dispatchCalls != 1 {
 		t.Fatalf(
 			"allow-all shell result = %s, prepares = %d, dispatches = %d",
@@ -754,7 +755,7 @@ func TestNodeInvokeToolBindsServiceActionApprovalAndContinuation(t *testing.T) {
 
 	changed := maps.Clone(args)
 	changed["input"] = map[string]any{"service": "vpn", "action": "stop"}
-	changedResult := tool.Execute(WithToolApprovalContinuation(ctx, true), changed)
+	changedResult := tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), changed)
 	assertNodeDenialResult(
 		t,
 		changedResult,
@@ -766,7 +767,7 @@ func TestNodeInvokeToolBindsServiceActionApprovalAndContinuation(t *testing.T) {
 		t.Fatalf("changed service action dispatched: %d", source.dispatchCalls)
 	}
 
-	result = tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	result = tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), args)
 	if result.IsError || source.dispatchCalls != 1 {
 		t.Fatalf("approved service action = %s, dispatches %d", result.ForLLM, source.dispatchCalls)
 	}
@@ -1012,7 +1013,7 @@ func TestNodeInvokeToolApprovalResumeCannotRefreshRetainedAuthority(t *testing.T
 	source.registrations[snapshot.ID] = registration
 
 	if _, err := tool.ApprovalArguments(
-		WithToolApprovalContinuation(ctx, true),
+		toolshared.WithToolApprovalContinuation(ctx, true),
 		args,
 	); !errors.Is(err, errDiscoveryStale) {
 		t.Fatalf("approval resume with stale discovery error = %v", err)
@@ -1034,7 +1035,7 @@ func TestNodeInvokeToolApprovalResumeCannotRefreshRetainedAuthority(t *testing.T
 	freshArgs := nodeInvocationTestArgs()
 	freshArgs["discovery_revision"] = discovered["discovery_revision"]
 	if _, err := tool.ApprovalArguments(
-		WithToolApprovalContinuation(ctx, true),
+		toolshared.WithToolApprovalContinuation(ctx, true),
 		freshArgs,
 	); !errors.Is(err, errDiscoveryStale) {
 		t.Fatalf("approval resume replaced retained authority: %v", err)
@@ -1058,7 +1059,7 @@ func TestNodeInvokeToolNamespacesProviderCallByExecutionAndWorkspace(t *testing.
 		t.Fatal(err)
 	}
 
-	nextExecutionCtx := WithToolExecutionIdentity(
+	nextExecutionCtx := toolshared.WithToolExecutionIdentity(
 		nodeInvocationTestContext("actor-1", "reused-call"),
 		"/workspace/main",
 		"execution-2",
@@ -1067,7 +1068,7 @@ func TestNodeInvokeToolNamespacesProviderCallByExecutionAndWorkspace(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherWorkspaceCtx := WithToolExecutionIdentity(
+	otherWorkspaceCtx := toolshared.WithToolExecutionIdentity(
 		nodeInvocationTestContext("actor-1", "reused-call"),
 		"/workspace/other",
 		"execution-1",
@@ -1096,8 +1097,8 @@ func TestNodeInvokeToolApprovalResumeRetainsOriginExecutionIdentity(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumedCtx := WithToolApprovalContinuation(
-		WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1"),
+	resumedCtx := toolshared.WithToolApprovalContinuation(
+		toolshared.WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1"),
 		true,
 	)
 	resumed, err := tool.ApprovalArguments(resumedCtx, nodeInvocationTestArgs())
@@ -1131,7 +1132,7 @@ func TestNodeInvokeToolDoesNotReplaceExpiredAuthorityOnApprovalResume(t *testing
 		t.Fatal(err)
 	}
 	source.lookupMiss = true
-	ctx = WithToolApprovalContinuation(ctx, true)
+	ctx = toolshared.WithToolApprovalContinuation(ctx, true)
 	if _, err := tool.ApprovalArguments(
 		ctx,
 		nodeInvocationTestArgs(),
@@ -1755,12 +1756,12 @@ func TestNodeCancelToolIsIdempotentAndRequiresExactExecutionScope(t *testing.T) 
 		t.Fatalf("cancellation results = %#v, %#v; calls = %d", first, repeated, source.cancelCalls)
 	}
 
-	otherExecution := WithToolExecutionIdentity(ctx, "/workspace/main", "execution-2")
+	otherExecution := toolshared.WithToolExecutionIdentity(ctx, "/workspace/main", "execution-2")
 	denied := decodeNodeResult(t, cancel.Execute(otherExecution, args))
 	if denied["status"] != "denied" || source.cancelCalls != 1 {
 		t.Fatalf("cross-execution cancellation = %#v; calls = %d", denied, source.cancelCalls)
 	}
-	otherWorkspace := WithToolExecutionIdentity(ctx, "/workspace/other", "execution-1")
+	otherWorkspace := toolshared.WithToolExecutionIdentity(ctx, "/workspace/other", "execution-1")
 	denied = decodeNodeResult(t, cancel.Execute(otherWorkspace, args))
 	if denied["status"] != "denied" || source.cancelCalls != 1 {
 		t.Fatalf("cross-workspace cancellation = %#v; calls = %d", denied, source.cancelCalls)
@@ -1929,14 +1930,14 @@ func newFakeNodeInvocationSource(t *testing.T) *fakeNodeInvocationSource {
 }
 
 func nodeInvocationTestContext(actorID string, toolCallID string) context.Context {
-	ctx := WithToolSessionContext(context.Background(), "main", "history-session", nil)
-	ctx = WithToolRouteSessionKey(ctx, "route-session")
-	ctx = WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1")
-	ctx = WithToolInboundContext(ctx, "telegram", "chat-1", "", "")
-	ctx = WithToolInboundMetadata(ctx, bus.InboundContext{
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "history-session", nil)
+	ctx = toolshared.WithToolRouteSessionKey(ctx, "route-session")
+	ctx = toolshared.WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1")
+	ctx = toolshared.WithToolInboundContext(ctx, "telegram", "chat-1", "", "")
+	ctx = toolshared.WithToolInboundMetadata(ctx, bus.InboundContext{
 		Channel: "telegram", ChatID: "chat-1", SenderID: actorID, ActorID: actorID,
 	})
-	return WithToolCallID(ctx, toolCallID)
+	return toolshared.WithToolCallID(ctx, toolCallID)
 }
 
 func nodeInvocationTestArgs() map[string]any {
@@ -2003,7 +2004,7 @@ func freshNodeInvocationArgs(
 
 func assertNodeDenialResult(
 	t *testing.T,
-	result *ToolResult,
+	result *toolshared.ToolResult,
 	code string,
 	constraint string,
 	action string,
@@ -2112,7 +2113,7 @@ func mustFakeGatewayInvocation(
 	return record
 }
 
-func invocationIDFromError(t *testing.T, result *ToolResult) string {
+func invocationIDFromError(t *testing.T, result *toolshared.ToolResult) string {
 	t.Helper()
 	var payload struct {
 		Invocation nodeInvokeResult `json:"invocation"`

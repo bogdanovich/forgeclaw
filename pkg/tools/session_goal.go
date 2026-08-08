@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/state"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // GetGoalTool exposes the durable goal for the current routed conversation.
@@ -64,10 +65,10 @@ func (t *GetGoalTool) Parameters() map[string]any {
 	return emptySessionGoalParameters()
 }
 
-func (t *GetGoalTool) Execute(ctx context.Context, _ map[string]any) *ToolResult {
+func (t *GetGoalTool) Execute(ctx context.Context, _ map[string]any) *toolshared.ToolResult {
 	manager, routeSessionKey, err := sessionGoalToolContext(t.state, ctx)
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	goal, found := manager.GetSessionGoal(routeSessionKey)
 	if !found {
@@ -100,18 +101,18 @@ func (t *CreateGoalTool) Parameters() map[string]any {
 	}
 }
 
-func (t *CreateGoalTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *CreateGoalTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	manager, routeSessionKey, err := sessionGoalToolContext(t.state, ctx)
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	objective, err := requiredStringArg(args, "objective", "objective")
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	goal, err := manager.CreateSessionGoal(routeSessionKey, objective)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to create goal: %v", err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("failed to create goal: %v", err)).WithError(err)
 	}
 	return sessionGoalToolResult(sessionGoalToolResponse{
 		Status: "created",
@@ -145,25 +146,25 @@ func (t *UpdateGoalTool) Parameters() map[string]any {
 	}
 }
 
-func (t *UpdateGoalTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *UpdateGoalTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	manager, routeSessionKey, err := sessionGoalToolContext(t.state, ctx)
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	status, err := requiredStringArg(args, "status", "status")
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	if status != string(state.SessionGoalComplete) && status != string(state.SessionGoalBlocked) {
-		return ErrorResult("status must be one of complete, blocked")
+		return toolshared.ErrorResult("status must be one of complete, blocked")
 	}
 	note, err := optionalStringArg(args, "note")
 	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 	goal, err := manager.SetSessionGoalStatus(routeSessionKey, state.SessionGoalStatus(status), note)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to update goal: %v", err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("failed to update goal: %v", err)).WithError(err)
 	}
 	return sessionGoalToolResult(sessionGoalToolResponse{
 		Status: "updated",
@@ -183,7 +184,7 @@ func sessionGoalToolContext(manager *state.Manager, ctx context.Context) (*state
 	if manager == nil {
 		return nil, "", fmt.Errorf("session goal store not configured")
 	}
-	routeSessionKey := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	routeSessionKey := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if routeSessionKey == "" {
 		return nil, "", fmt.Errorf("route session context not available")
 	}
@@ -202,10 +203,10 @@ func sessionGoalToolViewFor(goal state.SessionGoal) *sessionGoalToolView {
 	}
 }
 
-func sessionGoalToolResult(response sessionGoalToolResponse) *ToolResult {
+func sessionGoalToolResult(response sessionGoalToolResponse) *toolshared.ToolResult {
 	data, err := json.Marshal(response)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to encode goal response: %v", err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("failed to encode goal response: %v", err)).WithError(err)
 	}
-	return NewToolResult(string(data))
+	return toolshared.NewToolResult(string(data))
 }

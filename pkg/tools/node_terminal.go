@@ -11,6 +11,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -66,7 +67,7 @@ type NodeTerminalTool struct {
 	runtimeEvents runtimeevents.Bus
 }
 
-func (tool *NodeTerminalTool) approvalBypassOwner() Tool { return tool }
+func (tool *NodeTerminalTool) approvalBypassOwner() toolshared.Tool { return tool }
 
 // NodeTerminalOperator opens terminals for an explicitly authenticated
 // operator while sharing the same target and command authority checks as the
@@ -362,7 +363,7 @@ func (tool *NodeTerminalTool) ApprovalArguments(
 	}, nil
 }
 
-func (tool *NodeTerminalTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeTerminalTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	switch normalizedTerminalAction(args) {
 	case "discover":
 		return tool.discover(ctx, args)
@@ -375,7 +376,7 @@ func (tool *NodeTerminalTool) Execute(ctx context.Context, args map[string]any) 
 	case "close":
 		return tool.close(ctx, args)
 	default:
-		return ErrorResult("terminal action must be discover, open, status, signal, or close")
+		return toolshared.ErrorResult("terminal action must be discover, open, status, signal, or close")
 	}
 }
 
@@ -383,11 +384,11 @@ func (*NodeTerminalTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsMutating
 }
 
-func (*NodeTerminalTool) ToolSteeringSafety(map[string]any) SteeringSafety {
-	return SteeringSafetyCancellable
+func (*NodeTerminalTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
-func (tool *NodeTerminalTool) discover(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeTerminalTool) discover(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	if _, err := terminalOperatorSessionID(ctx); err != nil {
 		return nodeTerminalDenial()
 	}
@@ -410,12 +411,12 @@ func (tool *NodeTerminalTool) discover(ctx context.Context, args map[string]any)
 	})
 }
 
-func (tool *NodeTerminalTool) open(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeTerminalTool) open(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	prepared, err := tool.prepareOpen(ctx, args)
 	if err != nil {
 		return nodeTerminalDenial()
 	}
-	if !ToolApprovalContinuation(ctx) && !ToolApprovalBypass(ctx) {
+	if !toolshared.ToolApprovalContinuation(ctx) && !toolshared.ToolApprovalBypass(ctx) {
 		return nodeDenialToolResult(nodeDenialResult{
 			Status:     "denied",
 			Code:       nodeDenialApprovalRequired,
@@ -494,7 +495,7 @@ func (tool *NodeTerminalTool) open(ctx context.Context, args map[string]any) *To
 	return nodeJSONResult(result)
 }
 
-func (tool *NodeTerminalTool) status(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeTerminalTool) status(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	owner, terminalID, err := terminalControlIdentity(ctx, args)
 	if err != nil || tool == nil || tool.source == nil {
 		return nodeTerminalDenial()
@@ -507,7 +508,7 @@ func (tool *NodeTerminalTool) status(ctx context.Context, args map[string]any) *
 	return nodeTerminalMetadataResult(owner, metadata)
 }
 
-func (tool *NodeTerminalTool) signal(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeTerminalTool) signal(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	owner, terminalID, err := terminalControlIdentity(ctx, args)
 	signal := strings.TrimSpace(stringArgument(args, "signal"))
 	if err != nil || !slices.Contains([]string{"INT", "TERM", "HUP"}, signal) ||
@@ -523,7 +524,7 @@ func (tool *NodeTerminalTool) signal(ctx context.Context, args map[string]any) *
 	return nodeTerminalMetadataResult(owner, metadata)
 }
 
-func (tool *NodeTerminalTool) close(ctx context.Context, args map[string]any) *ToolResult {
+func (tool *NodeTerminalTool) close(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	owner, terminalID, err := terminalControlIdentity(ctx, args)
 	if err != nil || tool == nil || tool.source == nil {
 		return nodeTerminalDenial()
@@ -566,9 +567,9 @@ func (tool *NodeTerminalTool) prepareOpen(
 	if err != nil {
 		return nodeTerminalPreparation{}, err
 	}
-	workspace := strings.TrimSpace(ToolWorkspace(ctx))
-	executionID := strings.TrimSpace(ToolExecutionID(ctx))
-	toolCallID := strings.TrimSpace(ToolCallID(ctx))
+	workspace := strings.TrimSpace(toolshared.ToolWorkspace(ctx))
+	executionID := strings.TrimSpace(toolshared.ToolExecutionID(ctx))
+	toolCallID := strings.TrimSpace(toolshared.ToolCallID(ctx))
 	if workspace == "" || executionID == "" || toolCallID == "" {
 		return nodeTerminalPreparation{}, errors.New("terminal open identity is incomplete")
 	}
@@ -589,9 +590,9 @@ func (tool *NodeTerminalTool) prepareOpen(
 		workingScope,
 		columns,
 		rows,
-		!ToolApprovalContinuation(ctx),
+		!toolshared.ToolApprovalContinuation(ctx),
 	)
-	if errors.Is(err, nodes.ErrGatewayTerminalNotFound) && ToolApprovalContinuation(ctx) {
+	if errors.Is(err, nodes.ErrGatewayTerminalNotFound) && toolshared.ToolApprovalContinuation(ctx) {
 		return nodeTerminalPreparation{}, denyStaleNodeDiscovery()
 	}
 	if err != nil {
@@ -621,7 +622,7 @@ func (tool *NodeTerminalTool) resolveTerminalAuthority(
 	return resolveTerminalAuthority(
 		tool.access,
 		tool.source,
-		ToolAgentID(ctx),
+		toolshared.ToolAgentID(ctx),
 		strings.TrimSpace(stringArgument(args, "target")),
 		requireAvailable,
 	)
@@ -694,9 +695,9 @@ func terminalOpenIdentity(
 		AgentID: principal.AgentID,
 		RouteID: stableNodeInvocationID(
 			"route",
-			ToolChannel(ctx),
-			ToolChatID(ctx),
-			ToolRouteSessionKey(ctx),
+			toolshared.ToolChannel(ctx),
+			toolshared.ToolChatID(ctx),
+			toolshared.ToolRouteSessionKey(ctx),
 		),
 		SessionID:   principal.SessionID,
 		WorkspaceID: principal.WorkspaceID,
@@ -706,9 +707,9 @@ func terminalOpenIdentity(
 }
 
 func terminalOperatorSessionID(ctx context.Context) (string, error) {
-	channel := strings.TrimSpace(ToolChannel(ctx))
-	chatID := strings.TrimSpace(ToolChatID(ctx))
-	routeSessionID := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	channel := strings.TrimSpace(toolshared.ToolChannel(ctx))
+	chatID := strings.TrimSpace(toolshared.ToolChatID(ctx))
+	routeSessionID := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	const prefix = "mintclaw:"
 	if channel != config.ChannelMintClaw ||
 		!strings.HasPrefix(chatID, prefix) ||
@@ -752,7 +753,7 @@ func normalizedTerminalAction(args map[string]any) string {
 func nodeTerminalMetadataResult(
 	owner nodes.TerminalOwner,
 	metadata nodes.TerminalMetadata,
-) *ToolResult {
+) *toolshared.ToolResult {
 	return nodeJSONResult(nodeTerminalMetadataView(owner, metadata))
 }
 
@@ -812,7 +813,7 @@ func safeTerminalSignal(signal string) string {
 	}
 }
 
-func nodeTerminalDenial() *ToolResult {
+func nodeTerminalDenial() *toolshared.ToolResult {
 	return nodeJSONResult(nodeTerminalResult{
 		State:     "denied",
 		ErrorCode: "TERMINAL_DENIED",
@@ -830,9 +831,9 @@ func (tool *NodeTerminalTool) publishEvent(
 	if tool == nil || tool.runtimeEvents == nil {
 		return
 	}
-	sessionKey := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	sessionKey := strings.TrimSpace(toolshared.ToolRouteSessionKey(ctx))
 	if sessionKey == "" {
-		sessionKey = strings.TrimSpace(ToolSessionKey(ctx))
+		sessionKey = strings.TrimSpace(toolshared.ToolSessionKey(ctx))
 	}
 	payload := NodeTerminalEventPayload{
 		Observation: observation,
@@ -861,18 +862,18 @@ func (tool *NodeTerminalTool) publishEvent(
 		Source: runtimeevents.Source{Component: "nodes", Name: "nodes_terminal"},
 		Scope: runtimeevents.Scope{
 			TraceScope: runtimeevents.NewTraceScope(
-				ToolWorkspace(ctx),
-				ToolExecutionID(ctx),
+				toolshared.ToolWorkspace(ctx),
+				toolshared.ToolExecutionID(ctx),
 			),
-			AgentID:    ToolAgentID(ctx),
+			AgentID:    toolshared.ToolAgentID(ctx),
 			SessionKey: sessionKey,
-			Channel:    ToolChannel(ctx),
-			ChatID:     ToolChatID(ctx),
-			TopicID:    ToolTopicID(ctx),
-			SenderID:   ToolSenderID(ctx),
-			MessageID:  ToolMessageID(ctx),
+			Channel:    toolshared.ToolChannel(ctx),
+			ChatID:     toolshared.ToolChatID(ctx),
+			TopicID:    toolshared.ToolTopicID(ctx),
+			SenderID:   toolshared.ToolSenderID(ctx),
+			MessageID:  toolshared.ToolMessageID(ctx),
 		},
-		Correlation: runtimeevents.Correlation{RequestID: ToolCallID(ctx)},
+		Correlation: runtimeevents.Correlation{RequestID: toolshared.ToolCallID(ctx)},
 		Severity:    severity,
 		Payload:     payload,
 		Attrs:       attributes,

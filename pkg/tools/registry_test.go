@@ -12,6 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // --- mock types ---
@@ -20,7 +21,7 @@ type mockRegistryTool struct {
 	name   string
 	desc   string
 	params map[string]any
-	result *ToolResult
+	result *toolshared.ToolResult
 }
 
 type semanticRegistryTool struct {
@@ -32,7 +33,7 @@ type futureTrustedNodeTool struct {
 	mockRegistryTool
 }
 
-func (tool *futureTrustedNodeTool) approvalBypassOwner() Tool { return tool }
+func (tool *futureTrustedNodeTool) approvalBypassOwner() toolshared.Tool { return tool }
 
 func TestToolRegistryRecognizesFutureTrustedNodeCapability(t *testing.T) {
 	registry := NewToolRegistry()
@@ -67,7 +68,7 @@ func TestTrustedToolExecutionUsesValidatedInstanceAfterReplacement(t *testing.T)
 			"required":             []string{"target"},
 			"additionalProperties": false,
 		},
-		result: SilentResult("trusted result"),
+		result: toolshared.SilentResult("trusted result"),
 	}}
 	registry.Register(trustedTool)
 	args := map[string]any{"target": "vpn"}
@@ -80,7 +81,7 @@ func TestTrustedToolExecutionUsesValidatedInstanceAfterReplacement(t *testing.T)
 	go func() {
 		registry.Register(&mockRegistryTool{
 			name: trustedTool.Name(), params: trustedTool.params,
-			result: SilentResult("replacement result"),
+			result: toolshared.SilentResult("replacement result"),
 		})
 		close(replaced)
 	}()
@@ -100,13 +101,13 @@ func (t *semanticRegistryTool) ToolLoopSemantics() loopguard.Semantics {
 
 func TestToolRegistryLoopSemanticsFailsClosed(t *testing.T) {
 	registry := NewToolRegistry()
-	registry.Register(&mockRegistryTool{name: "unknown", result: SilentResult("ok")})
+	registry.Register(&mockRegistryTool{name: "unknown", result: toolshared.SilentResult("ok")})
 	registry.Register(&semanticRegistryTool{
-		mockRegistryTool: mockRegistryTool{name: "read", result: SilentResult("ok")},
+		mockRegistryTool: mockRegistryTool{name: "read", result: toolshared.SilentResult("ok")},
 		semantics:        loopguard.SemanticsReadOnlyIdempotent,
 	})
 	registry.Register(&semanticRegistryTool{
-		mockRegistryTool: mockRegistryTool{name: "invalid", result: SilentResult("ok")},
+		mockRegistryTool: mockRegistryTool{name: "invalid", result: toolshared.SilentResult("ok")},
 		semantics:        loopguard.Semantics("unsafe_custom_value"),
 	})
 	if got := registry.LoopSemantics("read"); got != loopguard.SemanticsReadOnlyIdempotent {
@@ -128,16 +129,22 @@ func TestToolRegistrySteeringSafetyUsesCallArguments(t *testing.T) {
 	registry.Register(execTool)
 
 	for _, action := range []string{"list", "poll", "read"} {
-		if got := registry.SteeringSafety("exec", map[string]any{"action": action}); got != SteeringSafetyReadOnly {
+		if got := registry.SteeringSafety(
+			"exec",
+			map[string]any{"action": action},
+		); got != toolshared.SteeringSafetyReadOnly {
 			t.Fatalf("exec action %q safety = %q, want read_only", action, got)
 		}
 	}
 	for _, action := range []string{"run", "write", "send-keys", "kill", ""} {
-		if got := registry.SteeringSafety("exec", map[string]any{"action": action}); got != SteeringSafetyCancellable {
+		if got := registry.SteeringSafety(
+			"exec",
+			map[string]any{"action": action},
+		); got != toolshared.SteeringSafetyCancellable {
 			t.Fatalf("exec action %q safety = %q, want cancellable", action, got)
 		}
 	}
-	if got := registry.SteeringSafety("missing", nil); got != SteeringSafetyUnknown {
+	if got := registry.SteeringSafety("missing", nil); got != toolshared.SteeringSafetyUnknown {
 		t.Fatalf("missing tool safety = %q, want unknown", got)
 	}
 }
@@ -145,7 +152,7 @@ func TestToolRegistrySteeringSafetyUsesCallArguments(t *testing.T) {
 func (m *mockRegistryTool) Name() string               { return m.name }
 func (m *mockRegistryTool) Description() string        { return m.desc }
 func (m *mockRegistryTool) Parameters() map[string]any { return m.params }
-func (m *mockRegistryTool) Execute(_ context.Context, _ map[string]any) *ToolResult {
+func (m *mockRegistryTool) Execute(_ context.Context, _ map[string]any) *toolshared.ToolResult {
 	return m.result
 }
 
@@ -154,30 +161,30 @@ type mockContextAwareTool struct {
 	lastCtx context.Context
 }
 
-func (m *mockContextAwareTool) Execute(ctx context.Context, _ map[string]any) *ToolResult {
+func (m *mockContextAwareTool) Execute(ctx context.Context, _ map[string]any) *toolshared.ToolResult {
 	m.lastCtx = ctx
 	return m.result
 }
 
 type mockPromptMetadataTool struct {
 	mockRegistryTool
-	metadata PromptMetadata
+	metadata toolshared.PromptMetadata
 }
 
-func (m *mockPromptMetadataTool) PromptMetadata() PromptMetadata {
+func (m *mockPromptMetadataTool) PromptMetadata() toolshared.PromptMetadata {
 	return m.metadata
 }
 
 type mockAsyncRegistryTool struct {
 	mockRegistryTool
-	lastCB AsyncCallback
+	lastCB toolshared.AsyncCallback
 }
 
 func (m *mockAsyncRegistryTool) ExecuteAsync(
 	_ context.Context,
 	args map[string]any,
-	cb AsyncCallback,
-) *ToolResult {
+	cb toolshared.AsyncCallback,
+) *toolshared.ToolResult {
 	m.lastCB = cb
 	return m.result
 }
@@ -198,7 +205,7 @@ func newMockTool(name, desc string) *mockRegistryTool {
 		name:   name,
 		desc:   desc,
 		params: map[string]any{"type": "object"},
-		result: SilentResult("ok"),
+		result: toolshared.SilentResult("ok"),
 	}
 }
 
@@ -319,7 +326,7 @@ func TestToolRegistry_Execute_Success(t *testing.T) {
 		name:   "greet",
 		desc:   "says hello",
 		params: map[string]any{},
-		result: SilentResult("hello"),
+		result: toolshared.SilentResult("hello"),
 	})
 
 	result := r.Execute(context.Background(), "greet", nil)
@@ -357,10 +364,10 @@ func TestToolRegistry_ExecuteWithContext_InjectsToolContext(t *testing.T) {
 	if ct.lastCtx == nil {
 		t.Fatal("expected Execute to be called")
 	}
-	if got := ToolChannel(ct.lastCtx); got != "telegram" {
+	if got := toolshared.ToolChannel(ct.lastCtx); got != "telegram" {
 		t.Errorf("expected channel 'telegram', got %q", got)
 	}
-	if got := ToolChatID(ct.lastCtx); got != "chat-42" {
+	if got := toolshared.ToolChatID(ct.lastCtx); got != "chat-42" {
 		t.Errorf("expected chatID 'chat-42', got %q", got)
 	}
 }
@@ -378,10 +385,10 @@ func TestToolRegistry_ExecuteWithContext_EmptyContext(t *testing.T) {
 		t.Fatal("expected Execute to be called")
 	}
 	// Empty values are still injected; tools decide what to do with them.
-	if got := ToolChannel(ct.lastCtx); got != "" {
+	if got := toolshared.ToolChannel(ct.lastCtx); got != "" {
 		t.Errorf("expected empty channel, got %q", got)
 	}
-	if got := ToolChatID(ct.lastCtx); got != "" {
+	if got := toolshared.ToolChatID(ct.lastCtx); got != "" {
 		t.Errorf("expected empty chatID, got %q", got)
 	}
 }
@@ -393,22 +400,22 @@ func TestToolRegistry_ExecuteWithContext_PreservesMessageContext(t *testing.T) {
 	}
 	r.Register(ct)
 
-	baseCtx := WithToolMessageContext(context.Background(), "msg-123", "msg-100")
+	baseCtx := toolshared.WithToolMessageContext(context.Background(), "msg-123", "msg-100")
 	r.ExecuteWithContext(baseCtx, "ctx_tool", nil, "telegram", "chat-42", nil)
 
 	if ct.lastCtx == nil {
 		t.Fatal("expected Execute to be called")
 	}
-	if got := ToolChannel(ct.lastCtx); got != "telegram" {
+	if got := toolshared.ToolChannel(ct.lastCtx); got != "telegram" {
 		t.Errorf("expected channel 'telegram', got %q", got)
 	}
-	if got := ToolChatID(ct.lastCtx); got != "chat-42" {
+	if got := toolshared.ToolChatID(ct.lastCtx); got != "chat-42" {
 		t.Errorf("expected chatID 'chat-42', got %q", got)
 	}
-	if got := ToolMessageID(ct.lastCtx); got != "msg-123" {
+	if got := toolshared.ToolMessageID(ct.lastCtx); got != "msg-123" {
 		t.Errorf("expected messageID 'msg-123', got %q", got)
 	}
-	if got := ToolReplyToMessageID(ct.lastCtx); got != "msg-100" {
+	if got := toolshared.ToolReplyToMessageID(ct.lastCtx); got != "msg-100" {
 		t.Errorf("expected replyToMessageID 'msg-100', got %q", got)
 	}
 }
@@ -418,11 +425,11 @@ func TestToolRegistry_ExecuteWithContext_AsyncCallback(t *testing.T) {
 	at := &mockAsyncRegistryTool{
 		mockRegistryTool: *newMockTool("async_tool", "async work"),
 	}
-	at.result = AsyncResult("started")
+	at.result = toolshared.AsyncResult("started")
 	r.Register(at)
 
 	called := false
-	cb := func(_ context.Context, _ *ToolResult) { called = true }
+	cb := func(_ context.Context, _ *toolshared.ToolResult) { called = true }
 
 	result := r.ExecuteWithContext(context.Background(), "async_tool", nil, "", "", cb)
 	if at.lastCB == nil {
@@ -432,7 +439,7 @@ func TestToolRegistry_ExecuteWithContext_AsyncCallback(t *testing.T) {
 		t.Error("expected async result")
 	}
 
-	at.lastCB(context.Background(), SilentResult("done"))
+	at.lastCB(context.Background(), toolshared.SilentResult("done"))
 	if !called {
 		t.Error("expected callback to be invoked")
 	}
@@ -468,7 +475,7 @@ func TestToolRegistry_ToProviderDefs(t *testing.T) {
 		name:   "beta",
 		desc:   "tool B",
 		params: params,
-		result: SilentResult("ok"),
+		result: toolshared.SilentResult("ok"),
 	})
 
 	defs := r.ToProviderDefs()
@@ -555,7 +562,7 @@ func TestToolRegistry_GetSummaries(t *testing.T) {
 
 func TestToolToSchema(t *testing.T) {
 	tool := newMockTool("demo", "demo tool")
-	schema := ToolToSchema(tool)
+	schema := toolshared.ToolToSchema(tool)
 
 	if schema["type"] != "function" {
 		t.Errorf("expected type 'function', got %v", schema["type"])
@@ -584,9 +591,9 @@ func TestToolRegistry_ToProviderDefsAttachesPromptMetadata(t *testing.T) {
 			desc:   "mcp tool",
 			params: map[string]any{"type": "object"},
 		},
-		metadata: PromptMetadata{
-			Layer:  ToolPromptLayerCapability,
-			Slot:   ToolPromptSlotMCP,
+		metadata: toolshared.PromptMetadata{
+			Layer:  toolshared.ToolPromptLayerCapability,
+			Slot:   toolshared.ToolPromptSlotMCP,
 			Source: "mcp:demo",
 		},
 	})
@@ -602,15 +609,15 @@ func TestToolRegistry_ToProviderDefsAttachesPromptMetadata(t *testing.T) {
 	}
 
 	native := byName["native"]
-	if native.PromptLayer != ToolPromptLayerCapability ||
-		native.PromptSlot != ToolPromptSlotTooling ||
-		native.PromptSource != ToolPromptSourceRegistry {
+	if native.PromptLayer != toolshared.ToolPromptLayerCapability ||
+		native.PromptSlot != toolshared.ToolPromptSlotTooling ||
+		native.PromptSource != toolshared.ToolPromptSourceRegistry {
 		t.Fatalf("native prompt metadata = %#v, want default tooling source", native)
 	}
 
 	mcp := byName["mcp_demo"]
-	if mcp.PromptLayer != ToolPromptLayerCapability ||
-		mcp.PromptSlot != ToolPromptSlotMCP ||
+	if mcp.PromptLayer != toolshared.ToolPromptLayerCapability ||
+		mcp.PromptSlot != toolshared.ToolPromptSlotMCP ||
 		mcp.PromptSource != "mcp:demo" {
 		t.Fatalf("mcp prompt metadata = %#v, want mcp source", mcp)
 	}
@@ -744,7 +751,7 @@ type mockPanicTool struct {
 func (m *mockPanicTool) Name() string               { return m.name }
 func (m *mockPanicTool) Description() string        { return "a tool that panics" }
 func (m *mockPanicTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
-func (m *mockPanicTool) Execute(_ context.Context, _ map[string]any) *ToolResult {
+func (m *mockPanicTool) Execute(_ context.Context, _ map[string]any) *toolshared.ToolResult {
 	panic(m.panicValue)
 }
 
@@ -756,7 +763,7 @@ type mockNilResultTool struct {
 func (m *mockNilResultTool) Name() string               { return m.name }
 func (m *mockNilResultTool) Description() string        { return "a tool that returns nil" }
 func (m *mockNilResultTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
-func (m *mockNilResultTool) Execute(_ context.Context, _ map[string]any) *ToolResult {
+func (m *mockNilResultTool) Execute(_ context.Context, _ map[string]any) *toolshared.ToolResult {
 	return nil
 }
 
@@ -886,7 +893,7 @@ func TestToolRegistry_Execute_PanicDoesNotAffectOtherTools(t *testing.T) {
 		name:   "good_tool",
 		desc:   "works fine",
 		params: map[string]any{},
-		result: SilentResult("success"),
+		result: toolshared.SilentResult("success"),
 	})
 
 	// First, trigger the panic
@@ -936,7 +943,7 @@ func TestToolRegistry_ExecuteWithContext_SanitizesLargeBase64Payload(t *testing.
 		name:   "base64_tool",
 		desc:   "returns huge base64",
 		params: map[string]any{},
-		result: SilentResult(payload),
+		result: toolshared.SilentResult(payload),
 	})
 
 	result := r.ExecuteWithContext(
@@ -963,7 +970,7 @@ func TestToolRegistry_ExecuteWithContext_ExtractsInlineMediaDataURL(t *testing.T
 		name:   "inline_media_tool",
 		desc:   "returns inline data url",
 		params: map[string]any{},
-		result: SilentResult(payload),
+		result: toolshared.SilentResult(payload),
 	})
 
 	result := r.ExecuteWithContext(
@@ -1005,7 +1012,7 @@ func TestToolRegistry_ExecuteWithContext_SanitizesInlineMediaWithoutStore(t *tes
 		name:   "inline_media_no_store",
 		desc:   "returns inline data url without store",
 		params: map[string]any{},
-		result: SilentResult(payload),
+		result: toolshared.SilentResult(payload),
 	})
 
 	result := r.ExecuteWithContext(

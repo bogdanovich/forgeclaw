@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 var updatePlanStatuses = map[string]struct{}{
@@ -72,17 +74,17 @@ func (t *UpdatePlanTool) Parameters() map[string]any {
 	}
 }
 
-func (t *UpdatePlanTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *UpdatePlanTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	_ = ctx
 
 	steps, err := readUpdatePlanSteps(args)
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	explanation, err := optionalStringArg(args, "explanation")
 	if err != nil {
-		return ErrorResult(err.Error())
+		return toolshared.ErrorResult(err.Error())
 	}
 
 	response := updatePlanResponse{
@@ -92,9 +94,9 @@ func (t *UpdatePlanTool) Execute(ctx context.Context, args map[string]any) *Tool
 	}
 	data, err := json.MarshalIndent(response, "", "  ")
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to encode plan update: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to encode plan update: %v", err))
 	}
-	return SilentResult(string(data))
+	return toolshared.SilentResult(string(data))
 }
 
 func readUpdatePlanSteps(args map[string]any) ([]updatePlanStep, error) {

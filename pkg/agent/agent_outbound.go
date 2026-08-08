@@ -16,7 +16,8 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const finalDeliveryFallbackTimeout = 5 * time.Second
@@ -371,14 +372,14 @@ func (al *AgentLoop) deliverFinalTurnMedia(
 	ts *turnState,
 	result turnResult,
 ) (toolResultDeliveryOutcome, error) {
-	mediaResult := (&tools.ToolResult{
+	mediaResult := (&toolshared.ToolResult{
 		ForLLM:          "Final turn output delivered as media.",
 		ForUser:         result.finalContent,
 		Silent:          true,
 		ResponseHandled: true,
-	}).WithCompletion(&tools.CompletionResult{
+	}).WithCompletion(&toolshared.CompletionResult{
 		Text:  result.finalContent,
-		Media: append([]tools.CompletionMedia(nil), result.completionMedia...),
+		Media: append([]toolshared.CompletionMedia(nil), result.completionMedia...),
 	})
 	mediaRefs := completionMediaRefs(result.completionMedia)
 	mediaResult.Media = append(mediaResult.Media, mediaRefs...)
@@ -458,7 +459,7 @@ func (al *AgentLoop) publishFinalDeliveryFallback(msg bus.OutboundMessage) {
 func (al *AgentLoop) deliverToolResultToUser(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
 ) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 	return al.deliverToolResultToUserWithScopes(ctx, ts, result, toolName, nil)
@@ -467,7 +468,7 @@ func (al *AgentLoop) deliverToolResultToUser(
 func (al *AgentLoop) deliverToolResultToUserWithScopes(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
 	traceScopes []runtimeevents.TraceScope,
 ) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
@@ -554,7 +555,7 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 	if strings.TrimSpace(text) == "" {
 		return nil, toolResultDeliveryNone, nil
 	}
-	if result.Silent && result.Completion == nil && result.AsyncDelivery != tools.AsyncDeliveryUserOnly {
+	if result.Silent && result.Completion == nil && result.AsyncDelivery != toolshared.AsyncDeliveryUserOnly {
 		return nil, toolResultDeliveryNone, nil
 	}
 	if al.bus == nil {
@@ -580,7 +581,7 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 func (al *AgentLoop) deliverExplicitToolOutbound(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
 	traceScopes []runtimeevents.TraceScope,
 	traceSettlement bool,
@@ -690,7 +691,7 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	return nil, toolResultDeliveryNone, nil
 }
 
-func applyToolResultOutboundMetadata(result *tools.ToolResult, outboundCtx *bus.InboundContext) {
+func applyToolResultOutboundMetadata(result *toolshared.ToolResult, outboundCtx *bus.InboundContext) {
 	if result == nil || !result.ImmediateDelivery {
 		return
 	}
@@ -706,7 +707,7 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func toolResultUserText(result *tools.ToolResult) string {
+func toolResultUserText(result *toolshared.ToolResult) string {
 	if result == nil {
 		return ""
 	}
@@ -722,7 +723,7 @@ func toolResultUserText(result *tools.ToolResult) string {
 	return ""
 }
 
-func toolResultMediaRefs(result *tools.ToolResult) []string {
+func toolResultMediaRefs(result *toolshared.ToolResult) []string {
 	if result == nil {
 		return nil
 	}
@@ -752,10 +753,10 @@ func toolResultMediaRefs(result *tools.ToolResult) []string {
 
 func (al *AgentLoop) mediaPartsFromRefs(
 	refs []string,
-	completion *tools.CompletionResult,
+	completion *toolshared.CompletionResult,
 	caption string,
 ) []bus.MediaPart {
-	hints := make(map[string]tools.CompletionMedia)
+	hints := make(map[string]toolshared.CompletionMedia)
 	if completion != nil {
 		for _, item := range completion.Media {
 			ref := strings.TrimSpace(item.Ref)
@@ -808,7 +809,7 @@ func messageToolSentToSameChat(
 	if !ok {
 		return false
 	}
-	mt, ok := tool.(*tools.MessageTool)
+	mt, ok := tool.(*integrationtools.MessageTool)
 	return ok && mt.HasSentTo(sessionKey, channel, chatID)
 }
 

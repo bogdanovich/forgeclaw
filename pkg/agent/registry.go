@@ -9,7 +9,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // AgentRegistry manages multiple agent instances and routes messages to them.
@@ -168,7 +168,7 @@ func agentHasSpawnTool(agent *AgentInstance) bool {
 // ForEachTool calls fn for every tool registered under the given name
 // across all agents. This is useful for propagating dependencies (e.g.
 // MediaStore) to tools after registry construction.
-func (r *AgentRegistry) ForEachTool(name string, fn func(tools.Tool)) {
+func (r *AgentRegistry) ForEachTool(name string, fn func(toolshared.Tool)) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, agent := range r.agents {

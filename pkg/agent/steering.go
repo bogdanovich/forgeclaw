@@ -13,7 +13,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // SteeringMode controls how queued steering messages are dequeued.
@@ -732,13 +732,13 @@ func (al *AgentLoop) InterruptHard() error {
 // dequeuePendingSubTurnResults polls the SubTurn result channel for the given
 // session and returns all available results without blocking.
 // Returns nil if no active turn state exists for this session.
-func (al *AgentLoop) dequeuePendingSubTurnResults(sessionKey string) []*tools.ToolResult {
+func (al *AgentLoop) dequeuePendingSubTurnResults(sessionKey string) []*toolshared.ToolResult {
 	ts, ambiguous := al.uniqueActiveTurnForSession(sessionKey)
 	if ts == nil || ambiguous {
 		return nil
 	}
 
-	var results []*tools.ToolResult
+	var results []*toolshared.ToolResult
 	for {
 		result, ok := ts.dequeuePendingResult()
 		if !ok {

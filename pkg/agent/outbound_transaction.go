@@ -9,7 +9,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/outbox"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 var errOutboundPublicationInFlight = errors.New("durable outbound publication is still in flight")
@@ -46,7 +46,7 @@ func withOutboundTransaction(ctx context.Context, sourceID string) context.Conte
 		return ctx
 	}
 	ctx = context.WithValue(ctx, outboundTransactionKey{}, &outboundTransaction{sourceID: sourceID})
-	return tools.WithToolRecoverableOutbound(ctx, true)
+	return toolshared.WithToolRecoverableOutbound(ctx, true)
 }
 
 func inheritOutboundTransaction(dst, src context.Context) context.Context {
@@ -55,7 +55,7 @@ func inheritOutboundTransaction(dst, src context.Context) context.Context {
 		return dst
 	}
 	dst = context.WithValue(dst, outboundTransactionKey{}, transaction)
-	return tools.WithToolRecoverableOutbound(dst, true)
+	return toolshared.WithToolRecoverableOutbound(dst, true)
 }
 
 func outboundTransactionFromContext(ctx context.Context) *outboundTransaction {

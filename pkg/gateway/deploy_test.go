@@ -14,7 +14,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func deployConfig(script string) config.GatewayDeployConfig {
@@ -133,8 +133,8 @@ func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := tools.WithToolTopicID(
-		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	ctx := toolshared.WithToolTopicID(
+		toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
 	)
 	result := (&GatewayDeployTool{runner: runner}).Execute(ctx, map[string]any{})
 	if result.Err != nil {
@@ -187,8 +187,8 @@ func TestGatewayDeployToolUsesDetachedHandoffForConfiguredTarget(t *testing.T) {
 	}
 	launcher := &fakeDeployHandoffLauncher{}
 	tool := &GatewayDeployTool{runner: runner, launcher: launcher}
-	ctx := tools.WithToolTopicID(
-		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	ctx := toolshared.WithToolTopicID(
+		toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
 	)
 	result := tool.Execute(ctx, nil)
 	if result.Err != nil {
@@ -286,15 +286,15 @@ func TestGatewayDeployToolFailuresRemainExplicitAndUnhandled(t *testing.T) {
 			!strings.Contains(result.ForLLM, "failure") {
 			t.Fatalf("result = %#v", result)
 		}
-		if result.ResponseHandled || result.DeliveryIntent == tools.DeliveryFinalHandled {
+		if result.ResponseHandled || result.DeliveryIntent == toolshared.DeliveryFinalHandled {
 			t.Fatalf("failed deploy claimed handled success: %#v", result)
 		}
 	})
 }
 
-func assertFinalHandledDeployResult(t *testing.T, result *tools.ToolResult) {
+func assertFinalHandledDeployResult(t *testing.T, result *toolshared.ToolResult) {
 	t.Helper()
-	if result.DeliveryIntent != tools.DeliveryFinalHandled {
+	if result.DeliveryIntent != toolshared.DeliveryFinalHandled {
 		t.Fatalf("DeliveryIntent = %q, want final_handled", result.DeliveryIntent)
 	}
 	if !result.ResponseHandled {
@@ -305,12 +305,12 @@ func assertFinalHandledDeployResult(t *testing.T, result *tools.ToolResult) {
 	}
 }
 
-func assertFailedDeployResult(t *testing.T, result *tools.ToolResult, wantErr error) {
+func assertFailedDeployResult(t *testing.T, result *toolshared.ToolResult, wantErr error) {
 	t.Helper()
 	if !errors.Is(result.Err, wantErr) || !result.IsError {
 		t.Fatalf("result = %#v, want error %v", result, wantErr)
 	}
-	if result.ResponseHandled || result.DeliveryIntent == tools.DeliveryFinalHandled {
+	if result.ResponseHandled || result.DeliveryIntent == toolshared.DeliveryFinalHandled {
 		t.Fatalf("failed deploy claimed handled success: %#v", result)
 	}
 }

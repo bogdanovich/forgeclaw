@@ -13,7 +13,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // AsyncDeliveryDecision is the routing plan for a completed async tool result.
@@ -24,7 +24,7 @@ import (
 // behind the same coordinator boundary later.
 type AsyncDeliveryDecision struct {
 	TaskID        string
-	DeliveryMode  tools.AsyncDeliveryMode
+	DeliveryMode  toolshared.AsyncDeliveryMode
 	PublishToUser bool
 	QueueParent   bool
 	ParentHandled bool
@@ -38,7 +38,7 @@ type AsyncDeliveryRequest struct {
 	TurnState    *turnState
 	ToolName     string
 	CompletionID string
-	Result       *tools.ToolResult
+	Result       *toolshared.ToolResult
 	Decision     AsyncDeliveryDecision
 	TraceScopes  []runtimeevents.TraceScope
 }
@@ -47,7 +47,7 @@ type asyncToolCompletionDelivery struct {
 	bus                             interfaces.MessageBus
 	currentConfig                   func() *config.Config
 	events                          runtimeEventEmitter
-	deliverToUser                   func(context.Context, *turnState, *tools.ToolResult, string, []runtimeevents.TraceScope) ([]providers.Attachment, toolResultDeliveryOutcome, error)
+	deliverToUser                   func(context.Context, *turnState, *toolshared.ToolResult, string, []runtimeevents.TraceScope) ([]providers.Attachment, toolResultDeliveryOutcome, error)
 	processCompletion               func(context.Context, AsyncCompletionInput) (string, error)
 	asyncTaskDeliveryAlreadyHandled func(workspace, taskID, completionID string) bool
 	recordAsyncTaskDeliveryDecision func(workspace string, decision AsyncDeliveryDecision, completionID, sourceTool string)
@@ -280,7 +280,7 @@ func (d *asyncToolCompletionDelivery) deliverAsyncToolCompletion(req AsyncDelive
 				"chat_id":       ts.chatID,
 				"error":         err.Error(),
 			})
-	} else if delivery.DeliveryMode == tools.AsyncDeliveryParentOnly {
+	} else if delivery.DeliveryMode == toolshared.AsyncDeliveryParentOnly {
 		d.updateDeliveryStatus(
 			ts.workspace,
 			delivery.TaskID,
@@ -316,7 +316,7 @@ func (d *asyncToolCompletionDelivery) getConfig() *config.Config {
 func (d *asyncToolCompletionDelivery) deliverToUserResult(
 	ctx context.Context,
 	ts *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	toolName string,
 	traceScopes []runtimeevents.TraceScope,
 ) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
@@ -392,7 +392,7 @@ func (d *asyncToolCompletionDelivery) emitEvent(kind runtimeevents.Kind, meta Ho
 	d.events.emitEvent(kind, meta, payload)
 }
 
-func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecision {
+func decideAsyncToolResultDelivery(result *toolshared.ToolResult) AsyncDeliveryDecision {
 	decision := AsyncDeliveryDecision{
 		DeliveryMode: effectiveAsyncToolResultDelivery(result),
 	}
@@ -410,43 +410,43 @@ func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecisi
 	}
 	decision.IsError = result.IsError
 
-	if decision.DeliveryMode != tools.AsyncDeliveryParentOnly {
+	if decision.DeliveryMode != toolshared.AsyncDeliveryParentOnly {
 		hasUserPayload := decision.ForUserLen > 0 || decision.MediaCount > 0
 		decision.PublishToUser = hasUserPayload &&
-			(!result.Silent || decision.DeliveryMode == tools.AsyncDeliveryUserOnly)
+			(!result.Silent || decision.DeliveryMode == toolshared.AsyncDeliveryUserOnly)
 	}
-	if decision.DeliveryMode != tools.AsyncDeliveryUserOnly {
+	if decision.DeliveryMode != toolshared.AsyncDeliveryUserOnly {
 		decision.QueueParent = content != ""
 	}
 	decision.ParentHandled = !decision.QueueParent && !result.IsError &&
-		decision.DeliveryMode == tools.AsyncDeliveryUserOnly
+		decision.DeliveryMode == toolshared.AsyncDeliveryUserOnly
 	return decision
 }
 
-func effectiveAsyncToolResultDelivery(result *tools.ToolResult) tools.AsyncDeliveryMode {
+func effectiveAsyncToolResultDelivery(result *toolshared.ToolResult) toolshared.AsyncDeliveryMode {
 	if result == nil || result.AsyncDelivery == "" {
-		return tools.AsyncDeliveryUserAndParent
+		return toolshared.AsyncDeliveryUserAndParent
 	}
 	return result.AsyncDelivery
 }
 
-func asyncDeliveryModeFromToolArgs(toolName string, args map[string]any) (tools.AsyncDeliveryMode, error) {
+func asyncDeliveryModeFromToolArgs(toolName string, args map[string]any) (toolshared.AsyncDeliveryMode, error) {
 	if toolName != "spawn" && toolName != "delegate" {
-		return tools.AsyncDeliveryUserAndParent, nil
+		return toolshared.AsyncDeliveryUserAndParent, nil
 	}
 	raw, ok := args["delivery_mode"]
 	if !ok || raw == nil {
 		if toolName == "spawn" {
-			return tools.AsyncDeliveryUserOnly, nil
+			return toolshared.AsyncDeliveryUserOnly, nil
 		}
-		return tools.AsyncDeliveryParentOnly, nil
+		return toolshared.AsyncDeliveryParentOnly, nil
 	}
 	value, ok := raw.(string)
 	if !ok {
 		return "", nil
 	}
-	switch mode := tools.AsyncDeliveryMode(strings.TrimSpace(value)); mode {
-	case tools.AsyncDeliveryUserOnly, tools.AsyncDeliveryParentOnly, tools.AsyncDeliveryUserAndParent:
+	switch mode := toolshared.AsyncDeliveryMode(strings.TrimSpace(value)); mode {
+	case toolshared.AsyncDeliveryUserOnly, toolshared.AsyncDeliveryParentOnly, toolshared.AsyncDeliveryUserAndParent:
 		return mode, nil
 	default:
 		return "", nil

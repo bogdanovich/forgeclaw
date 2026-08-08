@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // MockLLMProvider is a test implementation of LLMProvider
@@ -147,7 +148,7 @@ func TestSubagentTool_Execute_Success(t *testing.T) {
 	tool := NewSubagentTool(manager)
 	tool.SetSpawner(&mockSpawner{})
 
-	ctx := WithToolContext(context.Background(), "telegram", "chat-123")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-123")
 	args := map[string]any{
 		"task":  "Write a haiku about coding",
 		"label": "haiku-task",
@@ -278,7 +279,7 @@ func TestSubagentTool_Execute_ContextPassing(t *testing.T) {
 
 	channel := "test-channel"
 	chatID := "test-chat"
-	ctx := WithToolContext(context.Background(), channel, chatID)
+	ctx := toolshared.WithToolContext(context.Background(), channel, chatID)
 	args := map[string]any{
 		"task": "Test context passing",
 	}

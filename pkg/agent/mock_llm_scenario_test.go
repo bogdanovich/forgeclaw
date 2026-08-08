@@ -11,7 +11,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/testharness/llmscenario"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestMockLLMScenario_ProcessDirectExecutesToolAndReturnsFinalAnswer(t *testing.T) {
@@ -55,7 +55,7 @@ func TestMockLLMScenario_ProcessDirectExecutesToolAndReturnsFinalAnswer(t *testi
 
 	stub := llmscenario.NewStubTool(
 		toolName,
-		tools.NewToolResult("recipe extracted: raspberries + chocolate"),
+		toolshared.NewToolResult("recipe extracted: raspberries + chocolate"),
 	)
 	agent.Tools.Register(stub)
 
@@ -126,7 +126,7 @@ func TestMockLLMScenario_StatelessDirectTurnsKeepToolsButNotPriorTurns(t *testin
 	defer cleanup()
 	agent.Tools.Register(llmscenario.NewStubTool(
 		toolName,
-		tools.NewToolResult("current pull request details"),
+		toolshared.NewToolResult("current pull request details"),
 	))
 
 	opts := DirectTurnOptions{Stateless: true}
@@ -210,7 +210,7 @@ func TestMockLLMScenario_QueuedMediaFallbackContinuesToFinalAnswer(t *testing.T)
 
 	stub := llmscenario.NewStubTool(
 		toolName,
-		tools.MediaResult("queued media payload", []string{ref}).WithResponseHandled(),
+		toolshared.MediaResult("queued media payload", []string{ref}).WithResponseHandled(),
 	)
 	agent.Tools.Register(stub)
 
@@ -290,7 +290,7 @@ func TestMockLLMScenario_DirectMediaDeliverySkipsFollowUpLLM(t *testing.T) {
 
 	stub := llmscenario.NewStubTool(
 		toolName,
-		tools.MediaResult("direct media payload", []string{ref}).WithResponseHandled(),
+		toolshared.MediaResult("direct media payload", []string{ref}).WithResponseHandled(),
 	)
 	agent.Tools.Register(stub)
 

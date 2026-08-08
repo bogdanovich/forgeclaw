@@ -5,6 +5,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func agentAllowsTool(agent *AgentInstance, toolName string) bool {
@@ -34,7 +35,7 @@ func toolAllowedByPolicy(policy *PatternPolicy, toolName string) bool {
 
 func registerToolWithPolicies(
 	registry *tools.ToolRegistry,
-	tool tools.Tool,
+	tool toolshared.Tool,
 	policies ...*PatternPolicy,
 ) bool {
 	if registry == nil || tool == nil {
@@ -61,7 +62,7 @@ func matchesAnyGlob(name string, patterns []string) bool {
 	return false
 }
 
-func registerToolIfAllowed(agent *AgentInstance, tool tools.Tool) bool {
+func registerToolIfAllowed(agent *AgentInstance, tool toolshared.Tool) bool {
 	if tool == nil {
 		return false
 	}
@@ -76,7 +77,7 @@ func registerToolIfAllowed(agent *AgentInstance, tool tools.Tool) bool {
 	return true
 }
 
-func registerHiddenToolIfAllowed(agent *AgentInstance, tool tools.Tool) bool {
+func registerHiddenToolIfAllowed(agent *AgentInstance, tool toolshared.Tool) bool {
 	if tool == nil {
 		return false
 	}

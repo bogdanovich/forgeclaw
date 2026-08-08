@@ -14,6 +14,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/constants"
 	"github.com/bogdanovich/mintclaw/pkg/cron"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
@@ -168,10 +169,10 @@ func (t *CronTool) Parameters() map[string]any {
 }
 
 // Execute runs the tool with the given arguments
-func (t *CronTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *CronTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	action, ok := args["action"].(string)
 	if !ok {
-		return ErrorResult("action is required")
+		return toolshared.ErrorResult("action is required")
 	}
 
 	switch action {
@@ -190,21 +191,23 @@ func (t *CronTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	case "disable":
 		return t.enableJob(ctx, args, false)
 	default:
-		return ErrorResult(fmt.Sprintf("unknown action: %s", action))
+		return toolshared.ErrorResult(fmt.Sprintf("unknown action: %s", action))
 	}
 }
 
-func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult {
-	channel := ToolChannel(ctx)
-	chatID := ToolChatID(ctx)
+func (t *CronTool) addJob(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	channel := toolshared.ToolChannel(ctx)
+	chatID := toolshared.ToolChatID(ctx)
 
 	if channel == "" || chatID == "" {
-		return ErrorResult("no session context (channel/chat_id not set). Use this tool in an active conversation.")
+		return toolshared.ErrorResult(
+			"no session context (channel/chat_id not set). Use this tool in an active conversation.",
+		)
 	}
 
 	message, ok := args["message"].(string)
 	if !ok || message == "" {
-		return ErrorResult("message is required for add")
+		return toolshared.ErrorResult("message is required for add")
 	}
 
 	var schedule cron.CronSchedule
@@ -239,7 +242,7 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 			Expr: cronExpr,
 		}
 	} else {
-		return ErrorResult("one of at_seconds, every_seconds, or cron_expr is required")
+		return toolshared.ErrorResult("one of at_seconds, every_seconds, or cron_expr is required")
 	}
 
 	// GHSA-pv8c-p6jf-3fpp: command scheduling requires internal channel. When
@@ -253,15 +256,15 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 	}
 	if command != "" {
 		if !t.execEnabled {
-			return ErrorResult("command execution is disabled")
+			return toolshared.ErrorResult("command execution is disabled")
 		}
 		if !constants.IsInternalChannel(channel) && !isCommandAllowedRemote(channel, chatID, t.commandAllowedRemotes) {
-			return ErrorResult(
+			return toolshared.ErrorResult(
 				"scheduling command execution is restricted to internal channels or configured remote channels",
 			)
 		}
 		if !t.allowCommand && !commandConfirm {
-			return ErrorResult("command_confirm=true is required when allow_command is disabled")
+			return toolshared.ErrorResult("command_confirm=true is required when allow_command is disabled")
 		}
 	}
 
@@ -277,7 +280,7 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		chatID,
 	)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("Error adding job: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("Error adding job: %v", err))
 	}
 
 	// Apply optional payload fields and persist in a single UpdateJob call
@@ -290,10 +293,10 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		t.cronService.UpdateJob(job)
 	}
 
-	return SilentResult(fmt.Sprintf("Cron job added: %s (id: %s)", job.Name, job.ID))
+	return toolshared.SilentResult(fmt.Sprintf("Cron job added: %s (id: %s)", job.Name, job.ID))
 }
 
-func (t *CronTool) listJobs(ctx context.Context) *ToolResult {
+func (t *CronTool) listJobs(ctx context.Context) *toolshared.ToolResult {
 	jobs := t.cronService.ListJobs(false)
 
 	var accessibleJobs []cron.CronJob
@@ -305,7 +308,7 @@ func (t *CronTool) listJobs(ctx context.Context) *ToolResult {
 	jobs = accessibleJobs
 
 	if len(jobs) == 0 {
-		return SilentResult("No scheduled jobs")
+		return toolshared.SilentResult("No scheduled jobs")
 	}
 
 	var result strings.Builder
@@ -324,10 +327,10 @@ func (t *CronTool) listJobs(ctx context.Context) *ToolResult {
 		result.WriteString(fmt.Sprintf("- %s (id: %s, %s)\n", j.Name, j.ID, scheduleInfo))
 	}
 
-	return SilentResult(result.String())
+	return toolshared.SilentResult(result.String())
 }
 
-func (t *CronTool) getJob(ctx context.Context, args map[string]any) *ToolResult {
+func (t *CronTool) getJob(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	jobID, errResult := requiredCronJobID(args, "get")
 	if errResult != nil {
 		return errResult
@@ -335,16 +338,16 @@ func (t *CronTool) getJob(ctx context.Context, args map[string]any) *ToolResult 
 
 	job, ok := t.cronService.GetJob(jobID)
 	if !ok {
-		return ErrorResult(fmt.Sprintf("Job %s not found", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s not found", jobID))
 	}
 	if !t.canAccessJob(ctx, job) {
-		return ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
 	}
 
-	return SilentResult(formatCronJobJSON(job))
+	return toolshared.SilentResult(formatCronJobJSON(job))
 }
 
-func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResult {
+func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	jobID, errResult := requiredCronJobID(args, "update")
 	if errResult != nil {
 		return errResult
@@ -352,10 +355,10 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 
 	job, ok := t.cronService.GetJob(jobID)
 	if !ok {
-		return ErrorResult(fmt.Sprintf("Job %s not found", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s not found", jobID))
 	}
 	if !t.canAccessJob(ctx, job) {
-		return ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
 	}
 
 	patches := 0
@@ -410,46 +413,46 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 	}
 
 	if patches == 0 {
-		return ErrorResult("at least one update field is required")
+		return toolshared.ErrorResult("at least one update field is required")
 	}
 
 	if err := t.cronService.UpdateJob(job); err != nil {
-		return ErrorResult(fmt.Sprintf("Error updating job: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("Error updating job: %v", err))
 	}
 
 	updated, _ := t.cronService.GetJob(jobID)
-	return SilentResult(fmt.Sprintf("Cron job updated:\n%s", formatCronJobJSON(updated)))
+	return toolshared.SilentResult(fmt.Sprintf("Cron job updated:\n%s", formatCronJobJSON(updated)))
 }
 
-func (t *CronTool) removeJob(ctx context.Context, args map[string]any) *ToolResult {
+func (t *CronTool) removeJob(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	jobID, ok := args["job_id"].(string)
 	if !ok || jobID == "" {
-		return ErrorResult("job_id is required for remove")
+		return toolshared.ErrorResult("job_id is required for remove")
 	}
 
 	job, ok := t.cronService.GetJob(jobID)
 	if !ok {
-		return ErrorResult(fmt.Sprintf("Job %s not found", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s not found", jobID))
 	}
 	if !t.canAccessJob(ctx, job) {
-		return ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
 	}
 
 	if t.cronService.RemoveJob(jobID) {
-		return SilentResult(fmt.Sprintf("Cron job removed: %s", jobID))
+		return toolshared.SilentResult(fmt.Sprintf("Cron job removed: %s", jobID))
 	}
-	return ErrorResult(fmt.Sprintf("Job %s not found", jobID))
+	return toolshared.ErrorResult(fmt.Sprintf("Job %s not found", jobID))
 }
 
-func requiredCronJobID(args map[string]any, action string) (string, *ToolResult) {
+func requiredCronJobID(args map[string]any, action string) (string, *toolshared.ToolResult) {
 	jobID, ok := args["job_id"].(string)
 	if !ok || jobID == "" {
-		return "", ErrorResult(fmt.Sprintf("job_id is required for %s", action))
+		return "", toolshared.ErrorResult(fmt.Sprintf("job_id is required for %s", action))
 	}
 	return jobID, nil
 }
 
-func optionalNonEmptyString(args map[string]any, key string) (string, bool, *ToolResult) {
+func optionalNonEmptyString(args map[string]any, key string) (string, bool, *toolshared.ToolResult) {
 	_, present := args[key]
 	if !present {
 		return "", false, nil
@@ -459,24 +462,24 @@ func optionalNonEmptyString(args map[string]any, key string) (string, bool, *Too
 		return "", false, errResult
 	}
 	if strings.TrimSpace(text) == "" {
-		return "", false, ErrorResult(fmt.Sprintf("%s cannot be empty", key))
+		return "", false, toolshared.ErrorResult(fmt.Sprintf("%s cannot be empty", key))
 	}
 	return text, true, nil
 }
 
-func optionalString(args map[string]any, key string) (string, bool, *ToolResult) {
+func optionalString(args map[string]any, key string) (string, bool, *toolshared.ToolResult) {
 	value, present := args[key]
 	if !present {
 		return "", false, nil
 	}
 	text, ok := value.(string)
 	if !ok {
-		return "", false, ErrorResult(fmt.Sprintf("%s must be a string", key))
+		return "", false, toolshared.ErrorResult(fmt.Sprintf("%s must be a string", key))
 	}
 	return text, true, nil
 }
 
-func cronPayloadKind(args map[string]any, optional bool) (string, bool, *ToolResult) {
+func cronPayloadKind(args map[string]any, optional bool) (string, bool, *toolshared.ToolResult) {
 	value, present := args["payload_kind"]
 	if !present {
 		if optional {
@@ -486,17 +489,17 @@ func cronPayloadKind(args map[string]any, optional bool) (string, bool, *ToolRes
 	}
 	kind, ok := value.(string)
 	if !ok {
-		return "", false, ErrorResult("payload_kind must be a string")
+		return "", false, toolshared.ErrorResult("payload_kind must be a string")
 	}
 	switch kind {
 	case "agent_turn", "deliver_text":
 		return kind, true, nil
 	default:
-		return "", false, ErrorResult("payload_kind must be one of: agent_turn, deliver_text")
+		return "", false, toolshared.ErrorResult("payload_kind must be one of: agent_turn, deliver_text")
 	}
 }
 
-func schedulePatch(args map[string]any) (cron.CronSchedule, bool, *ToolResult) {
+func schedulePatch(args map[string]any) (cron.CronSchedule, bool, *toolshared.ToolResult) {
 	var schedule cron.CronSchedule
 	patches := 0
 
@@ -523,28 +526,30 @@ func schedulePatch(args map[string]any) (cron.CronSchedule, bool, *ToolResult) {
 	if _, present := args["cron_expr"]; present {
 		cronExpr, ok := args["cron_expr"].(string)
 		if !ok {
-			return cron.CronSchedule{}, false, ErrorResult("cron_expr must be a string")
+			return cron.CronSchedule{}, false, toolshared.ErrorResult("cron_expr must be a string")
 		}
 		if strings.TrimSpace(cronExpr) == "" {
-			return cron.CronSchedule{}, false, ErrorResult("cron_expr cannot be empty")
+			return cron.CronSchedule{}, false, toolshared.ErrorResult("cron_expr cannot be empty")
 		}
 		schedule = cron.CronSchedule{Kind: "cron", Expr: cronExpr}
 		patches++
 	}
 
 	if patches > 1 {
-		return cron.CronSchedule{}, false, ErrorResult("only one of at_seconds, every_seconds, or cron_expr can be set")
+		return cron.CronSchedule{}, false, toolshared.ErrorResult(
+			"only one of at_seconds, every_seconds, or cron_expr can be set",
+		)
 	}
 	return schedule, patches == 1, nil
 }
 
-func positiveSeconds(args map[string]any, key string) (int64, *ToolResult) {
+func positiveSeconds(args map[string]any, key string) (int64, *toolshared.ToolResult) {
 	value := args[key]
 	var seconds int64
 	switch v := value.(type) {
 	case float64:
 		if v != float64(int64(v)) {
-			return 0, ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
+			return 0, toolshared.ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
 		}
 		seconds = int64(v)
 	case int:
@@ -552,28 +557,28 @@ func positiveSeconds(args map[string]any, key string) (int64, *ToolResult) {
 	case int64:
 		seconds = v
 	default:
-		return 0, ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
+		return 0, toolshared.ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
 	}
 	if seconds <= 0 {
-		return 0, ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
+		return 0, toolshared.ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
 	}
 	return seconds, nil
 }
 
-func (t *CronTool) validateCommandMutation(ctx context.Context, args map[string]any) *ToolResult {
-	channel := ToolChannel(ctx)
-	chatID := ToolChatID(ctx)
+func (t *CronTool) validateCommandMutation(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	channel := toolshared.ToolChannel(ctx)
+	chatID := toolshared.ToolChatID(ctx)
 	if !t.execEnabled {
-		return ErrorResult("command execution is disabled")
+		return toolshared.ErrorResult("command execution is disabled")
 	}
 	if !constants.IsInternalChannel(channel) && !isCommandAllowedRemote(channel, chatID, t.commandAllowedRemotes) {
-		return ErrorResult(
+		return toolshared.ErrorResult(
 			"updating command execution is restricted to internal channels or configured remote channels",
 		)
 	}
 	commandConfirm, _ := args["command_confirm"].(bool)
 	if !t.allowCommand && !commandConfirm {
-		return ErrorResult("command_confirm=true is required when allow_command is disabled")
+		return toolshared.ErrorResult("command_confirm=true is required when allow_command is disabled")
 	}
 	return nil
 }
@@ -602,12 +607,12 @@ func isCommandAllowedRemote(channel, chatID string, allowed []string) bool {
 }
 
 func (t *CronTool) canAccessJob(ctx context.Context, job *cron.CronJob) bool {
-	channel := ToolChannel(ctx)
+	channel := toolshared.ToolChannel(ctx)
 	if constants.IsInternalChannel(channel) {
 		return true
 	}
 
-	chatID := ToolChatID(ctx)
+	chatID := toolshared.ToolChatID(ctx)
 	if channel == "" || chatID == "" {
 		return false
 	}
@@ -628,30 +633,30 @@ func formatCronJobJSON(job *cron.CronJob) string {
 	return string(data)
 }
 
-func (t *CronTool) enableJob(ctx context.Context, args map[string]any, enable bool) *ToolResult {
+func (t *CronTool) enableJob(ctx context.Context, args map[string]any, enable bool) *toolshared.ToolResult {
 	jobID, ok := args["job_id"].(string)
 	if !ok || jobID == "" {
-		return ErrorResult("job_id is required for enable/disable")
+		return toolshared.ErrorResult("job_id is required for enable/disable")
 	}
 
 	job, ok := t.cronService.GetJob(jobID)
 	if !ok {
-		return ErrorResult(fmt.Sprintf("Job %s not found", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s not found", jobID))
 	}
 	if !t.canAccessJob(ctx, job) {
-		return ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s is not accessible from this channel", jobID))
 	}
 
 	updatedJob := t.cronService.EnableJob(jobID, enable)
 	if updatedJob == nil {
-		return ErrorResult(fmt.Sprintf("Job %s not found", jobID))
+		return toolshared.ErrorResult(fmt.Sprintf("Job %s not found", jobID))
 	}
 
 	status := "enabled"
 	if !enable {
 		status = "disabled"
 	}
-	return SilentResult(fmt.Sprintf("Cron job '%s' %s", updatedJob.Name, status))
+	return toolshared.SilentResult(fmt.Sprintf("Cron job '%s' %s", updatedJob.Name, status))
 }
 
 // ExecuteJob executes a cron job through the agent

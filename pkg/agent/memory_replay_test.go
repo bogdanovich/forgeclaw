@@ -19,6 +19,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/seahorse"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestMemoryReplayCorrectionDeletionAndAudit(t *testing.T) {
@@ -66,7 +67,7 @@ func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
 	builder := NewContextBuilder(workspace)
 	_ = builder.BuildSystemPromptWithCache()
 	tool := tools.NewMemoryTool(workspace, builder.InvalidateCache, eventBus)
-	results := make([]*tools.ToolResult, 0, 3)
+	results := make([]*toolshared.ToolResult, 0, 3)
 	results = append(results, tool.Execute(t.Context(), map[string]any{
 		"operation": "replace", "content": staleFact, "replacement": correctedFact,
 	}))
@@ -260,7 +261,7 @@ func replayRecallIsolation(t *testing.T) recallReplay {
 	previousID := seed("epoch:a:previous", "route:chat:sender-a", "main", "previous")
 	otherSenderID := seed("epoch:b", "route:chat:sender-b", "main", "other-sender")
 	otherAgentID := seed("epoch:reviewer", "route:chat:sender-a", "reviewer", "other-agent")
-	toolCtx := tools.WithToolSessionContext(ctx, "main", "epoch:a:current", &session.SessionScope{
+	toolCtx := toolshared.WithToolSessionContext(ctx, "main", "epoch:a:current", &session.SessionScope{
 		Version: session.ScopeVersionV2, AgentID: "main", RouteScopeKey: "route:chat:sender-a",
 	})
 

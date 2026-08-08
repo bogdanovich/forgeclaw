@@ -26,7 +26,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/state"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
 	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
@@ -610,7 +610,7 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	if defaultAgent == nil {
 		t.Fatal("expected default agent")
 	}
-	mt := tools.NewMessageTool()
+	mt := integrationtools.NewMessageTool()
 	mt.SetSendCallback(func(
 		ctx context.Context,
 		channel, chatID, content, replyToMessageID string,
@@ -621,7 +621,7 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	defaultAgent.Tools.Register(mt)
 
 	result := mt.Execute(
-		tools.WithToolSessionContext(context.Background(), "main", "session-1", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session-1", nil),
 		map[string]any{
 			"content": "ack",
 			"channel": "telegram",
@@ -661,7 +661,7 @@ func TestPublishResponseAlwaysPublishMarksFinalReplyAfterMessageTool(t *testing.
 	if defaultAgent == nil {
 		t.Fatal("expected default agent")
 	}
-	mt := tools.NewMessageTool()
+	mt := integrationtools.NewMessageTool()
 	mt.SetSendCallback(func(
 		ctx context.Context,
 		channel, chatID, content, replyToMessageID string,
@@ -672,7 +672,7 @@ func TestPublishResponseAlwaysPublishMarksFinalReplyAfterMessageTool(t *testing.
 	defaultAgent.Tools.Register(mt)
 
 	result := mt.Execute(
-		tools.WithToolSessionContext(context.Background(), "main", "session-1", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session-1", nil),
 		map[string]any{
 			"content": "ack",
 			"channel": "telegram",
@@ -2488,35 +2488,35 @@ tools:
 
 // TestToolContext_Updates verifies tool context helpers work correctly
 func TestToolContext_Updates(t *testing.T) {
-	ctx := tools.WithToolContext(context.Background(), "telegram", "chat-42")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-42")
 
-	if got := tools.ToolChannel(ctx); got != "telegram" {
+	if got := toolshared.ToolChannel(ctx); got != "telegram" {
 		t.Errorf("expected channel 'telegram', got %q", got)
 	}
-	if got := tools.ToolChatID(ctx); got != "chat-42" {
+	if got := toolshared.ToolChatID(ctx); got != "chat-42" {
 		t.Errorf("expected chatID 'chat-42', got %q", got)
 	}
 
 	// Empty context returns empty strings
-	if got := tools.ToolChannel(context.Background()); got != "" {
+	if got := toolshared.ToolChannel(context.Background()); got != "" {
 		t.Errorf("expected empty channel from bare context, got %q", got)
 	}
 
-	inboundCtx := tools.WithToolInboundContext(
+	inboundCtx := toolshared.WithToolInboundContext(
 		context.Background(),
 		"telegram",
 		"chat-42",
 		"msg-123",
 		"msg-100",
 	)
-	if got := tools.ToolMessageID(inboundCtx); got != "msg-123" {
+	if got := toolshared.ToolMessageID(inboundCtx); got != "msg-123" {
 		t.Errorf("expected messageID 'msg-123', got %q", got)
 	}
-	if got := tools.ToolReplyToMessageID(inboundCtx); got != "msg-100" {
+	if got := toolshared.ToolReplyToMessageID(inboundCtx); got != "msg-100" {
 		t.Errorf("expected replyToMessageID 'msg-100', got %q", got)
 	}
 
-	metadataCtx := tools.WithToolInboundMetadata(inboundCtx, bus.InboundContext{
+	metadataCtx := toolshared.WithToolInboundMetadata(inboundCtx, bus.InboundContext{
 		Channel:      "telegram",
 		ChatID:       "chat-42",
 		SenderID:     "sender-1",
@@ -2528,25 +2528,25 @@ func TestToolContext_Updates(t *testing.T) {
 		ReplyHandles: map[string]string{"sender": "original"},
 		Raw:          map[string]string{"platform": "telegram"},
 	})
-	if got := tools.ToolSenderID(metadataCtx); got != "sender-1" {
+	if got := toolshared.ToolSenderID(metadataCtx); got != "sender-1" {
 		t.Errorf("expected senderID 'sender-1', got %q", got)
 	}
-	if got := tools.ToolActorID(metadataCtx); got != "actor-1" {
+	if got := toolshared.ToolActorID(metadataCtx); got != "actor-1" {
 		t.Errorf("expected actorID 'actor-1', got %q", got)
 	}
-	if got := tools.ToolOriginID(metadataCtx); got != "forwarded-user" {
+	if got := toolshared.ToolOriginID(metadataCtx); got != "forwarded-user" {
 		t.Errorf("expected originID 'forwarded-user', got %q", got)
 	}
-	if got := tools.ToolOriginType(metadataCtx); got != "forwarded_message" {
+	if got := toolshared.ToolOriginType(metadataCtx); got != "forwarded_message" {
 		t.Errorf("expected originType 'forwarded_message', got %q", got)
 	}
-	if got := tools.ToolSourceRef(metadataCtx); got != "telegram:chat-42:msg-123" {
+	if got := toolshared.ToolSourceRef(metadataCtx); got != "telegram:chat-42:msg-123" {
 		t.Errorf("expected sourceRef 'telegram:chat-42:msg-123', got %q", got)
 	}
-	firstRead := tools.ToolInboundContext(metadataCtx)
+	firstRead := toolshared.ToolInboundContext(metadataCtx)
 	firstRead.ReplyHandles["sender"] = "mutated"
 	firstRead.Raw["platform"] = "mutated"
-	secondRead := tools.ToolInboundContext(metadataCtx)
+	secondRead := toolshared.ToolInboundContext(metadataCtx)
 	if got := secondRead.ReplyHandles["sender"]; got != "original" {
 		t.Errorf("expected cloned reply handles to remain original, got %q", got)
 	}
@@ -2554,16 +2554,16 @@ func TestToolContext_Updates(t *testing.T) {
 		t.Errorf("expected cloned raw map to remain telegram, got %q", got)
 	}
 
-	rawMetadataCtx := tools.WithToolInboundMetadata(context.Background(), bus.InboundContext{
+	rawMetadataCtx := toolshared.WithToolInboundMetadata(context.Background(), bus.InboundContext{
 		Channel:   "slack",
 		ChatID:    "C123",
 		SenderID:  "U123",
 		MessageID: "1712.01",
 	})
-	if got := tools.ToolActorID(rawMetadataCtx); got != "U123" {
+	if got := toolshared.ToolActorID(rawMetadataCtx); got != "U123" {
 		t.Errorf("expected raw metadata actorID to default to sender U123, got %q", got)
 	}
-	if got := tools.ToolSourceRef(rawMetadataCtx); got != "slack:C123:1712.01" {
+	if got := toolshared.ToolSourceRef(rawMetadataCtx); got != "slack:C123:1712.01" {
 		t.Errorf("expected raw metadata sourceRef 'slack:C123:1712.01', got %q", got)
 	}
 }
@@ -2964,7 +2964,7 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 			SendResponse: true,
 		}, turnResult{
 			finalContent: finalText,
-			completionMedia: []tools.CompletionMedia{{
+			completionMedia: []toolshared.CompletionMedia{{
 				Ref:         ref,
 				Type:        "video",
 				Filename:    "reel.mp4",
@@ -3073,7 +3073,7 @@ func TestDeliverToolResultToUser_NoBusDoesNotReportQueuedMedia(t *testing.T) {
 		chatID:     "chat1",
 		sessionKey: "session-no-bus-media",
 	}
-	result := tools.MediaResult("media payload", []string{ref}).WithResponseHandled()
+	result := toolshared.MediaResult("media payload", []string{ref}).WithResponseHandled()
 
 	_, outcome, err := al.deliverToolResultToUser(context.Background(), ts, result, "test_media")
 	if err != nil {
@@ -3111,7 +3111,7 @@ func TestDeliverExplicitToolOutbound_NoBusDoesNotReportQueuedText(t *testing.T) 
 		chatID:     "chat1",
 		sessionKey: "session-no-bus-text",
 	}
-	result := &tools.ToolResult{
+	result := &toolshared.ToolResult{
 		Outbound: &toolshared.OutboundDelivery{
 			Text: "explicit outbound text",
 		},
@@ -3151,7 +3151,7 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 	}
 	for _, scopeCase := range scopeCases {
 		t.Run("explicit text/"+scopeCase.name, func(t *testing.T) {
-			result := (&tools.ToolResult{}).
+			result := (&toolshared.ToolResult{}).
 				WithOutboundDelivery(toolshared.OutboundDelivery{Text: "checking services"}).
 				WithImmediateDelivery()
 			if _, outcome, err := al.deliverToolResultToUserWithScopes(
@@ -3175,7 +3175,7 @@ func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
 		})
 
 		t.Run("explicit media/"+scopeCase.name, func(t *testing.T) {
-			result := (&tools.ToolResult{}).
+			result := (&toolshared.ToolResult{}).
 				WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
 					Type: "image", Ref: "media://test-image",
 				}}}).
@@ -3215,7 +3215,7 @@ func TestRecoverableToolOutboundRejectsNonDurableRoute(t *testing.T) {
 		channel: "cli", chatID: "chat-1", sessionKey: "session-1",
 	}
 	commitCalls := 0
-	result := (&tools.ToolResult{}).
+	result := (&toolshared.ToolResult{}).
 		WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
 			Type: "image", Ref: "media://recoverable",
 		}}}).
@@ -3239,10 +3239,10 @@ func TestRecoverableToolOutboundRejectsNonDurableRoute(t *testing.T) {
 func TestDeliverFinalTurnToolTextCarriesTraceSettlement(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		result *tools.ToolResult
+		result *toolshared.ToolResult
 	}{
-		{name: "implicit text", result: tools.UserResult("final text")},
-		{name: "explicit text", result: (&tools.ToolResult{}).WithOutboundDelivery(
+		{name: "implicit text", result: toolshared.UserResult("final text")},
+		{name: "explicit text", result: (&toolshared.ToolResult{}).WithOutboundDelivery(
 			toolshared.OutboundDelivery{Text: "final text"},
 		)},
 	} {
@@ -4520,8 +4520,8 @@ func (m *mockCustomTool) Parameters() map[string]any {
 	}
 }
 
-func (m *mockCustomTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
-	return tools.SilentResult("Custom tool executed")
+func (m *mockCustomTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	return toolshared.SilentResult("Custom tool executed")
 }
 
 type handledMediaTool struct {
@@ -4541,16 +4541,16 @@ func (m *handledMediaTool) Parameters() map[string]any {
 	}
 }
 
-func (m *handledMediaTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (m *handledMediaTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	ref, err := m.store.Store(m.path, media.MediaMeta{
 		Filename:    filepath.Base(m.path),
 		ContentType: "image/png",
 		Source:      "test:handled_media_tool",
 	}, "test:handled_media")
 	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
-	return tools.MediaResult("Attachment delivered by tool.", []string{ref}).WithResponseHandled()
+	return toolshared.MediaResult("Attachment delivered by tool.", []string{ref}).WithResponseHandled()
 }
 
 type handledCompletionMediaTool struct {
@@ -4574,22 +4574,22 @@ func (m *handledCompletionMediaTool) Parameters() map[string]any {
 func (m *handledCompletionMediaTool) Execute(
 	ctx context.Context,
 	args map[string]any,
-) *tools.ToolResult {
+) *toolshared.ToolResult {
 	ref, err := m.store.Store(m.path, media.MediaMeta{
 		Filename:    filepath.Base(m.path),
 		ContentType: "video/mp4",
 		Source:      "test:handled_completion_media_tool",
 	}, "test:handled_completion_media")
 	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
-	return (&tools.ToolResult{
+	return (&toolshared.ToolResult{
 		ForLLM:          "Completion media delivered by runtime.",
 		Silent:          true,
 		ResponseHandled: true,
-	}).WithCompletion(&tools.CompletionResult{
+	}).WithCompletion(&toolshared.CompletionResult{
 		Text: m.text,
-		Media: []tools.CompletionMedia{{
+		Media: []toolshared.CompletionMedia{{
 			Ref:         ref,
 			Type:        "video",
 			Filename:    filepath.Base(m.path),
@@ -4612,8 +4612,8 @@ func (m *handledUserTool) Parameters() map[string]any {
 	}
 }
 
-func (m *handledUserTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
-	return tools.UserResult("Handled user output from tool.").WithResponseHandled()
+func (m *handledUserTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	return toolshared.UserResult("Handled user output from tool.").WithResponseHandled()
 }
 
 type handledMediaWithSteeringProvider struct {
@@ -4674,16 +4674,16 @@ func (m *handledMediaWithSteeringTool) Parameters() map[string]any {
 func (m *handledMediaWithSteeringTool) Execute(
 	ctx context.Context,
 	args map[string]any,
-) *tools.ToolResult {
+) *toolshared.ToolResult {
 	ts := turnStateFromContext(ctx)
 	if ts == nil {
-		return tools.ErrorResult("turn state is unavailable")
+		return toolshared.ErrorResult("turn state is unavailable")
 	}
 	if err := m.loop.Steer(
 		ts.workspace, ts.sessionKey, ts.agentID,
 		providers.Message{Role: "user", Content: "what about this instead?"},
 	); err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
 
 	ref, err := m.store.Store(m.path, media.MediaMeta{
@@ -4692,9 +4692,9 @@ func (m *handledMediaWithSteeringTool) Execute(
 		Source:      "test:handled_media_with_steering_tool",
 	}, "test:handled_media_with_steering")
 	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
-	return tools.MediaResult("Attachment delivered by tool.", []string{ref}).WithResponseHandled()
+	return toolshared.MediaResult("Attachment delivered by tool.", []string{ref}).WithResponseHandled()
 }
 
 type mediaArtifactTool struct {
@@ -4714,16 +4714,16 @@ func (m *mediaArtifactTool) Parameters() map[string]any {
 	}
 }
 
-func (m *mediaArtifactTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (m *mediaArtifactTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	ref, err := m.store.Store(m.path, media.MediaMeta{
 		Filename:    filepath.Base(m.path),
 		ContentType: "image/png",
 		Source:      "test:media_artifact_tool",
 	}, "test:media_artifact")
 	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
-	return tools.MediaResult("Artifact created.", []string{ref})
+	return toolshared.MediaResult("Artifact created.", []string{ref})
 }
 
 type immediateMediaTool struct {
@@ -4743,16 +4743,16 @@ func (m *immediateMediaTool) Parameters() map[string]any {
 	}
 }
 
-func (m *immediateMediaTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (m *immediateMediaTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	ref, err := m.store.Store(m.path, media.MediaMeta{
 		Filename:    filepath.Base(m.path),
 		ContentType: "image/png",
 		Source:      "test:immediate_media_tool",
 	}, "test:immediate_media")
 	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
+		return toolshared.ErrorResult(err.Error()).WithError(err)
 	}
-	return tools.MediaResult("Immediate attachment delivered by tool.", []string{ref}).
+	return toolshared.MediaResult("Immediate attachment delivered by tool.", []string{ref}).
 		WithImmediateDelivery()
 }
 
@@ -4775,8 +4775,8 @@ func (m *toolLimitTestTool) Parameters() map[string]any {
 	}
 }
 
-func (m *toolLimitTestTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
-	return tools.SilentResult("tool limit test result")
+func (m *toolLimitTestTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	return toolshared.SilentResult("tool limit test result")
 }
 
 // testHelper executes a message and returns the response

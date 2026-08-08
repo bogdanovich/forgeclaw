@@ -7,6 +7,7 @@ import (
 	"time"
 
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // mockSpawner implements SubTurnSpawner for testing.
@@ -15,7 +16,7 @@ type mockSpawner struct {
 	done       chan struct{}
 }
 
-func (m *mockSpawner) SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*ToolResult, error) {
+func (m *mockSpawner) SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*toolshared.ToolResult, error) {
 	m.lastConfig = cfg
 	if m.done != nil {
 		close(m.done)
@@ -29,7 +30,7 @@ func (m *mockSpawner) SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*Too
 			task = parts[1]
 		}
 	}
-	return &ToolResult{
+	return &toolshared.ToolResult{
 		ForLLM:  "Task completed: " + task,
 		ForUser: "Task completed",
 	}, nil
@@ -145,7 +146,7 @@ func TestSpawnTool_SpawnStatusSeesSpawnedTask(t *testing.T) {
 	spawnTool.SetSpawner(spawner)
 	statusTool := NewSpawnStatusTool(manager)
 
-	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx := toolshared.WithToolContext(context.Background(), "telegram", "chat-1")
 	args := map[string]any{
 		"task":     "Write a haiku about coding",
 		"label":    "haiku-task",
@@ -205,10 +206,10 @@ func TestSpawnTool_ExecuteAsync_MarksCallbackResultUserOnly(t *testing.T) {
 	spawner := &mockSpawner{}
 	tool.SetSpawner(spawner)
 
-	done := make(chan *ToolResult, 1)
+	done := make(chan *toolshared.ToolResult, 1)
 	result := tool.ExecuteAsync(context.Background(), map[string]any{
 		"task": "Write a haiku about coding",
-	}, func(_ context.Context, res *ToolResult) {
+	}, func(_ context.Context, res *toolshared.ToolResult) {
 		done <- res
 	})
 
@@ -221,8 +222,8 @@ func TestSpawnTool_ExecuteAsync_MarksCallbackResultUserOnly(t *testing.T) {
 		if cbResult == nil {
 			t.Fatal("expected callback result")
 		}
-		if cbResult.AsyncDelivery != AsyncDeliveryUserOnly {
-			t.Fatalf("AsyncDelivery = %q, want %q", cbResult.AsyncDelivery, AsyncDeliveryUserOnly)
+		if cbResult.AsyncDelivery != toolshared.AsyncDeliveryUserOnly {
+			t.Fatalf("AsyncDelivery = %q, want %q", cbResult.AsyncDelivery, toolshared.AsyncDeliveryUserOnly)
 		}
 		if !strings.HasPrefix(cbResult.AsyncTaskID, "subagent-") {
 			t.Fatalf("AsyncTaskID = %q, want subagent-*", cbResult.AsyncTaskID)
@@ -240,7 +241,7 @@ func TestSpawnTool_PropagatesDurableTaskIDToSubTurn(t *testing.T) {
 
 	result := tool.ExecuteAsync(context.Background(), map[string]any{
 		"task":          "wait for deployment mode",
-		"delivery_mode": string(AsyncDeliveryParentOnly),
+		"delivery_mode": string(toolshared.AsyncDeliveryParentOnly),
 	}, nil)
 	if result == nil || !result.Async {
 		t.Fatalf("spawn result = %#v", result)
@@ -254,7 +255,7 @@ func TestSpawnTool_PropagatesDurableTaskIDToSubTurn(t *testing.T) {
 		t.Fatalf("subturn TaskID = %q", spawner.lastConfig.TaskID)
 	}
 	rec, ok := manager.taskRegistry.Get(spawner.lastConfig.TaskID)
-	if !ok || rec.DeliveryMode != string(AsyncDeliveryParentOnly) {
+	if !ok || rec.DeliveryMode != string(toolshared.AsyncDeliveryParentOnly) {
 		t.Fatalf("durable spawn task = %#v", rec)
 	}
 }
@@ -266,11 +267,11 @@ func TestSpawnTool_ExecuteAsync_RespectsExplicitDeliveryMode(t *testing.T) {
 	spawner := &mockSpawner{}
 	tool.SetSpawner(spawner)
 
-	done := make(chan *ToolResult, 1)
+	done := make(chan *toolshared.ToolResult, 1)
 	result := tool.ExecuteAsync(context.Background(), map[string]any{
 		"task":          "Write a haiku about coding",
-		"delivery_mode": string(AsyncDeliveryUserAndParent),
-	}, func(_ context.Context, res *ToolResult) {
+		"delivery_mode": string(toolshared.AsyncDeliveryUserAndParent),
+	}, func(_ context.Context, res *toolshared.ToolResult) {
 		done <- res
 	})
 
@@ -283,8 +284,8 @@ func TestSpawnTool_ExecuteAsync_RespectsExplicitDeliveryMode(t *testing.T) {
 		if cbResult == nil {
 			t.Fatal("expected callback result")
 		}
-		if cbResult.AsyncDelivery != AsyncDeliveryUserAndParent {
-			t.Fatalf("AsyncDelivery = %q, want %q", cbResult.AsyncDelivery, AsyncDeliveryUserAndParent)
+		if cbResult.AsyncDelivery != toolshared.AsyncDeliveryUserAndParent {
+			t.Fatalf("AsyncDelivery = %q, want %q", cbResult.AsyncDelivery, toolshared.AsyncDeliveryUserAndParent)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for spawn callback result")

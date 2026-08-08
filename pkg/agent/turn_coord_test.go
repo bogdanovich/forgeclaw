@@ -21,6 +21,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/session"
 	"github.com/bogdanovich/mintclaw/pkg/state"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // =============================================================================
@@ -1799,7 +1800,7 @@ func TestRunTurn_SimpleConversation(t *testing.T) {
 }
 
 func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
-	tool := &steeringSafetyTestTool{name: "side-effect", safety: tools.SteeringSafetyNonCancellable}
+	tool := &steeringSafetyTestTool{name: "side-effect", safety: toolshared.SteeringSafetyNonCancellable}
 	provider := &toolCallRespProvider{toolName: tool.Name(), response: "must not continue"}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()

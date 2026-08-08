@@ -6,7 +6,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type immediateDeliveryFeedbackCheck struct {
@@ -18,9 +18,9 @@ type immediateDeliveryFeedbackCheck struct {
 func (d *immediateDeliveryFeedbackCheck) applySyncToolResultDelivery(
 	_ context.Context,
 	_ *turnState,
-	result *tools.ToolResult,
+	result *toolshared.ToolResult,
 	_ string,
-) ([]providers.Attachment, *tools.ToolResult) {
+) ([]providers.Attachment, *toolshared.ToolResult) {
 	d.wasInvoked = true
 	if *d.dismissed {
 		d.t.Fatal("interim delivery dismissed feedback for subsequent tools")
@@ -61,7 +61,7 @@ func TestPipelineInterimMessageDeliveryDoesNotDismissToolFeedback(t *testing.T) 
 		ToolFeedback:     feedback,
 		SyncToolDelivery: delivery,
 	}}
-	result := tools.UserResult("checking services").WithImmediateDelivery()
+	result := toolshared.UserResult("checking services").WithImmediateDelivery()
 
 	_, got := pipeline.applySyncToolResultDelivery(
 		context.Background(),

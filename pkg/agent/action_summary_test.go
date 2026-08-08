@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestBuildFinalTurnRenderInstructionIncludesWriteAudit(t *testing.T) {
@@ -17,7 +17,7 @@ func TestBuildFinalTurnRenderInstructionIncludesWriteAudit(t *testing.T) {
 			Text:          "File written: notes/family.md",
 			VerifiedWrite: true,
 		}},
-		writeAudit: []tools.WriteAuditEntry{{
+		writeAudit: []toolshared.WriteAuditEntry{{
 			Kind:    "file",
 			Target:  "notes/family.md",
 			Action:  "write",
@@ -40,7 +40,7 @@ func TestBuildFinalTurnRenderInstructionIncludesWriteAudit(t *testing.T) {
 }
 
 func TestAppendTurnWriteAuditNormalizesAndDedupes(t *testing.T) {
-	records := appendTurnWriteAudit(nil, "write_file", []tools.WriteAuditEntry{
+	records := appendTurnWriteAudit(nil, "write_file", []toolshared.WriteAuditEntry{
 		{Target: "notes/a.md", Success: true},
 		{Target: "notes/a.md", Success: true},
 		{Target: "notes/b.md", Success: false},
@@ -75,7 +75,7 @@ func TestBuildFinalTurnRenderInstructionOmitsUnverifiedWriteClaims(t *testing.T)
 				Text:   "Found 3 matching tools.",
 			},
 		},
-		writeAudit: []tools.WriteAuditEntry{{
+		writeAudit: []toolshared.WriteAuditEntry{{
 			Kind:    "file",
 			Target:  "notes/family.md",
 			Action:  "write",
@@ -142,7 +142,7 @@ func TestBuildFinalTurnRenderMessagesSuppressesUnverifiedWriteToolResults(t *tes
 }
 
 func TestWrapToolDeliveryErrorPreservesWriteAudit(t *testing.T) {
-	original := tools.SilentResult("File written: notes/family.md").
+	original := toolshared.SilentResult("File written: notes/family.md").
 		WithFileWriteAudit("notes/family.md", "write", "write_file")
 
 	wrapped := wrapToolDeliveryError(original, "failed to deliver attachment: boom", errors.New("boom"))

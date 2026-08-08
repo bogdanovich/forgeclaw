@@ -8,6 +8,7 @@ import (
 	"time"
 
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestTaskStatusTool_ListsVisibleRecords(t *testing.T) {
@@ -25,7 +26,7 @@ func TestTaskStatusTool_ListsVisibleRecords(t *testing.T) {
 		Task:           "download reel",
 		Status:         taskregistry.StatusSucceeded,
 		DeliveryStatus: taskregistry.DeliverySessionQueued,
-		DeliveryMode:   string(AsyncDeliveryParentOnly),
+		DeliveryMode:   string(toolshared.AsyncDeliveryParentOnly),
 		CreatedAt:      now,
 		StartedAt:      now,
 		EndedAt:        now,
@@ -54,7 +55,7 @@ func TestTaskStatusTool_ListsVisibleRecords(t *testing.T) {
 	}
 
 	tool := NewTaskStatusTool(registry)
-	result := tool.Execute(WithToolContext(context.Background(), "telegram", "chat-1"), nil)
+	result := tool.Execute(toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), nil)
 
 	if result.IsError {
 		t.Fatalf("expected success, got error: %s", result.ForLLM)
@@ -96,7 +97,7 @@ func TestTaskStatusTool_ListReturnsNewestRecordsWithinDefaultLimit(t *testing.T)
 	}
 
 	tool := NewTaskStatusTool(registry)
-	result := tool.Execute(WithToolContext(context.Background(), "telegram", "chat-1"), nil)
+	result := tool.Execute(toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), nil)
 	if result.IsError {
 		t.Fatalf("expected success, got error: %s", result.ForLLM)
 	}
@@ -361,7 +362,7 @@ func TestTaskStatusTool_ListsSpawnAndDelegateRecords(t *testing.T) {
 	}
 
 	tool := NewTaskStatusTool(registry)
-	ctx := WithToolTopicID(WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1")
+	ctx := toolshared.WithToolTopicID(toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1")
 	result := tool.Execute(ctx, nil)
 
 	if result.IsError {
@@ -408,7 +409,7 @@ func TestTaskStatusTool_TaskKindFilter(t *testing.T) {
 	}
 
 	tool := NewTaskStatusTool(registry)
-	result := tool.Execute(WithToolContext(context.Background(), "telegram", "chat-1"), map[string]any{
+	result := tool.Execute(toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), map[string]any{
 		"task_kind": "delegate",
 	})
 
@@ -453,7 +454,7 @@ func TestTaskStatusTool_TopicScoping(t *testing.T) {
 	}
 
 	tool := NewTaskStatusTool(registry)
-	ctx := WithToolTopicID(WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1")
+	ctx := toolshared.WithToolTopicID(toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1")
 	result := tool.Execute(ctx, nil)
 
 	if result.IsError {

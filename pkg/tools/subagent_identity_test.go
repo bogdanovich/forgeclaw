@@ -10,6 +10,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func NewSubagentManager(
@@ -43,13 +44,13 @@ func TestSubagentManagersSharingRegistryAllocateDistinctTaskIDs(t *testing.T) {
 
 	if _, err := first.Spawn(
 		ctx, "first", "", "main", "telegram", "chat",
-		AsyncDeliveryUserOnly, nil,
+		toolshared.AsyncDeliveryUserOnly, nil,
 	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := second.Spawn(
 		ctx, "second", "", "main", "telegram", "chat",
-		AsyncDeliveryUserOnly, nil,
+		toolshared.AsyncDeliveryUserOnly, nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestSubagentSpawnFailsBeforeLaunchWhenTaskCreateFails(t *testing.T) {
 		"main",
 		"telegram",
 		"chat",
-		AsyncDeliveryUserOnly,
+		toolshared.AsyncDeliveryUserOnly,
 		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist spawned subagent") {
@@ -161,9 +162,9 @@ func TestSubagentResultPersistsTerminalStateAndPayloadTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager.recordTaskResult(task, &ToolResult{
+	manager.recordTaskResult(task, &toolshared.ToolResult{
 		ForLLM: "done",
-		Deliverable: &DeliverableResult{
+		Deliverable: &toolshared.DeliverableResult{
 			Text: "structured result",
 		},
 	})

@@ -20,6 +20,10 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/skills"
 	"github.com/bogdanovich/mintclaw/pkg/state"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	fstools "github.com/bogdanovich/mintclaw/pkg/tools/fs"
+	hardwaretools "github.com/bogdanovich/mintclaw/pkg/tools/hardware"
+	integrationtools "github.com/bogdanovich/mintclaw/pkg/tools/integration"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func NewAgentLoop(
@@ -172,7 +176,7 @@ func registerSharedTools(
 		}
 
 		if cfg.Tools.IsToolEnabled("web") {
-			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptionsFromConfig(cfg))
+			searchTool, err := integrationtools.NewWebSearchTool(integrationtools.WebSearchToolOptionsFromConfig(cfg))
 			if err != nil {
 				logger.ErrorCF(
 					"agent",
@@ -184,7 +188,7 @@ func registerSharedTools(
 			}
 		}
 		if cfg.Tools.IsToolEnabled("web_fetch") {
-			fetchTool, err := tools.NewWebFetchToolWithProxy(
+			fetchTool, err := integrationtools.NewWebFetchToolWithProxy(
 				50000,
 				cfg.Tools.Web.Proxy,
 				cfg.Tools.Web.Format,
@@ -203,18 +207,18 @@ func registerSharedTools(
 
 		// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
 		if cfg.Tools.IsToolEnabled("i2c") {
-			registerToolIfAllowed(agent, tools.NewI2CTool())
+			registerToolIfAllowed(agent, hardwaretools.NewI2CTool())
 		}
 		if cfg.Tools.IsToolEnabled("spi") {
-			registerToolIfAllowed(agent, tools.NewSPITool())
+			registerToolIfAllowed(agent, hardwaretools.NewSPITool())
 		}
 		if cfg.Tools.IsToolEnabled("serial") {
-			registerToolIfAllowed(agent, tools.NewSerialTool())
+			registerToolIfAllowed(agent, hardwaretools.NewSerialTool())
 		}
 
 		// Message tool
 		if cfg.Tools.IsToolEnabled("message") {
-			messageTool := tools.NewMessageTool()
+			messageTool := integrationtools.NewMessageTool()
 			if cfg.Tools.Message.MediaEnabled {
 				messageTool.ConfigureLocalMedia(
 					agent.Workspace,
@@ -226,7 +230,7 @@ func registerSharedTools(
 			registerToolIfAllowed(agent, messageTool)
 		}
 		if cfg.Tools.IsToolEnabled("reaction") {
-			reactionTool := tools.NewReactionTool()
+			reactionTool := integrationtools.NewReactionTool()
 			reactionTool.SetReactionCallback(
 				func(ctx context.Context, channel, chatID, messageID string) error {
 					if al.channelManager == nil {
@@ -249,7 +253,7 @@ func registerSharedTools(
 
 		// Send file tool (outbound media via MediaStore — store injected later by SetMediaStore)
 		if cfg.Tools.IsToolEnabled("send_file") {
-			sendFileTool := tools.NewSendFileTool(
+			sendFileTool := fstools.NewSendFileTool(
 				agent.Workspace,
 				cfg.Agents.Defaults.RestrictToWorkspace,
 				cfg.Agents.Defaults.GetMaxMediaSize(),
@@ -260,11 +264,11 @@ func registerSharedTools(
 		}
 
 		if ttsProvider != nil {
-			registerToolIfAllowed(agent, tools.NewSendTTSTool(ttsProvider, nil))
+			registerToolIfAllowed(agent, integrationtools.NewSendTTSTool(ttsProvider, nil))
 		}
 
 		if cfg.Tools.IsToolEnabled("load_image") {
-			loadImageTool := tools.NewLoadImageTool(
+			loadImageTool := fstools.NewLoadImageTool(
 				agent.Workspace,
 				cfg.Agents.Defaults.RestrictToWorkspace,
 				cfg.Agents.Defaults.GetMaxMediaSize(),
@@ -296,13 +300,13 @@ func registerSharedTools(
 					cfg.Tools.Skills.SearchCache.MaxSize,
 					time.Duration(cfg.Tools.Skills.SearchCache.TTLSeconds)*time.Second,
 				)
-				registerToolIfAllowed(agent, tools.NewFindSkillsTool(registryMgr, searchCache))
+				registerToolIfAllowed(agent, integrationtools.NewFindSkillsTool(registryMgr, searchCache))
 			}
 
 			if install_skills_enable {
 				registerToolIfAllowed(
 					agent,
-					tools.NewInstallSkillTool(registryMgr, agent.Workspace),
+					integrationtools.NewInstallSkillTool(registryMgr, agent.Workspace),
 				)
 			}
 		}
@@ -344,7 +348,7 @@ func registerSharedTools(
 				maxTokens int,
 				temperature float64,
 				hasMaxTokens, hasTemperature bool,
-			) (*tools.ToolResult, error) {
+			) (*toolshared.ToolResult, error) {
 				// 1. Recover parent Turn State from Context
 				parentTS := turnStateFromContext(ctx)
 				if parentTS == nil {
@@ -355,13 +359,13 @@ func registerSharedTools(
 						turnID:         "adhoc-root",
 						depth:          0,
 						session:        nil, // Ephemeral session not needed for adhoc spawn
-						pendingResults: make(chan *tools.ToolResult, 16),
+						pendingResults: make(chan *toolshared.ToolResult, 16),
 						concurrencySem: make(chan struct{}, 5),
 					}
 				}
 
 				// 2. Build Tools slice from registry
-				var tlSlice []tools.Tool
+				var tlSlice []toolshared.Tool
 				for _, name := range tls.List() {
 					if t, ok := tls.Get(name); ok {
 						tlSlice = append(tlSlice, t)

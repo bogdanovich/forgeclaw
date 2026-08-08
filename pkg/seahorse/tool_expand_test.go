@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestExpandToolByMessageIDs(t *testing.T) {
@@ -20,7 +20,7 @@ func TestExpandToolByMessageIDs(t *testing.T) {
 
 	re := &RetrievalEngine{store: s}
 	tool := NewExpandTool(re)
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "test:expand-tool", nil)
+	toolCtx := toolshared.WithToolSessionContext(ctx, "agent", "test:expand-tool", nil)
 
 	result := tool.Execute(toolCtx, map[string]any{
 		"message_ids": []any{fmt.Sprintf("%d", msg1.ID), fmt.Sprintf("%d", msg2.ID)},
@@ -78,7 +78,7 @@ func TestExpandToolWithParts(t *testing.T) {
 
 	re := &RetrievalEngine{store: s}
 	tool := NewExpandTool(re)
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "test:expand-parts", nil)
+	toolCtx := toolshared.WithToolSessionContext(ctx, "agent", "test:expand-parts", nil)
 
 	result := tool.Execute(toolCtx, map[string]any{
 		"message_ids": []any{fmt.Sprintf("%d", msg.ID)},
@@ -149,7 +149,7 @@ func TestExpandToolScopesToCurrentSession(t *testing.T) {
 	otherMsg, _ := s.AddMessage(ctx, other.ConversationID, "user", "other message", 5)
 
 	tool := NewExpandTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "session:current", nil)
+	toolCtx := toolshared.WithToolSessionContext(ctx, "agent", "session:current", nil)
 	result := tool.Execute(toolCtx, map[string]any{
 		"message_ids": []any{
 			float64(currentMsg.ID),
@@ -195,7 +195,7 @@ func TestExpandToolCanExpandRouteConversation(t *testing.T) {
 	}
 
 	tool := NewExpandTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(
+	toolCtx := toolshared.WithToolSessionContext(
 		ctx,
 		"agent",
 		"session:current",
@@ -236,7 +236,7 @@ func TestExpandToolUnknownSessionRejectsIDs(t *testing.T) {
 	msg, _ := s.AddMessage(ctx, conv.ConversationID, "user", "current message", 5)
 
 	tool := NewExpandTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "session:missing", nil)
+	toolCtx := toolshared.WithToolSessionContext(ctx, "agent", "session:missing", nil)
 	result := tool.Execute(toolCtx, map[string]any{
 		"message_ids": []any{float64(msg.ID)},
 	})

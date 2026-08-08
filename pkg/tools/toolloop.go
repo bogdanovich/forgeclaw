@@ -16,6 +16,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
@@ -157,7 +158,7 @@ toolLoop:
 
 		// 7. Execute tool calls in parallel
 		type indexedResult struct {
-			result    *ToolResult
+			result    *toolshared.ToolResult
 			tc        providers.ToolCall
 			semantics loopguard.Semantics
 			decision  loopguard.Decision
@@ -188,7 +189,7 @@ toolLoop:
 								"panic": fmt.Sprintf("%v", r),
 								"stack": string(debug.Stack()),
 							})
-						results[idx].result = ErrorResult(fmt.Sprintf("internal panic in tool %s", tc.Name))
+						results[idx].result = toolshared.ErrorResult(fmt.Sprintf("internal panic in tool %s", tc.Name))
 					}
 				}()
 
@@ -200,11 +201,11 @@ toolLoop:
 						"iteration": iteration,
 					})
 
-				var toolResult *ToolResult
+				var toolResult *toolshared.ToolResult
 				if config.Tools != nil {
 					toolResult = config.Tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, channel, chatID, nil)
 				} else {
-					toolResult = ErrorResult("No tools available")
+					toolResult = toolshared.ErrorResult("No tools available")
 				}
 				results[idx].result = toolResult
 			}(i, tc)
@@ -216,7 +217,7 @@ toolLoop:
 		for i := range results {
 			r := &results[i]
 			if r.result == nil {
-				r.result = ErrorResult("tool returned no result")
+				r.result = toolshared.ErrorResult("tool returned no result")
 			}
 			contentForLLM := r.result.ContentForLLM()
 			if r.decision.AllowsExecution() {
@@ -252,7 +253,7 @@ toolLoop:
 	}, nil
 }
 
-func legacyBlockedToolResult(decision loopguard.Decision) *ToolResult {
+func legacyBlockedToolResult(decision loopguard.Decision) *toolshared.ToolResult {
 	payload := map[string]any{
 		"error": decision.Message,
 		"loop_guard": map[string]any{
@@ -262,9 +263,9 @@ func legacyBlockedToolResult(decision loopguard.Decision) *ToolResult {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return ErrorResult("tool execution blocked by loop protection")
+		return toolshared.ErrorResult("tool execution blocked by loop protection")
 	}
-	return ErrorResult(string(data))
+	return toolshared.ErrorResult(string(data))
 }
 
 func legacyAppendLoopGuidance(content string, decision loopguard.Decision) string {

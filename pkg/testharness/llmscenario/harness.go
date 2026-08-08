@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // ProviderCall captures one model request made by the runtime.
@@ -142,14 +142,14 @@ type StubTool struct {
 	NameValue        string
 	DescriptionValue string
 	ParametersValue  map[string]any
-	Result           *tools.ToolResult
-	ExecuteFunc      func(context.Context, map[string]any) *tools.ToolResult
+	Result           *toolshared.ToolResult
+	ExecuteFunc      func(context.Context, map[string]any) *toolshared.ToolResult
 
 	mu    sync.Mutex
 	calls []ToolCallRecord
 }
 
-func NewStubTool(name string, result *tools.ToolResult) *StubTool {
+func NewStubTool(name string, result *toolshared.ToolResult) *StubTool {
 	return &StubTool{
 		NameValue:        name,
 		DescriptionValue: "deterministic scenario stub tool",
@@ -173,12 +173,12 @@ func (t *StubTool) Parameters() map[string]any {
 	return cloneMap(t.ParametersValue)
 }
 
-func (t *StubTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *StubTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	t.mu.Lock()
 	t.calls = append(t.calls, ToolCallRecord{
 		Args:    cloneMap(args),
-		Channel: tools.ToolChannel(ctx),
-		ChatID:  tools.ToolChatID(ctx),
+		Channel: toolshared.ToolChannel(ctx),
+		ChatID:  toolshared.ToolChatID(ctx),
 	})
 	t.mu.Unlock()
 
@@ -188,7 +188,7 @@ func (t *StubTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	if t.Result != nil {
 		return t.Result
 	}
-	return tools.NewToolResult("")
+	return toolshared.NewToolResult("")
 }
 
 func (t *StubTool) Calls() []ToolCallRecord {

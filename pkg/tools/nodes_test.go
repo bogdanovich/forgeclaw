@@ -11,6 +11,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type fakeNodeDiscoverySource struct {
@@ -84,7 +85,7 @@ func TestNodeDiscoveryToolListUsesEffectiveAgentPolicy(t *testing.T) {
 	tool := NewNodeDiscoveryTool(cfg, source)
 
 	mainResult := tool.Execute(
-		WithToolSessionContext(context.Background(), "main", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{"action": "list"},
 	)
 	mainPayload := decodeNodeResult(t, mainResult)
@@ -110,7 +111,7 @@ func TestNodeDiscoveryToolListUsesEffectiveAgentPolicy(t *testing.T) {
 	}
 
 	opsResult := tool.Execute(
-		WithToolSessionContext(context.Background(), "OPS", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "OPS", "session", nil),
 		map[string]any{"action": "list"},
 	)
 	opsPayload := decodeNodeResult(t, opsResult)
@@ -163,7 +164,7 @@ func TestNodeDiscoveryToolReturnsOneBoundedCommandContract(t *testing.T) {
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 
 	summary := tool.Execute(ctx, map[string]any{"action": "describe", "target": "build"})
 	if summary.IsError {
@@ -244,7 +245,7 @@ func TestNodeDiscoveryProjectsOnlyConfiguredFileProfile(t *testing.T) {
 		connected: map[nodes.ID]bool{snapshot.ID: true},
 	}
 	result := NewNodeDiscoveryTool(cfg, source).Execute(
-		WithToolSessionContext(context.Background(), "main", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{
 			"action":  "describe",
 			"target":  "build",
@@ -309,7 +310,7 @@ func TestNodeDiscoveryProjectsOnlyConfiguredServiceProfile(t *testing.T) {
 	target.ServiceProfile = "server-services"
 	cfg.Execution.Targets["build"] = target
 	result := NewNodeDiscoveryTool(cfg, source).Execute(
-		WithToolSessionContext(context.Background(), "main", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{
 			"action":  "describe",
 			"target":  "build",
@@ -345,7 +346,7 @@ func TestNodeDiscoveryProjectsOnlyConfiguredServiceProfile(t *testing.T) {
 	target.ServiceProfile = "secret-services"
 	cfg.Execution.Targets["build"] = target
 	secretResult := NewNodeDiscoveryTool(cfg, source).Execute(
-		WithToolSessionContext(context.Background(), "main", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
 	)
 	secretPayload := decodeNodeResult(t, secretResult)
@@ -356,7 +357,7 @@ func TestNodeDiscoveryProjectsOnlyConfiguredServiceProfile(t *testing.T) {
 	target.ServiceProfile = ""
 	cfg.Execution.Targets["build"] = target
 	denied := NewNodeDiscoveryTool(cfg, source).Execute(
-		WithToolSessionContext(context.Background(), "main", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
 	)
 	if !denied.IsError || !strings.Contains(denied.ForLLM, "unavailable") {
@@ -386,7 +387,7 @@ func TestNodeDiscoveryBindsConfiguredServiceApprovalBypass(t *testing.T) {
 	target := cfg.Execution.Targets["build"]
 	target.ServiceProfile = "server-services"
 	cfg.Execution.Targets["build"] = target
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 	args := map[string]any{
 		"action": "describe", "target": "build", "command": descriptor.Name,
 	}
@@ -487,7 +488,7 @@ func TestNodeDiscoveryAdmitsMaximumServiceActionProjection(t *testing.T) {
 	cfg.Execution.Targets["build"] = target
 	cfg.Tools.Approval.BypassNodeTargets = []string{"build"}
 	result := NewNodeDiscoveryTool(cfg, source).Execute(
-		WithToolSessionContext(context.Background(), "main", "session", nil),
+		toolshared.WithToolSessionContext(context.Background(), "main", "session", nil),
 		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
 	)
 	payload := decodeNodeResult(t, result)
@@ -672,7 +673,7 @@ func TestNodeDiscoveryToolFailsClosedForOversizedCommandProjection(t *testing.T)
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 	summary := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
 		"action": "describe",
 		"target": "build",
@@ -734,7 +735,7 @@ func TestNodeDiscoveryToolBoundsAndSortsMaximumCatalog(t *testing.T) {
 		},
 	}
 	tool := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 	args := map[string]any{"action": "describe", "target": "build"}
 	first := tool.Execute(ctx, args)
 	second := tool.Execute(ctx, args)
@@ -791,7 +792,7 @@ func TestNodeDiscoveryRevisionTracksAuthorityButNotHeartbeat(t *testing.T) {
 		connected:     map[nodes.ID]bool{snapshot.ID: true},
 		registrations: map[nodes.ID]nodes.Registration{snapshot.ID: registration},
 	}
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 	revision := func(tool *NodeDiscoveryTool) string {
 		t.Helper()
 		payload := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
@@ -874,7 +875,7 @@ func TestNodeDiscoveryRevisionChangesWhenAliasMovesToAnotherIdentity(t *testing.
 		registrations: map[nodes.ID]nodes.Registration{snapshot.ID: registration},
 	}
 	tool := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 	revision := func() string {
 		t.Helper()
 		payload := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
@@ -928,7 +929,7 @@ func TestNodeDiscoveryToolDescribeRedactsIdentityAndUnapprovedCapabilities(t *te
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 
 	result := tool.Execute(ctx, map[string]any{"action": "describe", "target": "build"})
 	if result.IsError {
@@ -974,7 +975,7 @@ func TestNodeDiscoveryToolRequiresReapprovalForChangedCatalog(t *testing.T) {
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 
 	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
 	listPayload := decodeNodeResult(t, listResult)
@@ -1017,7 +1018,7 @@ func TestNodeDiscoveryToolDoesNotTrustPersistedConnectedStateAfterRestart(t *tes
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 
 	for _, action := range []map[string]any{
 		{"action": "list"},
@@ -1050,7 +1051,7 @@ func TestNodeDiscoveryToolDoesNotSuggestReapprovalForRevokedNode(t *testing.T) {
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 
 	for _, action := range []map[string]any{
 		{"action": "list"},
@@ -1093,7 +1094,7 @@ func TestNodeDiscoveryToolOmitsUntrustedNodeClaims(t *testing.T) {
 		},
 	}
 	tool := NewNodeDiscoveryTool(cfg, source)
-	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "main", "session", nil)
 
 	for _, action := range []map[string]any{
 		{"action": "list"},
@@ -1118,7 +1119,7 @@ func TestNodeDiscoveryToolOmitsUntrustedNodeClaims(t *testing.T) {
 
 func TestNodeDiscoveryToolRejectsInvisibleTarget(t *testing.T) {
 	tool := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), &fakeNodeDiscoverySource{})
-	ctx := WithToolSessionContext(context.Background(), "ops", "session", nil)
+	ctx := toolshared.WithToolSessionContext(context.Background(), "ops", "session", nil)
 	result := tool.Execute(ctx, map[string]any{"action": "describe", "target": "build"})
 	if !result.IsError || !strings.Contains(result.ForLLM, "not visible") {
 		t.Fatalf("result = %#v, want invisible-target error", result)
@@ -1158,7 +1159,7 @@ func TestNodeDiscoveryToolRuntimeClassification(t *testing.T) {
 	if got := tool.ToolLoopSemantics(); got != loopguard.SemanticsReadOnlyIdempotent {
 		t.Fatalf("loop semantics = %q", got)
 	}
-	if got := tool.ToolSteeringSafety(nil); got != SteeringSafetyReadOnly {
+	if got := tool.ToolSteeringSafety(nil); got != toolshared.SteeringSafetyReadOnly {
 		t.Fatalf("steering safety = %q", got)
 	}
 }
@@ -1191,7 +1192,7 @@ func nodeDiscoveryTestConfig() *config.Config {
 	}
 }
 
-func decodeNodeResult(t *testing.T, result *ToolResult) map[string]any {
+func decodeNodeResult(t *testing.T, result *toolshared.ToolResult) map[string]any {
 	t.Helper()
 	if result.IsError {
 		t.Fatalf("tool result error: %s", result.ForLLM)

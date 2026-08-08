@@ -56,6 +56,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/state"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -481,7 +482,7 @@ func setupSafeRestartTool(
 	if !cfg.Gateway.SafeRestart.Enabled {
 		return nil
 	}
-	err := agentLoop.RegisterRuntimeTool("gateway_restart", func(cfg *config.Config) (tools.Tool, error) {
+	err := agentLoop.RegisterRuntimeTool("gateway_restart", func(cfg *config.Config) (toolshared.Tool, error) {
 		return newGatewayRestartToolFromConfig(cfg, msgBus, preflightOptions)
 	})
 	if err != nil {
@@ -498,7 +499,7 @@ func setupDeployTool(cfg *config.Config, agentLoop *agent.AgentLoop) error {
 	if cfg == nil || !cfg.Gateway.Deploy.Enabled {
 		return nil
 	}
-	return agentLoop.RegisterRuntimeTool("gateway_deploy", func(reloadCfg *config.Config) (tools.Tool, error) {
+	return agentLoop.RegisterRuntimeTool("gateway_deploy", func(reloadCfg *config.Config) (toolshared.Tool, error) {
 		if reloadCfg == nil || !reloadCfg.Gateway.Deploy.Enabled {
 			return nil, nil
 		}
@@ -542,7 +543,7 @@ func setupNodeTools(
 			}
 		}
 	}
-	if err := agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (tools.Tool, error) {
+	if err := agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (toolshared.Tool, error) {
 		if reloadCfg == nil || !reloadCfg.Nodes.Enabled {
 			return nil, nil
 		}
@@ -557,7 +558,7 @@ func setupNodeTools(
 		"nodes_invoke",
 		nodeInvocationToolFactory(
 			runtime,
-			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
+			func(cfg *config.Config, source tools.NodeInvocationSource) toolshared.Tool {
 				tool := tools.NewNodeInvokeTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
@@ -570,7 +571,7 @@ func setupNodeTools(
 		"nodes_status",
 		nodeInvocationToolFactory(
 			runtime,
-			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
+			func(cfg *config.Config, source tools.NodeInvocationSource) toolshared.Tool {
 				tool := tools.NewNodeStatusTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
@@ -583,7 +584,7 @@ func setupNodeTools(
 		"nodes_cancel",
 		nodeInvocationToolFactory(
 			runtime,
-			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
+			func(cfg *config.Config, source tools.NodeInvocationSource) toolshared.Tool {
 				tool := tools.NewNodeCancelTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
@@ -596,7 +597,7 @@ func setupNodeTools(
 		"nodes_file_info",
 		nodeFileTransferToolFactory(
 			runtime,
-			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
+			func(cfg *config.Config, source tools.NodeFileTransferSource) toolshared.Tool {
 				tool := tools.NewNodeFileInfoTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
@@ -609,7 +610,7 @@ func setupNodeTools(
 		"nodes_upload",
 		nodeFileTransferToolFactory(
 			runtime,
-			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
+			func(cfg *config.Config, source tools.NodeFileTransferSource) toolshared.Tool {
 				tool := tools.NewNodeUploadTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
@@ -622,7 +623,7 @@ func setupNodeTools(
 		"nodes_download",
 		nodeFileTransferToolFactory(
 			runtime,
-			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
+			func(cfg *config.Config, source tools.NodeFileTransferSource) toolshared.Tool {
 				tool := tools.NewNodeDownloadTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
@@ -633,7 +634,7 @@ func setupNodeTools(
 	}
 	return agentLoop.RegisterRuntimeTool(
 		"nodes_terminal",
-		func(reloadCfg *config.Config) (tools.Tool, error) {
+		func(reloadCfg *config.Config) (toolshared.Tool, error) {
 			source, err := newNodeTerminalSource(reloadCfg, runtime)
 			if errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
 				return nil, nil
@@ -653,9 +654,9 @@ func setupNodeTools(
 
 func nodeFileTransferToolFactory(
 	runtime *nodeAdmissionRuntime,
-	build func(*config.Config, tools.NodeFileTransferSource) tools.Tool,
+	build func(*config.Config, tools.NodeFileTransferSource) toolshared.Tool,
 ) agent.RuntimeToolFactory {
-	return func(cfg *config.Config) (tools.Tool, error) {
+	return func(cfg *config.Config) (toolshared.Tool, error) {
 		source, err := newNodeFileTransferSource(cfg, runtime)
 		if err != nil {
 			logger.ErrorCF("nodes", "Node file tools disabled", map[string]any{
@@ -672,9 +673,9 @@ func nodeFileTransferToolFactory(
 
 func nodeInvocationToolFactory(
 	runtime *nodeAdmissionRuntime,
-	build func(*config.Config, tools.NodeInvocationSource) tools.Tool,
+	build func(*config.Config, tools.NodeInvocationSource) toolshared.Tool,
 ) agent.RuntimeToolFactory {
-	return func(cfg *config.Config) (tools.Tool, error) {
+	return func(cfg *config.Config) (toolshared.Tool, error) {
 		if configuredNodeFileTarget(cfg) {
 			fileSource, fileErr := newNodeFileTransferSource(cfg, runtime)
 			if fileErr == nil && fileSource != nil {
@@ -712,7 +713,7 @@ func newGatewayRestartToolFromConfig(
 	cfg *config.Config,
 	msgBus *bus.MessageBus,
 	preflightOptions RestartPreflightOptions,
-) (tools.Tool, error) {
+) (toolshared.Tool, error) {
 	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
 		return nil, nil
 	}
@@ -1413,19 +1414,19 @@ func setupCronTool(
 	return cronService, nil
 }
 
-func createHeartbeatHandler(agentLoop *agent.AgentLoop) func(prompt, channel, chatID string) *tools.ToolResult {
-	return func(prompt, channel, chatID string) *tools.ToolResult {
+func createHeartbeatHandler(agentLoop *agent.AgentLoop) func(prompt, channel, chatID string) *toolshared.ToolResult {
+	return func(prompt, channel, chatID string) *toolshared.ToolResult {
 		if channel == "" || chatID == "" {
 			channel, chatID = "cli", "direct"
 		}
 
 		response, err := agentLoop.ProcessHeartbeat(context.Background(), prompt, channel, chatID)
 		if err != nil {
-			return tools.ErrorResult(fmt.Sprintf("Heartbeat error: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("Heartbeat error: %v", err))
 		}
 		if response == "HEARTBEAT_OK" {
-			return tools.SilentResult("Heartbeat OK")
+			return toolshared.SilentResult("Heartbeat OK")
 		}
-		return tools.SilentResult(response)
+		return toolshared.SilentResult(response)
 	}
 }

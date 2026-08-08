@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bogdanovich/mintclaw/pkg/tools"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // GrepTool searches summaries and messages for matching content.
@@ -123,10 +123,10 @@ func (t *GrepTool) Parameters() map[string]any {
 	}
 }
 
-func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	pattern, ok := args["pattern"].(string)
 	if !ok || pattern == "" {
-		return tools.ErrorResult("Missing required 'pattern' argument. Example: {\"pattern\": \"authentication\"}")
+		return toolshared.ErrorResult("Missing required 'pattern' argument. Example: {\"pattern\": \"authentication\"}")
 	}
 
 	input := GrepInput{Pattern: pattern}
@@ -142,11 +142,11 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	}
 	retrievalScope, scopeErr := parseRetrievalScope(args["retrieval_scope"])
 	if scopeErr != nil {
-		return tools.ErrorResult("Grep failed: " + scopeErr.Error())
+		return toolshared.ErrorResult("Grep failed: " + scopeErr.Error())
 	}
 	conversationIDs, resolveErr := resolveToolConversationIDs(ctx, t.engine, retrievalScope)
 	if resolveErr != nil {
-		return tools.ErrorResult("Grep failed: resolve retrieval scope: " + resolveErr.Error())
+		return toolshared.ErrorResult("Grep failed: resolve retrieval scope: " + resolveErr.Error())
 	}
 	input.ConversationIDs = conversationIDs
 	if limit, ok := args["limit"].(float64); ok {
@@ -155,7 +155,7 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	if sinceStr, ok := args["since"].(string); ok && sinceStr != "" {
 		parsed, parseErr := time.Parse(time.RFC3339, sinceStr)
 		if parseErr != nil {
-			return tools.ErrorResult(fmt.Sprintf(
+			return toolshared.ErrorResult(fmt.Sprintf(
 				"Invalid 'since' timestamp. Use RFC3339 format like '2024-01-15T10:00:00Z'. Error: %v",
 				parseErr,
 			))
@@ -165,20 +165,20 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	if beforeStr, ok := args["before"].(string); ok && beforeStr != "" {
 		parsed, parseErr := time.Parse(time.RFC3339, beforeStr)
 		if parseErr != nil {
-			return tools.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", parseErr))
+			return toolshared.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", parseErr))
 		}
 		input.Before = &parsed
 	}
 
 	result, err := t.engine.Grep(ctx, input)
 	if err != nil {
-		return tools.ErrorResult("Grep failed: " + err.Error())
+		return toolshared.ErrorResult("Grep failed: " + err.Error())
 	}
 
 	return grepJSONResult(result)
 }
 
-func grepJSONResult(result *GrepResult) *tools.ToolResult {
+func grepJSONResult(result *GrepResult) *toolshared.ToolResult {
 	summaries := make([]GrepSummaryResult, len(result.Summaries))
 	copy(summaries, result.Summaries)
 
@@ -222,7 +222,7 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 	output := buildOutput()
 	data, err := json.Marshal(output)
 	if err != nil {
-		return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
+		return toolshared.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
 	}
 	for (len(data) > grepToolMaxForLLMBytes || estimateRetrievalResultTokens(data) > retrievalToolMaxTokens) &&
 		(len(summaries) > 0 || len(messages) > 0) {
@@ -241,7 +241,7 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 		output = buildOutput()
 		data, err = json.Marshal(output)
 		if err != nil {
-			return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
 		}
 	}
 
@@ -254,10 +254,10 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 		output = buildOutput()
 		data, err = json.Marshal(output)
 		if err != nil {
-			return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
+			return toolshared.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
 		}
 	}
-	return tools.NewToolResult(string(data))
+	return toolshared.NewToolResult(string(data))
 }
 
 func truncateRunes(s string, maxRunes int) (string, bool) {

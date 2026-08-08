@@ -15,6 +15,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const browserStateFile = "browser.json"
@@ -518,28 +519,28 @@ func setupBrowserTools(cfg *config.Config, agentLoop *agent.AgentLoop, runningSe
 		}, nil
 	}
 	factories := map[string]agent.RuntimeToolFactory{
-		"browser_targets": func(reloadCfg *config.Config) (tools.Tool, error) {
+		"browser_targets": func(reloadCfg *config.Config) (toolshared.Tool, error) {
 			source, err := sourceFor(reloadCfg)
 			if err != nil {
 				return nil, err
 			}
 			return tools.NewBrowserTargetsTool(reloadCfg, source), nil
 		},
-		"browser_session": func(reloadCfg *config.Config) (tools.Tool, error) {
+		"browser_session": func(reloadCfg *config.Config) (toolshared.Tool, error) {
 			source, err := sourceFor(reloadCfg)
 			if err != nil {
 				return nil, err
 			}
 			return tools.NewBrowserSessionTool(reloadCfg, source), nil
 		},
-		"browser_observe": func(reloadCfg *config.Config) (tools.Tool, error) {
+		"browser_observe": func(reloadCfg *config.Config) (toolshared.Tool, error) {
 			source, err := sourceFor(reloadCfg)
 			if err != nil {
 				return nil, err
 			}
 			return tools.NewBrowserObserveTool(reloadCfg, source), nil
 		},
-		"browser_act": func(reloadCfg *config.Config) (tools.Tool, error) {
+		"browser_act": func(reloadCfg *config.Config) (toolshared.Tool, error) {
 			source, err := sourceFor(reloadCfg)
 			if err != nil {
 				return nil, err

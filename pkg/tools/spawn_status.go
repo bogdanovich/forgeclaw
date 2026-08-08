@@ -8,6 +8,7 @@ import (
 	"time"
 
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // SpawnStatusTool reports the status of subagents that were spawned via the
@@ -57,22 +58,22 @@ func (t *SpawnStatusTool) Parameters() map[string]any {
 	}
 }
 
-func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	if t.manager == nil && t.registry == nil {
-		return ErrorResult("Subagent manager not configured")
+		return toolshared.ErrorResult("Subagent manager not configured")
 	}
 
 	// Derive the calling conversation's identity so we can scope results to the
 	// current chat only — preventing cross-conversation task leakage in
 	// multi-user deployments.
-	callerChannel := ToolChannel(ctx)
-	callerChatID := ToolChatID(ctx)
+	callerChannel := toolshared.ToolChannel(ctx)
+	callerChatID := toolshared.ToolChatID(ctx)
 
 	var taskID string
 	if rawTaskID, ok := args["task_id"]; ok && rawTaskID != nil {
 		taskIDStr, ok := rawTaskID.(string)
 		if !ok {
-			return ErrorResult("task_id must be a string")
+			return toolshared.ErrorResult("task_id must be a string")
 		}
 		taskID = strings.TrimSpace(taskIDStr)
 	}
@@ -89,9 +90,9 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 
 	if t.manager == nil {
 		if taskID != "" {
-			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
+			return toolshared.ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
 		}
-		return NewToolResult(
+		return toolshared.NewToolResult(
 			"No visible spawned subagents are registered. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or broader task checks, use task_status.",
 		)
 	}
@@ -101,24 +102,24 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 		// eliminating any data race with the concurrent subagent goroutine.
 		taskCopy, ok := t.manager.GetTaskCopy(taskID)
 		if !ok {
-			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
+			return toolshared.ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
 		}
 
 		// Restrict lookup to tasks that belong to this conversation.
 		if callerChannel != "" && taskCopy.OriginChannel != "" && taskCopy.OriginChannel != callerChannel {
-			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
+			return toolshared.ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
 		}
 		if callerChatID != "" && taskCopy.OriginChatID != "" && taskCopy.OriginChatID != callerChatID {
-			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
+			return toolshared.ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
 		}
 
-		return NewToolResult(spawnStatusFormatTask(&taskCopy))
+		return toolshared.NewToolResult(spawnStatusFormatTask(&taskCopy))
 	}
 
 	// ListTaskCopies returns consistent snapshots under the manager lock.
 	origTasks := t.manager.ListTaskCopies()
 	if len(origTasks) == 0 {
-		return NewToolResult(
+		return toolshared.NewToolResult(
 			"No visible spawned subagents are registered in the current process. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or restart-persistent completed task checks, use task_status.",
 		)
 	}
@@ -139,7 +140,7 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 	}
 
 	if len(tasks) == 0 {
-		return NewToolResult(
+		return toolshared.NewToolResult(
 			"No spawned subagents found for this conversation. This tool only reports tasks started with the spawn tool. For delegate runs or other child-run mechanisms, use task_status.",
 		)
 	}
@@ -173,19 +174,21 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 		sb.WriteString("\n\n")
 	}
 
-	return NewToolResult(strings.TrimRight(sb.String(), "\n"))
+	return toolshared.NewToolResult(strings.TrimRight(sb.String(), "\n"))
 }
 
-func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatID string) (*ToolResult, bool) {
+func (t *SpawnStatusTool) executeFromRegistry(
+	taskID, callerChannel, callerChatID string,
+) (*toolshared.ToolResult, bool) {
 	if taskID != "" {
 		rec, ok := t.registry.Get(taskID)
 		if !ok {
 			return nil, false
 		}
 		if !spawnRecordVisibleToCaller(rec, callerChannel, callerChatID) {
-			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID)), true
+			return toolshared.ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID)), true
 		}
-		return NewToolResult(spawnStatusFormatRecord(rec)), true
+		return toolshared.NewToolResult(spawnStatusFormatRecord(rec)), true
 	}
 
 	records := t.registry.List()
@@ -220,7 +223,7 @@ func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatI
 		sb.WriteString("\n\n")
 	}
 
-	return NewToolResult(strings.TrimRight(sb.String(), "\n")), true
+	return toolshared.NewToolResult(strings.TrimRight(sb.String(), "\n")), true
 }
 
 func spawnStatusSummaryLabel(status string) string {

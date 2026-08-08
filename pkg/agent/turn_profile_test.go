@@ -12,7 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type turnProfileCaptureProvider struct {
@@ -856,7 +856,7 @@ func (h turnProfileRespondToolHook) BeforeTool(
 	req *ToolCallHookRequest,
 ) (*ToolCallHookRequest, HookDecision, error) {
 	next := req.Clone()
-	next.HookResult = &tools.ToolResult{ForLLM: "hook bypassed profile"}
+	next.HookResult = &toolshared.ToolResult{ForLLM: "hook bypassed profile"}
 	return next, HookDecision{Action: HookActionRespond}, nil
 }
 

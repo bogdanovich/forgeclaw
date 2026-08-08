@@ -11,7 +11,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (
@@ -261,8 +261,8 @@ func (t *GatewayRestartTool) Name() string {
 	return "gateway_restart"
 }
 
-func (t *GatewayRestartTool) ToolSteeringSafety(map[string]any) tools.SteeringSafety {
-	return tools.SteeringSafetyCancellable
+func (t *GatewayRestartTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
+	return toolshared.SteeringSafetyCancellable
 }
 
 func (t *GatewayRestartTool) Description() string {
@@ -281,29 +281,29 @@ func (t *GatewayRestartTool) Parameters() map[string]any {
 	}
 }
 
-func (t *GatewayRestartTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *GatewayRestartTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	if t == nil || t.controller == nil {
-		return tools.ErrorResult("gateway restart failed: restart controller is not configured")
+		return toolshared.ErrorResult("gateway restart failed: restart controller is not configured")
 	}
 	reason, _ := args["reason"].(string)
 	result, err := t.controller.RequestRestart(ctx, RestartRequest{
 		Origin: RestartOrigin{
-			Channel:    tools.ToolChannel(ctx),
-			ChatID:     tools.ToolChatID(ctx),
-			TopicID:    tools.ToolTopicID(ctx),
-			SessionKey: tools.ToolSessionKey(ctx),
+			Channel:    toolshared.ToolChannel(ctx),
+			ChatID:     toolshared.ToolChatID(ctx),
+			TopicID:    toolshared.ToolTopicID(ctx),
+			SessionKey: toolshared.ToolSessionKey(ctx),
 		},
 		Reason: reason,
 	})
 	if err != nil {
-		return tools.ErrorResult(fmt.Sprintf("gateway restart failed: %v", err)).WithError(err)
+		return toolshared.ErrorResult(fmt.Sprintf("gateway restart failed: %v", err)).WithError(err)
 	}
 	if result.AlreadyScheduled {
 		message := fmt.Sprintf("Gateway restart for %s is already %s.", result.Service, result.Status)
-		return tools.UserResult(message).WithDeliveryIntent(tools.DeliveryFinalHandled)
+		return toolshared.UserResult(message).WithDeliveryIntent(toolshared.DeliveryFinalHandled)
 	}
 	message := fmt.Sprintf("Gateway restart scheduled for %s. It will run after active work drains.", result.Service)
-	return tools.UserResult(message).WithDeliveryIntent(tools.DeliveryFinalHandled)
+	return toolshared.UserResult(message).WithDeliveryIntent(toolshared.DeliveryFinalHandled)
 }
 
 func validateSystemdUserService(service string) error {

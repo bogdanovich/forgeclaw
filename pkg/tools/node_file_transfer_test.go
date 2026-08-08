@@ -15,6 +15,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type fakeNodeFileTransferSource struct {
@@ -34,7 +35,7 @@ type fakeNodeFileTransferSource struct {
 }
 
 func TestNodeFileTransferDescriptionsDelegateApprovalToRuntime(t *testing.T) {
-	for _, tool := range []Tool{&NodeUploadTool{}, &NodeDownloadTool{}} {
+	for _, tool := range []toolshared.Tool{&NodeUploadTool{}, &NodeDownloadTool{}} {
 		description := tool.Description()
 		if !strings.Contains(description, "call this tool directly") ||
 			!strings.Contains(description, "runtime requests and resumes approval") {
@@ -166,7 +167,7 @@ func TestNodeFileInfoReusesExactApprovalAndQueriesWithoutReplay(t *testing.T) {
 	if result := tool.Execute(ctx, args); !strings.Contains(result.ForLLM, "APPROVAL_REQUIRED") {
 		t.Fatalf("unapproved result = %s", result.ForLLM)
 	}
-	approved := tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	approved := tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), args)
 	payload := decodeNodeResult(t, approved)
 	if payload["state"] != "committed" ||
 		payload["path"] != "/srv/project/config.json" ||
@@ -174,7 +175,7 @@ func TestNodeFileInfoReusesExactApprovalAndQueriesWithoutReplay(t *testing.T) {
 		source.dispatchCalls != 1 {
 		t.Fatalf("approved result = %#v, dispatches=%d", payload, source.dispatchCalls)
 	}
-	repeated := tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	repeated := tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), args)
 	repeatedPayload := decodeNodeResult(t, repeated)
 	if repeatedPayload["state"] != "committed" ||
 		source.dispatchCalls != 1 ||
@@ -338,46 +339,46 @@ func TestNodeFileApprovalContinuationRejectsChangedInputAndActor(t *testing.T) {
 
 	changed := cloneStringAnyMap(args)
 	changed["path"] = "/srv/project/other.json"
-	result := tool.Execute(WithToolApprovalContinuation(ctx, true), changed)
+	result := tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), changed)
 	if !strings.Contains(result.ForLLM, "DISCOVERY_STALE") || source.dispatchCalls != 0 {
 		t.Fatalf("changed continuation = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
 	}
 
 	otherActor := nodeInvocationTestContext("actor-2", "file-call-1")
-	result = tool.Execute(WithToolApprovalContinuation(otherActor, true), args)
+	result = tool.Execute(toolshared.WithToolApprovalContinuation(otherActor, true), args)
 	if !strings.Contains(result.ForLLM, "DISCOVERY_STALE") || source.dispatchCalls != 0 {
 		t.Fatalf("other actor continuation = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
 	}
 
-	otherRoute := WithToolInboundContext(ctx, "telegram", "chat-2", "", "")
-	otherRoute = WithToolInboundMetadata(otherRoute, bus.InboundContext{
+	otherRoute := toolshared.WithToolInboundContext(ctx, "telegram", "chat-2", "", "")
+	otherRoute = toolshared.WithToolInboundMetadata(otherRoute, bus.InboundContext{
 		Channel: "telegram", ChatID: "chat-2", SenderID: "actor-1", ActorID: "actor-1",
 	})
 	contexts := map[string]context.Context{
-		"agent": WithToolSessionContext(
+		"agent": toolshared.WithToolSessionContext(
 			ctx,
 			"other-agent",
 			"history-session",
 			nil,
 		),
-		"routed session": WithToolRouteSessionKey(ctx, "other-route-session"),
+		"routed session": toolshared.WithToolRouteSessionKey(ctx, "other-route-session"),
 		"route":          otherRoute,
-		"workspace": WithToolExecutionIdentity(
+		"workspace": toolshared.WithToolExecutionIdentity(
 			ctx,
 			"/workspace/other",
 			"execution-1",
 		),
-		"execution": WithToolExecutionIdentity(
+		"execution": toolshared.WithToolExecutionIdentity(
 			ctx,
 			"/workspace/main",
 			"execution-2",
 		),
-		"tool call": WithToolCallID(ctx, "file-call-2"),
+		"tool call": toolshared.WithToolCallID(ctx, "file-call-2"),
 	}
 	for name, changedContext := range contexts {
 		t.Run(name, func(t *testing.T) {
 			changedResult := tool.Execute(
-				WithToolApprovalContinuation(changedContext, true),
+				toolshared.WithToolApprovalContinuation(changedContext, true),
 				args,
 			)
 			if !strings.Contains(changedResult.ForLLM, "DISCOVERY_STALE") ||
@@ -388,7 +389,7 @@ func TestNodeFileApprovalContinuationRejectsChangedInputAndActor(t *testing.T) {
 		})
 	}
 
-	result = tool.Execute(WithToolApprovalBypass(ctx, true), args)
+	result = tool.Execute(toolshared.WithToolApprovalBypass(ctx, true), args)
 	if result.IsError || source.dispatchCalls != 1 {
 		t.Fatalf("approval bypass = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
 	}
@@ -416,7 +417,7 @@ func TestNodeFileApprovalBypassDispatchesRequiredUploadAndDownload(t *testing.T)
 		if result := tool.Execute(ctx, args); !strings.Contains(result.ForLLM, "APPROVAL_REQUIRED") {
 			t.Fatalf("unapproved upload = %s", result.ForLLM)
 		}
-		result := tool.Execute(WithToolApprovalBypass(ctx, true), args)
+		result := tool.Execute(toolshared.WithToolApprovalBypass(ctx, true), args)
 		if result.IsError || source.dispatchCalls != 1 {
 			t.Fatalf("bypassed upload = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
 		}
@@ -443,7 +444,7 @@ func TestNodeFileApprovalBypassDispatchesRequiredUploadAndDownload(t *testing.T)
 		if result := tool.Execute(ctx, args); !strings.Contains(result.ForLLM, "APPROVAL_REQUIRED") {
 			t.Fatalf("unapproved download = %s", result.ForLLM)
 		}
-		result := tool.Execute(WithToolApprovalBypass(ctx, true), args)
+		result := tool.Execute(toolshared.WithToolApprovalBypass(ctx, true), args)
 		if result.IsError || source.dispatchCalls != 1 {
 			t.Fatalf("bypassed download = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
 		}
@@ -480,7 +481,7 @@ func TestNodeUploadApprovalContinuationBindsOriginalMediaArtifact(t *testing.T) 
 
 	changed := cloneStringAnyMap(args)
 	changed["artifact_ref"] = "media://artifact-two"
-	result := tool.Execute(WithToolApprovalContinuation(ctx, true), changed)
+	result := tool.Execute(toolshared.WithToolApprovalContinuation(ctx, true), changed)
 	if !strings.Contains(result.ForLLM, "DISCOVERY_STALE") ||
 		source.snapshotCalls != 1 || source.dispatchCalls != 0 {
 		t.Fatalf("changed artifact continuation = %s, snapshots=%d dispatches=%d",

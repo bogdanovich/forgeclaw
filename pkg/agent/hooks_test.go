@@ -18,7 +18,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
@@ -713,9 +713,9 @@ func (t *echoTextTool) Parameters() map[string]any {
 	}
 }
 
-func (t *echoTextTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *echoTextTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	text, _ := args["text"].(string)
-	return tools.SilentResult(text)
+	return toolshared.SilentResult(text)
 }
 
 type toolRewriteHook struct{}
@@ -804,9 +804,9 @@ func (t *echoTextRewrittenTool) Parameters() map[string]any {
 	}
 }
 
-func (t *echoTextRewrittenTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *echoTextRewrittenTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	text, _ := args["text"].(string)
-	return tools.SilentResult("rewritten:" + text)
+	return toolshared.SilentResult("rewritten:" + text)
 }
 
 func TestAgentLoop_Hooks_ToolFeedbackUsesRewrittenToolName(t *testing.T) {
@@ -979,7 +979,7 @@ func (h *respondHook) BeforeTool(
 ) (*ToolCallHookRequest, HookDecision, error) {
 	if h.respondTools[call.Tool] {
 		next := call.Clone()
-		next.HookResult = &tools.ToolResult{
+		next.HookResult = &toolshared.ToolResult{
 			ForLLM:  "hook-responded: " + call.Tool,
 			ForUser: "",
 			Silent:  false,
@@ -1138,22 +1138,22 @@ func TestHookManager_BeforeTool_RespondAction(t *testing.T) {
 }
 
 func TestCloneToolResultPreservesDeliverableReport(t *testing.T) {
-	original := &tools.ToolResult{
+	original := &toolshared.ToolResult{
 		ForLLM: "review finished",
-		Deliverable: &tools.DeliverableResult{
-			Report: &tools.DeliverableReport{
+		Deliverable: &toolshared.DeliverableResult{
+			Report: &toolshared.DeliverableReport{
 				SchemaVersion: "deliverable_report.v1",
 				ReportID:      "review-1",
 				ContentHash:   "abc123",
 				Summary:       "No high-confidence issues found",
-				Claims: []tools.ReportClaim{{
+				Claims: []toolshared.ReportClaim{{
 					Kind:       "negative_evidence",
 					Text:       "No correctness issues found",
 					Confidence: "high",
 					SourceRefs: []string{"diff"},
 					Metadata:   map[string]string{"path": "pkg/review.go"},
 				}},
-				FieldDeltas: []tools.ReportFieldDelta{{
+				FieldDeltas: []toolshared.ReportFieldDelta{{
 					Field: "review_status",
 					To:    "clean",
 				}},
@@ -1215,7 +1215,7 @@ func (h *respondWithMediaHook) BeforeTool(
 ) (*ToolCallHookRequest, HookDecision, error) {
 	if h.respondTools[call.Tool] {
 		next := call.Clone()
-		next.HookResult = &tools.ToolResult{
+		next.HookResult = &toolshared.ToolResult{
 			ForLLM:          h.forLLM,
 			ForUser:         "media result",
 			Media:           h.media,

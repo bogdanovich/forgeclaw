@@ -11,6 +11,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type fakeBrowserToolSource struct {
@@ -279,17 +280,17 @@ func browserToolTestConfig() *config.Config {
 }
 
 func browserToolTestContext() context.Context {
-	ctx := WithToolInboundMetadata(context.Background(), bus.InboundContext{
+	ctx := toolshared.WithToolInboundMetadata(context.Background(), bus.InboundContext{
 		SenderID: "telegram-user-42", ActorID: "person:42",
 	})
-	ctx = WithToolSessionContext(ctx, "browser", "history-session", nil)
-	ctx = WithToolRouteSessionKey(ctx, "telegram:primary:chat:42")
-	ctx = WithToolCallID(ctx, "provider-call/1")
-	ctx = WithToolExecutionIdentity(ctx, "/workspace/private", "execution/1")
-	return WithToolRecoverableOutbound(ctx, true)
+	ctx = toolshared.WithToolSessionContext(ctx, "browser", "history-session", nil)
+	ctx = toolshared.WithToolRouteSessionKey(ctx, "telegram:primary:chat:42")
+	ctx = toolshared.WithToolCallID(ctx, "provider-call/1")
+	ctx = toolshared.WithToolExecutionIdentity(ctx, "/workspace/private", "execution/1")
+	return toolshared.WithToolRecoverableOutbound(ctx, true)
 }
 
-func decodeBrowserToolResult(t *testing.T, result *ToolResult, target any) {
+func decodeBrowserToolResult(t *testing.T, result *toolshared.ToolResult, target any) {
 	t.Helper()
 	if result == nil || result.IsError {
 		t.Fatalf("result = %#v, want success", result)
@@ -328,7 +329,7 @@ func TestBrowserTargetsIsScopedAndSideEffectFree(t *testing.T) {
 		t.Fatalf("browser targets = %#v", result)
 	}
 
-	other := WithToolSessionContext(browserToolTestContext(), "main", "history-session", nil)
+	other := toolshared.WithToolSessionContext(browserToolTestContext(), "main", "history-session", nil)
 	denied := tool.Execute(other, nil)
 	if denied == nil || !denied.IsError || !strings.Contains(denied.ContentForLLM(), `"code":"not_granted"`) {
 		t.Fatalf("ungranted result = %#v", denied)
@@ -578,7 +579,7 @@ func TestBrowserActSchemaAdvertisesAdmittedDownload(t *testing.T) {
 
 func TestBrowserScreenshotRequiresRecoverableOutboundOwnerBeforeCapture(t *testing.T) {
 	source := &fakeBrowserToolSource{available: true}
-	ctx := WithToolRecoverableOutbound(browserToolTestContext(), false)
+	ctx := toolshared.WithToolRecoverableOutbound(browserToolTestContext(), false)
 	result := NewBrowserObserveTool(browserToolTestConfig(), source).Execute(
 		ctx,
 		map[string]any{"browser_session_id": "browser_session_1", "screenshot": true},
@@ -821,7 +822,7 @@ func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 		!strings.Contains(suspended.Suspension.PromptSummary, "external_commit") {
 		t.Fatalf("suspended result = %#v; execute calls = %d", suspended, source.executeCalls)
 	}
-	resumeCtx := WithToolApprovalContinuation(browserToolTestContext(), true)
+	resumeCtx := toolshared.WithToolApprovalContinuation(browserToolTestContext(), true)
 	var result browserActionResult
 	decodeBrowserToolResult(t, tool.Execute(resumeCtx, args), &result)
 	if result.InvocationID != "invocation_1" || result.Observation == nil ||
@@ -934,7 +935,7 @@ func TestBrowserActPreservesDryRunPolicyDenial(t *testing.T) {
 		executeErr: browser.ErrDenied,
 	}
 	result := NewBrowserActTool(browserToolTestConfig(), source).Execute(
-		WithToolApprovalContinuation(browserToolTestContext(), true),
+		toolshared.WithToolApprovalContinuation(browserToolTestContext(), true),
 		map[string]any{
 			"browser_session_id": "browser_session_1", "tab_id": "tab_primary",
 			"snapshot_id": "snapshot_1", "snapshot_generation": 1,

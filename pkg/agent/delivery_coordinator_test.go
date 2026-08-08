@@ -11,31 +11,31 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func TestDecideAsyncToolResultDelivery(t *testing.T) {
 	tests := []struct {
 		name string
-		in   *tools.ToolResult
+		in   *toolshared.ToolResult
 		want AsyncDeliveryDecision
 	}{
 		{
 			name: "nil defaults without routing",
 			want: AsyncDeliveryDecision{
-				DeliveryMode: tools.AsyncDeliveryUserAndParent,
+				DeliveryMode: toolshared.AsyncDeliveryUserAndParent,
 			},
 		},
 		{
 			name: "default routes user text and parent content",
-			in: &tools.ToolResult{
+			in: &toolshared.ToolResult{
 				ForLLM:      "parent text",
 				ForUser:     "user text",
 				AsyncTaskID: "subagent-9",
 			},
 			want: AsyncDeliveryDecision{
 				TaskID:        "subagent-9",
-				DeliveryMode:  tools.AsyncDeliveryUserAndParent,
+				DeliveryMode:  toolshared.AsyncDeliveryUserAndParent,
 				PublishToUser: true,
 				QueueParent:   true,
 				ContentLen:    len("parent text"),
@@ -44,12 +44,12 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "user only suppresses parent",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly),
 			want: AsyncDeliveryDecision{
-				DeliveryMode:  tools.AsyncDeliveryUserOnly,
+				DeliveryMode:  toolshared.AsyncDeliveryUserOnly,
 				PublishToUser: true,
 				QueueParent:   false,
 				ParentHandled: true,
@@ -59,12 +59,12 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "parent only suppresses user",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
-			}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly),
 			want: AsyncDeliveryDecision{
-				DeliveryMode:  tools.AsyncDeliveryParentOnly,
+				DeliveryMode:  toolshared.AsyncDeliveryParentOnly,
 				PublishToUser: false,
 				QueueParent:   true,
 				ContentLen:    len("parent text"),
@@ -73,13 +73,13 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "silent suppresses user but not parent",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
 				Silent:  true,
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserAndParent),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserAndParent),
 			want: AsyncDeliveryDecision{
-				DeliveryMode:  tools.AsyncDeliveryUserAndParent,
+				DeliveryMode:  toolshared.AsyncDeliveryUserAndParent,
 				PublishToUser: false,
 				QueueParent:   true,
 				ContentLen:    len("parent text"),
@@ -88,18 +88,18 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "media counts direct and completion media",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM: "parent text",
 				Media:  []string{"media://direct"},
-				Completion: &tools.CompletionResult{
-					Media: []tools.CompletionMedia{
+				Completion: &toolshared.CompletionResult{
+					Media: []toolshared.CompletionMedia{
 						{Ref: "media://completion-1"},
 						{Ref: "media://completion-2"},
 					},
 				},
-			}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly),
 			want: AsyncDeliveryDecision{
-				DeliveryMode: tools.AsyncDeliveryParentOnly,
+				DeliveryMode: toolshared.AsyncDeliveryParentOnly,
 				QueueParent:  true,
 				ContentLen:   -1,
 				MediaCount:   3,
@@ -107,14 +107,14 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "user only media publishes without user text",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM: "internal media result",
-				Completion: &tools.CompletionResult{
-					Media: []tools.CompletionMedia{{Ref: "media://completion-video"}},
+				Completion: &toolshared.CompletionResult{
+					Media: []toolshared.CompletionMedia{{Ref: "media://completion-video"}},
 				},
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly),
 			want: AsyncDeliveryDecision{
-				DeliveryMode:  tools.AsyncDeliveryUserOnly,
+				DeliveryMode:  toolshared.AsyncDeliveryUserOnly,
 				PublishToUser: true,
 				QueueParent:   false,
 				ParentHandled: true,
@@ -125,13 +125,13 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "user only durable deliverable publishes even when silent",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM:      "internal research envelope",
 				Silent:      true,
-				Deliverable: &tools.DeliverableResult{Text: "complete research report"},
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+				Deliverable: &toolshared.DeliverableResult{Text: "complete research report"},
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly),
 			want: AsyncDeliveryDecision{
-				DeliveryMode:  tools.AsyncDeliveryUserOnly,
+				DeliveryMode:  toolshared.AsyncDeliveryUserOnly,
 				PublishToUser: true,
 				QueueParent:   false,
 				ParentHandled: true,
@@ -141,13 +141,13 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		},
 		{
 			name: "error is surfaced in decision",
-			in: (&tools.ToolResult{
+			in: (&toolshared.ToolResult{
 				ForLLM:  "failed",
 				ForUser: "failed",
 				IsError: true,
-			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+			}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly),
 			want: AsyncDeliveryDecision{
-				DeliveryMode:  tools.AsyncDeliveryUserOnly,
+				DeliveryMode:  toolshared.AsyncDeliveryUserOnly,
 				PublishToUser: true,
 				ContentLen:    len("failed"),
 				ForUserLen:    len("failed"),
@@ -202,9 +202,9 @@ func TestAsyncToolCompletionDelivery_UsesCurrentConfigForFiltering(t *testing.T)
 		},
 		ToolName:     "spawn",
 		CompletionID: "completion-1",
-		Result: (&tools.ToolResult{
+		Result: (&toolshared.ToolResult{
 			ForLLM: "result includes sk-new-secret-token and should be filtered",
-		}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly),
+		}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly),
 	})
 
 	if strings.Contains(gotInput.Content, "sk-new-secret-token") {
@@ -219,11 +219,11 @@ func TestDeliverAsyncToolCompletion_UserOnlyUpdatesDelivered(t *testing.T) {
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-user-only"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal",
 		ForUser:     "user done",
 		AsyncTaskID: taskID,
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 
 	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
 		TurnState:    ts,
@@ -251,7 +251,7 @@ func TestDeliverAsyncToolCompletion_UserOnlyUpdatesDelivered(t *testing.T) {
 	assertTaskEventForTest(t, events, taskregistry.EventTaskDeliveryDecision, map[string]string{
 		"completion_id": "completion-user-only",
 		"source_tool":   "spawn",
-		"mode":          string(tools.AsyncDeliveryUserOnly),
+		"mode":          string(toolshared.AsyncDeliveryUserOnly),
 		"will_user":     "true",
 		"will_parent":   "false",
 	})
@@ -261,11 +261,11 @@ func TestDeliverAsyncToolCompletion_ParentOnlyUpdatesSessionQueued(t *testing.T)
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "parent synthesized")
 	taskID := "coordinator-parent-only"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "parent data",
 		ForUser:     "do not send",
 		AsyncTaskID: taskID,
-	}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly)
 
 	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
 		TurnState:    ts,
@@ -286,11 +286,11 @@ func TestDeliverAsyncToolCompletion_UserAndParentDeliversBothOnce(t *testing.T) 
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "parent synthesized")
 	taskID := "coordinator-user-and-parent"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "parent data",
 		ForUser:     "user visible",
 		AsyncTaskID: taskID,
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserAndParent)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserAndParent)
 	req := AsyncDeliveryRequest{
 		TurnState:    ts,
 		ToolName:     "spawn",
@@ -324,11 +324,11 @@ func TestDeliverAsyncToolCompletion_SkipsDuplicateUserDelivery(t *testing.T) {
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-duplicate-user"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal",
 		ForUser:     "user once",
 		AsyncTaskID: taskID,
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 	req := AsyncDeliveryRequest{
 		TurnState:    ts,
 		ToolName:     "spawn",
@@ -349,11 +349,11 @@ func TestDeliverAsyncToolCompletion_SkipsDuplicateParentDeliveryAfterReload(t *t
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "parent once")
 	taskID := "coordinator-duplicate-parent"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "parent data",
 		ForUser:     "do not send",
 		AsyncTaskID: taskID,
-	}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryParentOnly)
 	req := AsyncDeliveryRequest{
 		TurnState:    ts,
 		ToolName:     "delegate",
@@ -382,19 +382,19 @@ func TestDeliverAsyncToolCompletion_SkipsDuplicateMediaAfterReload(t *testing.T)
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-duplicate-media"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal media result",
 		AsyncTaskID: taskID,
-		Completion: &tools.CompletionResult{
+		Completion: &toolshared.CompletionResult{
 			Text: "https://example.com/reel",
-			Media: []tools.CompletionMedia{{
+			Media: []toolshared.CompletionMedia{{
 				Ref:         "media://video-1",
 				Type:        "video",
 				Filename:    "source.mp4",
 				ContentType: "video/mp4",
 			}},
 		},
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 	req := AsyncDeliveryRequest{
 		TurnState:    ts,
 		ToolName:     "spawn",
@@ -426,18 +426,18 @@ func TestDeliverAsyncToolCompletion_MediaDeliveryFailureRecordsFailed(t *testing
 	al, _, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-media-failed"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal media result",
 		AsyncTaskID: taskID,
-		Completion: &tools.CompletionResult{
-			Media: []tools.CompletionMedia{{
+		Completion: &toolshared.CompletionResult{
+			Media: []toolshared.CompletionMedia{{
 				Ref:         "media://video-fail",
 				Type:        "video",
 				Filename:    "source.mp4",
 				ContentType: "video/mp4",
 			}},
 		},
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 
 	al.bus = failingMessageBus{}
 	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
@@ -625,11 +625,11 @@ func TestDeliverAsyncToolCompletion_FailedDeliveryRecordsCompletionError(t *test
 	al, _, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-failed"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal",
 		ForUser:     "user fail",
 		AsyncTaskID: taskID,
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 
 	al.bus = failingMessageBus{}
 	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
@@ -660,12 +660,12 @@ func TestDeliverAsyncToolCompletion_UserOnlyDurableDeliverableIsDelivered(t *tes
 	taskID := "coordinator-durable-report"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
 	fullReport := strings.Repeat("research result ", 700)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal research envelope",
 		Silent:      true,
 		AsyncTaskID: taskID,
-		Deliverable: &tools.DeliverableResult{Text: fullReport},
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+		Deliverable: &toolshared.DeliverableResult{Text: fullReport},
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 
 	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
 		TurnState:    ts,
@@ -685,12 +685,12 @@ func TestDeliverAsyncToolCompletion_ErrorDeliveryUpdatesTaskStatus(t *testing.T)
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-error-delivered"
 	upsertAsyncTaskForTest(t, al, workspace, taskID)
-	result := (&tools.ToolResult{
+	result := (&toolshared.ToolResult{
 		ForLLM:      "internal error",
 		ForUser:     "user error",
 		AsyncTaskID: taskID,
 		IsError:     true,
-	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+	}).WithAsyncDelivery(toolshared.AsyncDeliveryUserOnly)
 
 	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
 		TurnState:    ts,

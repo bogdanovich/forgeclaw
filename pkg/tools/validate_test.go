@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 // Ensure imports are used.
@@ -311,7 +313,7 @@ func TestValidateToolArgs_RegistryIntegration(t *testing.T) {
 			},
 			"required": []string{"path"},
 		},
-		result: SilentResult("file contents"),
+		result: toolshared.SilentResult("file contents"),
 	})
 
 	// Valid args — should succeed

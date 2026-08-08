@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/session"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 func retrievalTestScope(routeScopeKey, agentID string) *session.SessionScope {
@@ -94,7 +94,7 @@ func TestGrepToolScopesToCurrentSessionByDefault(t *testing.T) {
 	s.AddMessage(ctx, other.ConversationID, "user", "shared needle from other topic", 5)
 
 	tool := NewGrepTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "session:current", nil)
+	toolCtx := toolshared.WithToolSessionContext(ctx, "agent", "session:current", nil)
 	result := tool.Execute(toolCtx, map[string]any{"pattern": "needle"})
 	if result.IsError {
 		t.Fatalf("Execute returned error: %s", result.ContentForLLM())
@@ -129,7 +129,7 @@ func TestGrepToolCanSearchRouteConversation(t *testing.T) {
 	}
 
 	tool := NewGrepTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(
+	toolCtx := toolshared.WithToolSessionContext(
 		ctx,
 		"agent",
 		"session:current",
@@ -163,7 +163,7 @@ func TestGrepToolUnknownSessionFailsClosed(t *testing.T) {
 	s.AddMessage(ctx, other.ConversationID, "user", "shared needle from other topic", 5)
 
 	tool := NewGrepTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "session:missing", nil)
+	toolCtx := toolshared.WithToolSessionContext(ctx, "agent", "session:missing", nil)
 	result := tool.Execute(toolCtx, map[string]any{"pattern": "needle"})
 	if result.IsError {
 		t.Fatalf("Execute returned error: %s", result.ContentForLLM())

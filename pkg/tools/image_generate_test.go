@@ -8,6 +8,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type fakeImageGenerationProvider struct {
@@ -48,7 +49,7 @@ func TestImageGenerateToolCanUseInjectedProvider(t *testing.T) {
 	)
 
 	result := tool.Execute(
-		WithToolContext(t.Context(), "telegram", "chat-1"),
+		toolshared.WithToolContext(t.Context(), "telegram", "chat-1"),
 		map[string]any{"prompt": "make a tiny icon"},
 	)
 	if result.IsError {
@@ -78,7 +79,7 @@ func TestImageGenerateToolUsesConfiguredOutputDir(t *testing.T) {
 	)
 
 	result := tool.Execute(
-		WithToolContext(t.Context(), "telegram", "chat-1"),
+		toolshared.WithToolContext(t.Context(), "telegram", "chat-1"),
 		map[string]any{"prompt": "make a tiny icon"},
 	)
 	if result.IsError {
@@ -107,10 +108,10 @@ func TestImageGenerateToolImmediateContinueLeavesResponseUnhandled(t *testing.T)
 	)
 
 	result := tool.Execute(
-		WithToolContext(t.Context(), "telegram", "chat-1"),
+		toolshared.WithToolContext(t.Context(), "telegram", "chat-1"),
 		map[string]any{
 			"prompt":          "make the first architecture diagram",
-			"delivery_intent": string(DeliveryImmediateContinue),
+			"delivery_intent": string(toolshared.DeliveryImmediateContinue),
 		},
 	)
 	if result.IsError {
