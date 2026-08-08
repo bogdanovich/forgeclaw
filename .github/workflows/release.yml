@@ -19,29 +19,40 @@ on:
         default: false
 
 jobs:
-  release:
+  build:
     name: GoReleaser Release
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.validate-tag.outputs.tag }}
     permissions:
       contents: write
       packages: write
     steps:
-      - name: Verify tag exists
+      - name: Validate release tag
+        id: validate-tag
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if ! gh api "repos/${{ github.repository }}/git/ref/tags/${{ inputs.tag }}" --silent 2>/dev/null; then
-            echo "::error::Tag '${{ inputs.tag }}' does not exist. Create it first using the 'Create Tag' workflow."
+          readonly RELEASE_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z-]*(\.[0-9A-Za-z][0-9A-Za-z-]*)*)?$'
+          if [[ ! "${RELEASE_TAG}" =~ ${RELEASE_PATTERN} ]]; then
+            echo "::error::Release tag must use the admitted vMAJOR.MINOR.PATCH SemVer grammar."
             exit 1
           fi
+          if ! gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --silent 2>/dev/null; then
+            echo "::error::Release tag does not exist. Create it first using the 'Create Tag' workflow."
+            exit 1
+          fi
+          printf 'tag=%s\n' "${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout tag
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
+          ref: ${{ steps.validate-tag.outputs.tag }}
 
       - name: Verify release tag ancestry
         shell: bash
@@ -51,23 +62,11 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout trusted release tooling
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          path: .release-trust
-
       - name: Setup Go from go.mod
         id: setup-go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-
-      - name: Build trusted node release signer
-        shell: bash
-        run: |
-          cd .release-trust
-          go build -o "${RUNNER_TEMP}/mintclaw-node-release" ./cmd/mintclaw-node-release
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -110,11 +109,50 @@ jobs:
           GOVERSION: ${{ steps.setup-go.outputs.go-version }}
           INCLUDE_ANDROID_BUNDLE: "true"
 
+      - name: Preserve unsigned node archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-release-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            dist/mintclaw-node_Linux_x86_64.tar.gz
+            dist/mintclaw-node_Linux_arm64.tar.gz
+            dist/mintclaw-node_Darwin_x86_64.tar.gz
+            dist/mintclaw-node_Darwin_arm64.tar.gz
+
+  sign:
+    name: Sign Node Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build trusted node release signer
+        shell: bash
+        run: go build -o "${RUNNER_TEMP}/mintclaw-node-release" ./cmd/mintclaw-node-release
+
+      - name: Download unsigned node archives
+        uses: actions/download-artifact@v8
+        with:
+          name: node-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+
       - name: Sign node release manifest
         shell: bash
         env:
           MINTCLAW_NODE_RELEASE_SIGNING_KEY: ${{ secrets.MINTCLAW_NODE_RELEASE_SIGNING_KEY }}
-          MINTCLAW_NODE_RELEASE: ${{ inputs.tag }}
+          MINTCLAW_NODE_RELEASE: ${{ needs.build.outputs.tag }}
           MINTCLAW_NODE_MIN_COORDINATOR_VERSION: v1.0.0
           MINTCLAW_NODE_RELEASE_ARTIFACTS: >-
             linux/amd64/dist/mintclaw-node_Linux_x86_64.tar.gz
@@ -123,7 +161,6 @@ jobs:
             darwin/arm64/dist/mintclaw-node_Darwin_arm64.tar.gz
           MINTCLAW_NODE_MANIFEST_PATH: dist/mintclaw-node-manifest.json
           MINTCLAW_NODE_SIGNATURE_PATH: dist/mintclaw-node-manifest.sig
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CHANNEL=stable
           if [[ "${MINTCLAW_NODE_RELEASE}" == *-* ]]; then
@@ -132,7 +169,14 @@ jobs:
           export MINTCLAW_NODE_RELEASE_CHANNEL="${CHANNEL}"
           export MINTCLAW_NODE_RELEASE_PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:00Z)"
           "${RUNNER_TEMP}/mintclaw-node-release" sign
-          gh release upload "${MINTCLAW_NODE_RELEASE}" \
+
+      - name: Upload signed node release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release upload "${RELEASE_TAG}" \
             dist/mintclaw-node-manifest.json \
             dist/mintclaw-node-manifest.sig \
             --clobber
@@ -141,7 +185,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          gh release edit "${{ inputs.tag }}" \
-            --draft=${{ inputs.draft }} \
-            --prerelease=${{ inputs.prerelease }}
+          gh release edit "${RELEASE_TAG}" \
+            --draft="${RELEASE_DRAFT}" \
+            --prerelease="${RELEASE_PRERELEASE}"

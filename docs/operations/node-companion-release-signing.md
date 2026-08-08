@@ -42,9 +42,13 @@ missing or malformed. They publish four separately identifiable
 
 Both workflows run only when dispatched from `main`. The stable workflow also
 requires the release tag commit to be an ancestor of the exact dispatched
-`main` revision. It builds the signer from that trusted revision before the
-signing secret enters any step, then invokes the already built binary. Code
-checked out from the release tag never executes with the signing seed.
+`main` revision. Release tags and tag-derived nightly base versions must match
+the manifest's strict SemVer grammar before checkout or shell use. Unsigned
+artifacts are built without the signing seed, transferred through a bounded
+Actions artifact, and downloaded by a fresh signing job. That job checks out
+the trusted dispatched revision and builds the signer before the signing seed
+enters its one signing step. Code checked out from the release tag never runs
+on the signing runner or executes with the signing seed.
 Stable releases remain GitHub drafts until manifest signing and upload succeed;
 a signing failure cannot leave an unsigned node archive in a public release.
 

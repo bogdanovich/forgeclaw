@@ -7,10 +7,13 @@ permissions:
   contents: read
 
 jobs:
-  nightly:
+  build:
     name: Nightly Build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.version.outputs.changelog }}
     permissions:
       contents: write
       packages: write
@@ -22,19 +25,27 @@ jobs:
 
       - name: Compute version
         id: version
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
         run: |
           DATE=$(date -u +%Y%m%d)
           SHA=$(git rev-parse --short=8 HEAD)
           BASE_VERSION=$(git describe --tags --match "v*" --exclude "*nightly*" --abbrev=0 2>/dev/null || true)
+          readonly BASE_VERSION_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [ -n "${BASE_VERSION}" ] && [[ ! "${BASE_VERSION}" =~ ${BASE_VERSION_PATTERN} ]]; then
+            echo "::error::Latest release tag does not use the admitted stable SemVer grammar."
+            exit 1
+          fi
           if [ -z "$BASE_VERSION" ] || [ "$BASE_VERSION" = "v0.0.0" ]; then
             VERSION="v0.0.0-nightly.${DATE}.${SHA}"
           else
             VERSION="${BASE_VERSION}-nightly.${DATE}.${SHA}"
           fi
 
-          COMPARE_URL="https://github.com/${{ github.repository }}/commits/main"
+          COMPARE_URL="https://github.com/${REPOSITORY}/commits/main"
           if [ -n "$BASE_VERSION" ] && [ "$BASE_VERSION" != "v0.0.0" ]; then
-            COMPARE_URL="https://github.com/${{ github.repository }}/compare/${BASE_VERSION}...main"
+            COMPARE_URL="https://github.com/${REPOSITORY}/compare/${BASE_VERSION}...main"
           fi
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -45,10 +56,6 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-
-      - name: Build trusted node release signer
-        shell: bash
-        run: go build -o "${RUNNER_TEMP}/mintclaw-node-release" ./cmd/mintclaw-node-release
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -80,7 +87,9 @@ jobs:
         run: sudo apt-get install -y zip
 
       - name: Create local tag for GoReleaser
-        run: git tag "${{ steps.version.outputs.version }}"
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: git tag "${RELEASE_VERSION}"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
@@ -96,11 +105,52 @@ jobs:
           INCLUDE_ANDROID_BUNDLE: "true"
           NIGHTLY_BUILD: "true"
 
+      - name: Preserve unsigned release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-release-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*checksums.txt
+            build/mintclaw-android-universal.zip
+
+  sign-and-publish:
+    name: Sign And Publish Nightly
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build trusted node release signer
+        shell: bash
+        run: go build -o "${RUNNER_TEMP}/mintclaw-node-release" ./cmd/mintclaw-node-release
+
+      - name: Download unsigned release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: nightly-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+
       - name: Sign node release manifest
         shell: bash
         env:
           MINTCLAW_NODE_RELEASE_SIGNING_KEY: ${{ secrets.MINTCLAW_NODE_RELEASE_SIGNING_KEY }}
-          MINTCLAW_NODE_RELEASE: ${{ steps.version.outputs.version }}
+          MINTCLAW_NODE_RELEASE: ${{ needs.build.outputs.version }}
           MINTCLAW_NODE_RELEASE_CHANNEL: nightly
           MINTCLAW_NODE_MIN_COORDINATOR_VERSION: v1.0.0
           MINTCLAW_NODE_RELEASE_ARTIFACTS: >-
@@ -117,9 +167,10 @@ jobs:
       - name: Update nightly release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
+          CHANGELOG: ${{ needs.build.outputs.changelog }}
+          RELEASE_TARGET: ${{ github.sha }}
         run: |
-          CHANGELOG='${{ steps.version.outputs.changelog }}'
           NOTES=$(cat <<EOF
           Nightly build for **${VERSION}**
 
@@ -150,7 +201,7 @@ jobs:
           gh release create nightly \
             --title "Nightly Build" \
             --notes "$NOTES" \
-            --target "${{ github.sha }}" \
+            --target "${RELEASE_TARGET}" \
             --prerelease \
             --latest=false \
             "${ASSETS[@]}"
